@@ -1,0 +1,41 @@
+# --- .env intentionally NOT ignored — kept tracked per project decision ---
+
+# --- Python (backend) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+backend/.venv
+venv/
+env/
+backend/.env
+backend/.env.example
+docs/
+# --- Node / frontend (bun/npm/vite) ---
+node_modules/
+frontend/dist/
+.vite/
+*.local
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+npm-debug.log*
+
+# --- Backend runtime data ---
+backend/data/*
+!backend/data/.gitkeep

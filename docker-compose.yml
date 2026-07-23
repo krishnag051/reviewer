@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tpuser
+      POSTGRES_PASSWORD: tppass
+      POSTGRES_DB: tpreview
+    ports:
+      - "5432:5432"
+    volumes:
+      - tp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tpuser -d tpreview"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://tpuser:tppass@postgres:5432/tpreview
+      JWT_SECRET: dev-secret-not-for-production
+    ports:
+      - "8000:8000"
+
+volumes:
+  tp_postgres_data:
