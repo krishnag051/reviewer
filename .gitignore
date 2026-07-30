@@ -27,6 +27,9 @@ frontend/dist/
 agent-making/.env
 # --- Editors / OS ---
 .vscode/*
+
+.claude
+.agents
 !.vscode/extensions.json
 .idea/
 .DS_Store
