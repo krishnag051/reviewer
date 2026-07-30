@@ -48,6 +48,89 @@ because the wrapper interface's `error` field depends on it being fixed
 
 ---
 
+## ⭐ RELIABILITY PRIORITIES — noted now, not yet built, do not lose before real backend work starts
+
+**"Finalize as V[n]" must be the single most reliable operation in the
+whole system.** It is the one action that turns a disposable draft into a
+permanent record (see the frontend's `finalizeAttempt` and the
+project-level invariant that finalize is irreversible) — once real backend
+wiring exists, this write must always succeed and be durably saved, even
+in states where other, lower-stakes actions (Generate Correction Email,
+the mock "Send for Correction" draft action added on the frontend, etc.)
+fail outright or aren't fully wired up yet. Finalize should not share a
+failure mode with those actions, and should not be blocked or made
+flaky by any of them being broken, slow, or unimplemented. This has no
+code implication yet — mock frontend state has no real persistence to be
+reliable about — but it needs to be a hard design constraint (transaction
+boundaries, retry/idempotency, error isolation from secondary actions) by
+the time the real wrapper/backend integration in this document is built.
+
+---
+
+## 📐 FRONTEND REALITY CHECK — updated 2026-07-30, read before trusting §1's async proposal
+
+This document was originally written before the frontend had any real
+concept of a draft vs. a finalized record, and before the backend's own
+upload/job model had been walked through in detail (Step 1 exploration).
+Both now exist. This section reconciles what's below against that current
+reality — nothing below is redesigned, this just flags what's now stale or
+needs a real decision before backend wiring starts. Full detail on the
+frontend side: `frontend/FRONTEND_STATE.md`. Full detail on the backend
+side: `docs/BACKEND_IMPLEMENTATION_SUMMARY.md`.
+
+- **The backend already has a real version of the exact shape §1's
+  "Progress/status for a long-running check" proposes as a
+  not-yet-built job pattern — it isn't hypothetical.** `uploads.status`
+  (`processing` → `ready`/`error`), driven by
+  `app/services/upload_pipeline.py::run_upload_pipeline` as a FastAPI
+  `BackgroundTask`, is already exactly "submit → job_id (the upload row) →
+  poll(job_id) → status." The wrapper proposed in §1 doesn't need to invent
+  its own job/poll abstraction — it needs to be callable from *inside* that
+  existing `BackgroundTask`, in the same slot where `rule_engine.run_rule_checks`
+  (the deliberately hollow stub — see root `CLAUDE.md`) is called today.
+- **The frontend's mock U/V draft model maps reasonably well onto the
+  backend's real `versions`(`in_progress`/`finalized`)/`uploads`
+  (`processing`/`ready`/`error`, `upload_number` sequential per version)
+  tables** — a frontend `UAttempt` ≈ a backend `upload` row, a frontend
+  `PlanVersion` ≈ a backend `versions` row once `status="finalized"`. But
+  one real mismatch to resolve, not just a naming difference: **the
+  backend creates the `versions` row — with a real, already-assigned
+  `version_number` — up front, in `in_progress` status, before the first
+  upload even happens.** The frontend today does the opposite: it creates
+  no version-shaped record at all until finalize; the "V0" label used for
+  a not-yet-finalized first slot (see `FRONTEND_STATE.md` §1) is a pure UI
+  string with nothing backing it. Once wired to the real backend, that
+  slot will already have a real `version_number` (e.g. `1`) the moment the
+  first upload happens — the frontend's locally-computed "next slot is
+  `versions.length + 1`" logic and its "V0" convention will both need to
+  be replaced by reading the real in-progress version's assigned number
+  from the backend, not deriving it client-side.
+- **Siblings-on-finalize: the frontend's speculative "should probably be
+  soft-retained later" note is now confirmed correct, not just a guess.**
+  The backend's real `finalize_upload` sets non-chosen sibling uploads'
+  `purge_after` rather than deleting them — matching `CLAUDE.md`'s
+  "no hard deletes" invariant. The frontend's current mock behavior
+  (`finalizeAttempt` in `tp-context.tsx` drops every sibling `UAttempt`
+  outright) is a mock-only simplification that should NOT carry over
+  as-is when this connects to the real backend.
+- **One real, unresolved tension, flagged here rather than silently
+  decided either way:** the frontend has a confirmed product decision that
+  overrides are **V-only** — a draft `UAttempt` gets no override
+  affordance anywhere in the UI (see `FRONTEND_STATE.md` §1 and §2). The
+  real backend's `override_rule_result` does **not** enforce that — it
+  allows overriding a `rule_result` on any upload, finalized or not, and
+  only *conditionally* recomputes the parent version's score if that
+  particular upload happens to already be the finalized one. Which
+  behavior is actually correct for the real product — restrict override to
+  finalized versions only (matching the frontend's current decision,
+  requiring a backend-side guard that doesn't exist today), or allow it on
+  drafts too (matching the backend's current behavior, requiring the
+  frontend's override UI to be extended to drafts) — is a real product
+  decision that needs to be made before wiring this up, not something to
+  quietly pick one way just because one side happens to already do it.
+
+---
+
 ## 1. The interface contract
 
 **Where it would live**: a new file, `agent-making/agent/pipeline/api.py`
@@ -125,6 +208,12 @@ for the web-facing path, a job pattern (`submit → job_id`, then
 something to bake into `review_treatment_plan`'s own signature. The
 function itself should stay simple and synchronous; whatever calls it from
 the backend decides whether to run it inline or hand it to a worker queue.
+**Update, 2026-07-30: this "job pattern" already exists on the backend,
+not just as a future decision** — see the reality-check section above.
+`uploads.status` (`processing`/`ready`/`error`) via
+`run_upload_pipeline`'s `BackgroundTask` is that job/poll unit already
+built; the wrapper just needs to slot into it where the current hollow
+`rule_engine.run_rule_checks` stub is called.
 
 ## 2. Where the boundary actually is today
 
@@ -175,7 +264,9 @@ semantics. `schema_version` exists specifically so these are never silent.
   retain for re-review?
 - **Async/job handling**: given real run times, a background-job pattern
   (queue + poll or webhook) rather than a blocking request, per the
-  progress note above.
+  progress note above. **Already built**, not still to design — see the
+  reality-check section above: `uploads.status` +
+  `run_upload_pipeline`'s `BackgroundTask` is this pattern today.
 - **Where results get stored**: a DB-design question that belongs
   entirely on that side — but the `findings` shape above is normalized
   enough (rule_id/category/result/page/detail/confidence/action_lane) to

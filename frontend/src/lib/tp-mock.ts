@@ -1,16 +1,17 @@
 // Mock data for TP Review System
 
-export type Payor = "Healthfirst" | "Emblem" | "Anthem" | "Molina" | "Aetna" | "Cigna";
+export type Payor =
+  | "Aetna" | "Anthem" | "Cigna" | "Emblem" | "Empire"
+  | "Healthfirst" | "Molina" | "MVP" | "Straight Medicaid" | "New York Medicaid";
+
+// Matches agent-making's actual payor list: the 9 official payors per the
+// locked project scope, plus New York Medicaid as a real bonus payor.
+export const PAYORS: Payor[] = [
+  "Aetna", "Anthem", "Cigna", "Emblem", "Empire",
+  "Healthfirst", "Molina", "MVP", "Straight Medicaid", "New York Medicaid",
+];
+
 export type RuleStatus = "Pass" | "Fail" | "N/A";
-export type RuleCategory =
-  | "Patient Info"
-  | "Diagnosis"
-  | "Assessment"
-  | "Goals & Objectives"
-  | "Service Delivery"
-  | "Signatures"
-  | "Behavior Plan"
-  | "Authorization";
 
 export type Reviewer = {
   id: string;
@@ -28,41 +29,166 @@ export const reviewers: Reviewer[] = [
   { id: "u5", name: "L. Nguyen", credentials: "BCBA", email: "l.nguyen@brightpath-aba.com", role: "Admin" },
 ];
 
+// --- Rules -------------------------------------------------------------
+// Real rule content sourced from agent-making/agent/rules/rules.json (read
+// only, not modified) so the Rules Studio reads like the real thing before
+// it's ever wired up. check_type/action_lane/action_tag are agent-making's
+// actual current values for each rule -- "actionTag" is the Director/QA/
+// Coordinator/General sub-tag scoped under the Facilitator-assign lane;
+// "Coordinator" isn't used by any current rule but stays a valid tag value
+// since it's part of the original project scope.
+
+export type RuleCheckType = "deterministic" | "judgment";
+export type ActionLane = "BCBA-fix" | "Facilitator-assign";
+export type ActionTag = "Director" | "QA" | "Coordinator" | "General" | null;
+
 export type Rule = {
   id: string;
-  category: RuleCategory;
-  questionSet: "Treatment Plan" | "97151" | "97153" | "97155" | "97156";
-  question: string;
-  severity: "Normal" | "Critical";
+  category: string;
+  payor: "ALL" | Payor;
+  description: string;
+  checkType: RuleCheckType;
+  actionLane: ActionLane;
+  actionTag: ActionTag;
   active: boolean;
 };
 
 export const rules: Rule[] = [
-  { id: "R-001", category: "Patient Info", questionSet: "Treatment Plan", question: "Is the patient's full legal name present on the cover page?", severity: "Normal", active: true },
-  { id: "R-002", category: "Patient Info", questionSet: "Treatment Plan", question: "Is the patient's date of birth documented and consistent throughout?", severity: "Normal", active: true },
-  { id: "R-003", category: "Patient Info", questionSet: "Treatment Plan", question: "Is the insurance member ID present on the plan?", severity: "Critical", active: true },
-  { id: "R-010", category: "Diagnosis", questionSet: "Treatment Plan", question: "Is a current DSM-5 diagnosis of ASD (F84.0) documented?", severity: "Critical", active: true },
-  { id: "R-011", category: "Diagnosis", questionSet: "Treatment Plan", question: "Is the diagnosing provider's name and NPI listed?", severity: "Normal", active: true },
-  { id: "R-020", category: "Assessment", questionSet: "97151", question: "Is the FBA dated within the last 90 days?", severity: "Critical", active: true },
-  { id: "R-021", category: "Assessment", questionSet: "97151", question: "Are standardized assessment tools (VB-MAPP, ABLLS, Vineland) documented with scores?", severity: "Normal", active: true },
-  { id: "R-022", category: "Assessment", questionSet: "97151", question: "Is caregiver/parent input on skill priorities documented?", severity: "Normal", active: true },
-  { id: "R-030", category: "Goals & Objectives", questionSet: "Treatment Plan", question: "Are goals written in measurable, observable terms?", severity: "Critical", active: true },
-  { id: "R-031", category: "Goals & Objectives", questionSet: "Treatment Plan", question: "Does each goal include mastery criteria?", severity: "Normal", active: true },
-  { id: "R-032", category: "Goals & Objectives", questionSet: "Treatment Plan", question: "Does each goal include baseline data?", severity: "Normal", active: true },
-  { id: "R-033", category: "Goals & Objectives", questionSet: "Treatment Plan", question: "Are short-term objectives linked to long-term goals?", severity: "Normal", active: true },
-  { id: "R-040", category: "Service Delivery", questionSet: "97153", question: "Is the recommended weekly hours of 97153 documented with a specific unit count?", severity: "Critical", active: true },
-  { id: "R-041", category: "Service Delivery", questionSet: "97155", question: "Is the recommended weekly hours of 97155 (protocol modification) documented?", severity: "Normal", active: true },
-  { id: "R-042", category: "Service Delivery", questionSet: "97156", question: "Is parent training (97156) included with a specific frequency?", severity: "Normal", active: true },
-  { id: "R-043", category: "Service Delivery", questionSet: "Treatment Plan", question: "Is the location of services (home, clinic, school) specified?", severity: "Normal", active: true },
-  { id: "R-050", category: "Behavior Plan", questionSet: "Treatment Plan", question: "If interfering behaviors are present, is a Behavior Intervention Plan (BIP) included?", severity: "Critical", active: true },
-  { id: "R-051", category: "Behavior Plan", questionSet: "Treatment Plan", question: "Are antecedent strategies documented for each target behavior?", severity: "Normal", active: true },
-  { id: "R-052", category: "Behavior Plan", questionSet: "Treatment Plan", question: "Are replacement behaviors identified for each target behavior?", severity: "Normal", active: true },
-  { id: "R-060", category: "Authorization", questionSet: "Treatment Plan", question: "Is the requested authorization period clearly stated (start and end date)?", severity: "Critical", active: true },
-  { id: "R-061", category: "Authorization", questionSet: "Treatment Plan", question: "Does the authorization period not exceed 6 months?", severity: "Normal", active: true },
-  { id: "R-070", category: "Signatures", questionSet: "Treatment Plan", question: "Is the BCBA signature present and dated?", severity: "Critical", active: true },
-  { id: "R-071", category: "Signatures", questionSet: "Treatment Plan", question: "Is the parent/guardian signature present and dated within 30 days of BCBA signature?", severity: "Normal", active: true },
-  { id: "R-072", category: "Signatures", questionSet: "Treatment Plan", question: "Is the BCBA's credential and certification number listed under the signature?", severity: "Normal", active: true },
+  { id: "QA-TEMP-01", category: "Template", payor: "ALL", description: "Limited permit holder -> correct template used, credentials correct throughout", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-TEMP-02", category: "Template", payor: "ALL", description: "TP includes header and page numbers on all pages", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-TEMP-03", category: "Template", payor: "ALL", description: "All highlights removed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-TEMP-04", category: "Template", payor: "ALL", description: "All correspondence with BCBA removed", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-TEMP-05", category: "Template", payor: "ALL", description: "'RBT' changed to 'RBT/BT' or 'BT'", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-RPT-01", category: "Report Information", payor: "ALL", description: "All fields completed", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-RPT-02", category: "Report Information", payor: "ALL", description: "Date of initial assessment pulled onto TP", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-RPT-03", category: "Report Information", payor: "ALL", description: "Dates of current report match 97151 session notes", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-RPT-04", category: "Report Information", payor: "ALL", description: "Auth dates requested within 2 days of submission", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-RPT-05", category: "Report Information", payor: "ALL", description: "Auth dates accurate (6-month default, based on previous auth end or new insurance start)", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-RPT-06", category: "Report Information", payor: "ALL", description: "End date of current report before start of auth dates requested", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PPI-01", category: "Patient/Provider Info", payor: "ALL", description: "Patient info matches Central Reach", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-PPI-02", category: "Patient/Provider Info", payor: "ALL", description: "Patient age correct and consistent throughout TP", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PPI-03", category: "Patient/Provider Info", payor: "ALL", description: "Patient legal name spelled correctly throughout", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PPI-04", category: "Patient/Provider Info", payor: "ALL", description: "Patient Payor and Insurance ID correct", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PPI-05", category: "Patient/Provider Info", payor: "ALL", description: "Provider Credentials/NPI/License correct", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-HRS-01", category: "Hours Requesting", payor: "ALL", description: "97153 hours match email from coordinator", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-HRS-02", category: "Hours Requesting", payor: "ALL", description: ">20hrs of 97153 -> note on review email to Eliana", checkType: "deterministic", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-HRS-03", category: "Hours Requesting", payor: "ALL", description: "Supervision hours must not exceed 1.5/10 ratio; if exceeded, needs clinical director approval", checkType: "deterministic", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-HRS-04", category: "Hours Requesting", payor: "ALL", description: "Group hours -> more direct hours + tailored rationale", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-HRS-05", category: "Hours Requesting", payor: "ALL", description: "<10 hrs of 97153 -> confirm approved", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-HRS-06", category: "Hours Requesting", payor: "ALL", description: "Increase in hours -> rationale in place", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-HRS-07", category: "Hours Requesting", payor: "ALL", description: "Increase in hours -> compared against previous mastery criteria", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-HRS-08", category: "Hours Requesting", payor: "ALL", description: "Codes/hours match insurance billing codes guide", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-HRS-09", category: "Hours Requesting", payor: "ALL", description: "Overlap with home health aide/speech/OT -> goals differentiated", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SCH-01", category: "School & ABA Schedule", payor: "ALL", description: "ABA schedule matches hours requested", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SCH-02", category: "School & ABA Schedule", payor: "ALL", description: "Confirmed with service coordinator schedule is accurate", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-SCH-03", category: "School & ABA Schedule", payor: "ALL", description: "ABA schedule doesn't overlap school schedule (unless payor allows in-school)", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SCH-04", category: "School & ABA Schedule", payor: "ALL", description: "If ABA during day, school hours adjusted accordingly", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SCH-05", category: "School & ABA Schedule", payor: "ALL", description: "School hours match total under educational history", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SCH-06", category: "School & ABA Schedule", payor: "ALL", description: "If overlaps related therapy, that schedule is added to TP", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SCH-07", category: "School & ABA Schedule", payor: "ALL", description: ">3 hrs/day of 97153 -> approved by clinical director", checkType: "deterministic", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-SCH-08", category: "School & ABA Schedule", payor: "ALL", description: "POS correct (home/office/school/community only)", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-01", category: "Biopsychosocial", payor: "ALL", description: "All info completed, matches diagnostic report", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-BIO-02", category: "Biopsychosocial", payor: "ALL", description: "Date of most recent diagnosis pulled onto TP", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-03", category: "Biopsychosocial", payor: "ALL", description: "Includes any other diagnosis if applicable", checkType: "deterministic", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-BIO-05", category: "Biopsychosocial", payor: "ALL", description: "Developmental history and diagnosis do not contradict", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-06", category: "Biopsychosocial", payor: "ALL", description: "Medication listed -> reason stated; ADHD med = secondary diagnosis", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-07", category: "Biopsychosocial", payor: "ALL", description: "Educational history chronological, matches coordinator info", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-BIO-08", category: "Biopsychosocial", payor: "ALL", description: "Patients <5, community daytime hours -> 'school' replaced with community/daycare/preschool", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-09", category: "Biopsychosocial", payor: "ALL", description: "Patients 5+ in Special Ed -> TP indicates IEP", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-10", category: "Biopsychosocial", payor: "ALL", description: "Educational history and COC do not contradict", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-11", category: "Biopsychosocial", payor: "ALL", description: "Includes any other service child is receiving", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-12", category: "Biopsychosocial", payor: "ALL", description: "Includes all EI services received", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-13", category: "Biopsychosocial", payor: "ALL", description: "First day of ABA with MF pulled onto TP", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-14", category: "Biopsychosocial", payor: "ALL", description: "History of ABA therapy with other providers completed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-15", category: "Biopsychosocial", payor: "ALL", description: "Includes school name", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIO-16", category: "Biopsychosocial", payor: "ALL", description: "School name matches Central Reach", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-PROB-01", category: "Problem Areas", payor: "ALL", description: "At least 2 each of social/communication/behavior, narrative format", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PROB-02", category: "Problem Areas", payor: "ALL", description: "'As evidenced by' section matches goals listed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PROB-03", category: "Problem Areas", payor: "ALL", description: "Under 5: behaviors describe real ASD deficit, distinguishable from normal behavior", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-OBS-01", category: "Observations", payor: "ALL", description: "Patient observation completed", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-OBS-02", category: "Observations", payor: "ALL", description: "Observation location and dates fully completed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-OBS-03", category: "Observations", payor: "ALL", description: "Session note backs the observation (else forward to QA)", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "QA", active: true },
+  { id: "QA-OBS-04", category: "Observations", payor: "ALL", description: "Observation date within report dates, before testing tool date", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-ACF-01", category: "Assessment of Current Functioning", payor: "ALL", description: "Date/location/patient location completed", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-ACF-02", category: "Assessment of Current Functioning", payor: "ALL", description: "Note backing assessment matches date/location", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "QA", active: true },
+  { id: "QA-ACF-03", category: "Assessment of Current Functioning", payor: "ALL", description: "Grid with legend (colors/dates/assessor) present", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-ACF-04", category: "Assessment of Current Functioning", payor: "ALL", description: "Score lower than previous assessment -> Director tag", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-ACF-05", category: "Assessment of Current Functioning", payor: "ALL", description: "Assessment Summary Statement is documented (not blank)", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-ACF-06", category: "Assessment of Current Functioning", payor: "ALL", description: "Testing tool includes assessor's name", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-ACF-07", category: "Assessment of Current Functioning", payor: "ALL", description: "TP includes both old and new testing tool", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-ACF-08", category: "Assessment of Current Functioning", payor: "ALL", description: "Session note backs testing tool used (else forward to QA)", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "QA", active: true },
+  { id: "QA-CI-01", category: "Clinical Interpretation", payor: "ALL", description: "Completed with clear and detailed rationale", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BAR-01", category: "Barriers to Treatment", payor: "ALL", description: "Includes at least one barrier to treatment", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIP-01", category: "BIP", payor: "ALL", description: "At least one severity rating >= moderate (not all 4 mild)", checkType: "deterministic", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-BIP-02", category: "BIP", payor: "ALL", description: "No punishment procedures unless data attached + director approved", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-BIP-03", category: "BIP", payor: "ALL", description: "Medical BIP -> all medical causes ruled out", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIP-04", category: "BIP", payor: "ALL", description: "All tantrum goals have a duration", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIP-05", category: "BIP", payor: "ALL", description: "Age-appropriate mastery criteria for behavior targets", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIP-06", category: "BIP", payor: "ALL", description: "Current level always indicated", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-BIP-07", category: "BIP", payor: "ALL", description: "Plan for client to disagree appropriately (non-compliance goals)", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PREF-01", category: "Results of Preference Assessment", payor: "ALL", description: "Result of preference assessment completed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-MAST-01", category: "Mastered Goals", payor: "ALL", description: "Mastered goals within previous authorization dates", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-MAST-02", category: "Mastered Goals", payor: "ALL", description: "Mastered goals don't appear twice vs. previous TP", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-01", category: "Goals in Progress", payor: "ALL", description: "No school goals/ADL/group mentions unless requesting 97154", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-02", category: "Goals in Progress", payor: "ALL", description: "3mo/6mo graph data matches auth length", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-03", category: "Goals in Progress", payor: "ALL", description: "Severity rating check (moderate min, not all mild)", checkType: "deterministic", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-GIP-04", category: "Goals in Progress", payor: "ALL", description: "No mastery date shows 'invalid date'", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-05", category: "Goals in Progress", payor: "ALL", description: "Goal progress matches mastered goals (no contradiction/duplication)", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-06", category: "Goals in Progress", payor: "ALL", description: "General goals fully completed and include a rationale", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-07", category: "Goals in Progress", payor: "ALL", description: "Goals open >6mo have rationale reviewed by Eliana", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "Director", active: true },
+  { id: "QA-GIP-08", category: "Goals in Progress", payor: "ALL", description: "All goals match the POS", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-09", category: "Goals in Progress", payor: "ALL", description: "Goals indicate which are worked on in community", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-10", category: "Goals in Progress", payor: "ALL", description: "Sampling method consistent across baseline/current/sampling/mastery", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-11", category: "Goals in Progress", payor: "ALL", description: "Goals in behavioral context (SD, setting, expected response)", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-12", category: "Goals in Progress", payor: "ALL", description: "Goals include verbal operant/behavioral term", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-13", category: "Goals in Progress", payor: "ALL", description: "At least 1 goal per hour (excl. Parent Training)", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-14", category: "Goals in Progress", payor: "ALL", description: "If data trending down, explanation provided", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-15", category: "Goals in Progress", payor: "ALL", description: "Info requested by last auth period included (per spreadsheet)", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "QA-GIP-16", category: "Goals in Progress", payor: "ALL", description: "Mastery criteria age/ASD-appropriate; no 0%, use 'fewer than one instance'", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-GIP-17", category: "Goals in Progress", payor: "ALL", description: "Goals observable/measurable with SD, deficit, expectation", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-PAR-01", category: "Parent/Caregiver Involvement", payor: "ALL", description: "3+ parent training goals/auth period, no 'caregiver' wording (or rationale if used)", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-COC-01", category: "Coordination of Care", payor: "ALL", description: "COC includes provider name/title/date; session note detailed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-COC-02", category: "Coordination of Care", payor: "ALL", description: "COC completed with all related providers indicated (PCP, school, therapist)", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-COC-03", category: "Coordination of Care", payor: "ALL", description: "TP indicates COC will be done once patient starts services", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-COC-04", category: "Coordination of Care", payor: "ALL", description: "TP faxed to doctor within last 6 months", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-COC-05", category: "Coordination of Care", payor: "ALL", description: "Date of COC not past end date of current report", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-COC-06", category: "Coordination of Care", payor: "ALL", description: "Date faxed to doctor includes month/day/year", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-TRANS-01", category: "Transition Plan", payor: "ALL", description: "Patient-specific and realistic based on goals", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-TRANS-02", category: "Transition Plan", payor: "ALL", description: "Remove extra bullets/numbers", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-DISC-01", category: "Discharge Criteria", payor: "ALL", description: "Patient-specific and realistic based on goals", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-DISC-02", category: "Discharge Criteria", payor: "ALL", description: "Remove extra bullets/numbers", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SIG-01", category: "Signatures", payor: "ALL", description: "Signature includes date signed", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SIG-02", category: "Signatures", payor: "ALL", description: "Signature includes correct credentials", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SIG-03", category: "Signatures", payor: "ALL", description: "Signature date before start of auth dates requested", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SIG-04", category: "Signatures", payor: "ALL", description: "Signature date not >2 days after end date of current report", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SIG-05", category: "Signatures", payor: "ALL", description: "BCBA signed the report", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-SIG-06", category: "Signatures", payor: "ALL", description: "If writing BCBA != case BCBA, both signed, clearly indicated", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "QA-DS-01", category: "Data Sheets", payor: "ALL", description: "BCBA created data sheets for the patient", checkType: "judgment", actionLane: "Facilitator-assign", actionTag: "General", active: true },
+  { id: "HF-01", category: "Healthfirst-Specific", payor: "Healthfirst", description: "Patients >13: auth dates = 3-month range instead of 6", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "HF-02", category: "Healthfirst-Specific", payor: "Healthfirst", description: "No more than 5 hrs of 97151 (assessment) requested", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "HF-03", category: "Healthfirst-Specific", payor: "Healthfirst", description: "Community hours: TP states how many hours, where, and what goals", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "SM-01", category: "Straight Medicaid-Specific", payor: "Straight Medicaid", description: "Auth start = day after current auth expires; auth end <= 6 months after current report end", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "SM-02", category: "Straight Medicaid-Specific", payor: "Straight Medicaid", description: "All hours are requested per week (not per day)", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "EMP-01", category: "Empire-Specific", payor: "Empire", description: "Date of current report within 30 days of authorization start date", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "EMP-02", category: "Empire-Specific", payor: "Empire", description: "Goal dates within 30 days of authorization start date", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "EMP-03", category: "Empire-Specific", payor: "Empire", description: "Signature date within 30 days of authorization start date", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "EMB-01", category: "Emblem-Specific", payor: "Emblem", description: "No more than 3 hrs of 97151 (assessment) requested", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
+  { id: "AET-01", category: "Aetna-Specific", payor: "Aetna", description: "Testing tool restricted to Vineland/VB-MAPP/ABLLS; AFLS not allowed", checkType: "deterministic", actionLane: "BCBA-fix", actionTag: null, active: true },
 ];
+
+// Which fake PDF page (see makePdf below) a given rule category's evidence
+// would plausibly live on -- just for the "jump to page" links to point
+// somewhere sensible, not a real mapping.
+const CATEGORY_PAGE: Record<string, number> = {
+  "Template": 1, "Report Information": 1, "Patient/Provider Info": 1,
+  "Hours Requesting": 4, "School & ABA Schedule": 4,
+  "Biopsychosocial": 2, "Problem Areas": 2, "Barriers to Treatment": 2, "Coordination of Care": 2,
+  "Observations": 3, "Assessment of Current Functioning": 3, "Clinical Interpretation": 3, "Results of Preference Assessment": 3,
+  "BIP": 6, "Transition Plan": 6, "Discharge Criteria": 6,
+  "Mastered Goals": 5, "Goals in Progress": 5, "Parent/Caregiver Involvement": 5,
+  "Signatures": 7, "Data Sheets": 7,
+  "Healthfirst-Specific": 4, "Straight Medicaid-Specific": 4, "Empire-Specific": 4, "Emblem-Specific": 4, "Aetna-Specific": 4,
+};
 
 export type PdfPage = { page: number; title: string; body: string[] };
 
@@ -74,9 +200,61 @@ export type RuleResult = {
   overridden?: boolean;
 };
 
+// --- V (finalized, permanent) vs. U (draft, disposable) --------------
+//
+// A PlanVersion (V) is the official, sequential TP record: V1 = Initial,
+// V2 = the next Reassessment, and so on -- permanent once created, never
+// renumbered, never deleted. A UAttempt (U) is a draft working upload made
+// while preparing a single V-slot -- as many as needed (U1, U2, U3...),
+// none of them permanent on their own. "Finalize as V[n]" is the only
+// action that promotes one attempt into the next official version.
+
+export type UAttempt = {
+  id: string;
+  attemptNumber: number;      // 1, 2, 3... scoped to the CURRENT open V-slot only;
+                               // resets to 1 once that slot is finalized and a new one opens
+  uploadedAt: string;
+  assessmentDate: string;
+  reviewerId: string;
+  pdf: PdfPage[];
+  // "processing" until the simulated agent-review delay elapses, then
+  // "complete". `results`/`score`/`auditResult` are computed up front at
+  // creation either way (the mock scripted-findings logic is deterministic,
+  // not time-based) -- `status` only gates whether the UI is allowed to
+  // show them yet, standing in for a real backend job that hasn't finished.
+  status: "processing" | "complete";
+  results: RuleResult[];
+  score: number;
+  auditResult: "Pass" | "Fail";
+  // deliberately no `reviewed` field here -- "mark reviewed" is a
+  // post-finalize, V-only action (see PlanVersion below).
+};
+
+// Simulated "agent is running" delay between attempt creation and results
+// becoming visible -- stands in for the real rule-checking agent's actual
+// run time (see AGENT_INTEGRATION_CONTRACT.md), which doesn't exist yet in
+// this mock pass. 5-10s per spec.
+export const PROCESSING_DELAY_MS_MIN = 5000;
+export const PROCESSING_DELAY_MS_MAX = 10000;
+export function randomProcessingDelayMs(): number {
+  return PROCESSING_DELAY_MS_MIN + Math.random() * (PROCESSING_DELAY_MS_MAX - PROCESSING_DELAY_MS_MIN);
+}
+
+// Label for the not-yet-finalized slot a draft is currently pending against.
+// A brand-new patient's first slot has no real version number yet -- calling
+// it "V1" before anything is finalized implies a V1 already exists, which it
+// doesn't. So the CURRENT, not-yet-finalized state is labeled "V0" for that
+// one case only; every later slot (versionsCount >= 1) already has a real
+// predecessor and keeps its normal "V[versionsCount + 1]" label unchanged.
+// The "Finalize as V[n]" action itself never uses this -- it always names
+// the real target being created, which for the first slot IS "V1".
+export function pendingSlotLabel(versionsCount: number): string {
+  return versionsCount === 0 ? "V0" : `V${versionsCount + 1}`;
+}
+
 export type PlanVersion = {
   version: number;
-  uploadedAt: string;
+  finalizedAt: string;              // when "Finalize as V[n]" was clicked
   assessmentDate: string;
   reviewerId: string;
   pdf: PdfPage[];
@@ -84,13 +262,15 @@ export type PlanVersion = {
   score: number;
   auditResult: "Pass" | "Fail";
   reviewed: boolean;
+  finalizedFromAttemptId?: string;  // traceability back to which U-attempt became this V
 };
 
 export type Patient = {
   refId: string;
   name: string;
   payor: Payor;
-  versions: PlanVersion[];
+  versions: PlanVersion[];   // finalized, permanent -- the ONLY thing the version picker reads
+  uAttempts: UAttempt[];     // drafts against the not-yet-finalized next V-slot; [] when nothing is in progress
 };
 
 // Generate realistic PDF page content
@@ -181,237 +361,228 @@ const daysAgo = (n: number) => {
   return d.toISOString().slice(0, 10);
 };
 
+// --- Mock rule-checking flow --------------------------------------------
+// A small set of rules get a scripted, realistic finding that starts as a
+// Fail and resolves to a Pass once the attempt number reaches
+// `resolvesAtAttempt` -- this is what makes revise-and-reupload (U1 -> U2
+// -> U3) demonstrate something real: the same rule's finding actually
+// changes across attempts, same as a BCBA fixing an issue and reuploading
+// would expect to see. Rules not listed here default to a generic Pass.
+// A couple are scripted to N/A to demonstrate that lane too.
+const SCRIPTED_FINDINGS: Record<string, {
+  status: RuleStatus;
+  finding: string;
+  resolvesAtAttempt?: number;
+  resolvedFinding?: string;
+}> = {
+  "QA-TEMP-04": {
+    status: "Fail",
+    finding: `Embedded reviewer comment still present in the document text ("Why are hours remaining the same?") -- all correspondence with the BCBA must be removed before finalizing.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `No embedded reviewer comments or correspondence found in the document text.`,
+  },
+  "QA-HRS-06": {
+    status: "Fail",
+    finding: `97153 hours increased from 25 to 30/week with no accompanying rationale narrative for the increase.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `97153 hours increased from 25 to 30/week; rationale narrative present on Page 4.`,
+  },
+  "QA-GIP-16": {
+    status: "Fail",
+    finding: `Goal 3 (Toileting) Mastery Criteria reads "0 accidents per week" -- a zero-value endpoint must instead read "fewer than one instance."`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `All goals' Mastery Criteria use "fewer than one instance" phrasing instead of a zero-value endpoint.`,
+  },
+  "QA-CI-01": {
+    status: "Fail",
+    finding: `Clinical Interpretation reads only "Client requires ABA services to address her needs and improve her skills" -- generic boilerplate, doesn't name specific findings or interventions.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `Clinical Interpretation names specific assessment findings and ties them to the chosen interventions.`,
+  },
+  "QA-ACF-07": {
+    status: "Fail",
+    finding: `Only one testing tool (VB-MAPP) found with a dated administration -- a second, previously-used tool with its own date is required to establish old vs. new.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `Both VB-MAPP and Vineland-3 are documented with distinct administration dates.`,
+  },
+  "QA-BIP-01": {
+    status: "Fail",
+    finding: `All 4 severity ratings are documented as Mild -- at least one must be Moderate or higher, or this needs Director review.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `At least one severity rating (Aggression: Moderate) is documented above Mild.`,
+  },
+  "QA-GIP-07": {
+    status: "Fail",
+    finding: `Goal 2 (Tacting) has been open for 8 months with no rationale for continuation reviewed by Eliana on file.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `Continuation rationale for all goals open >6mo is documented and flagged for Eliana's review.`,
+  },
+  "QA-OBS-03": {
+    status: "Fail",
+    finding: `No session note on file backing the observation described on Page 3 -- forwarded to QA.`,
+    resolvesAtAttempt: 2,
+    resolvedFinding: `Session note backing the observation is now on file.`,
+  },
+  "QA-PAR-01": {
+    status: "Fail",
+    finding: `Only 1 current parent-training goal found for this authorization period; at least 3 are required.`,
+    resolvesAtAttempt: 3,
+    resolvedFinding: `3 current parent-training goals documented for this authorization period.`,
+  },
+  "QA-DS-01": { status: "N/A", finding: `Data sheets are a separate artifact (Central Reach) -- not part of the TP document itself.` },
+  "QA-BIO-16": { status: "N/A", finding: `No live Central Reach integration -- cannot verify school name against Central Reach from this document alone.` },
+  "QA-PPI-01": { status: "N/A", finding: `No live Central Reach integration -- cannot verify patient info against Central Reach from this document alone.` },
+};
+
+function findingForRule(rule: Rule, attemptNumber: number): RuleResult {
+  const page = CATEGORY_PAGE[rule.category] ?? 1;
+  const scripted = SCRIPTED_FINDINGS[rule.id];
+  if (scripted) {
+    const resolved = scripted.resolvesAtAttempt !== undefined && attemptNumber >= scripted.resolvesAtAttempt;
+    return {
+      ruleId: rule.id,
+      status: resolved ? "Pass" : scripted.status,
+      finding: resolved ? (scripted.resolvedFinding ?? scripted.finding) : scripted.finding,
+      pages: [page],
+    };
+  }
+  return { ruleId: rule.id, status: "Pass", finding: "Reviewed against document text — no issues found.", pages: [page] };
+}
+
+/** The mock rule-checking flow: every active rule that applies to this
+ * patient's payor (universal + payor-specific), run against a given
+ * attempt number so scripted findings can resolve across revisions. */
+export function runMockReview(payor: Payor, attemptNumber: number): RuleResult[] {
+  return rules
+    .filter(r => r.active && (r.payor === "ALL" || r.payor === payor))
+    .map(r => findingForRule(r, attemptNumber));
+}
+
+export function scoreResults(results: RuleResult[]): { score: number; auditResult: "Pass" | "Fail" } {
+  const nonNa = results.filter(r => r.status !== "N/A");
+  const passed = nonNa.filter(r => r.status === "Pass").length;
+  const score = nonNa.length ? Math.round((passed / nonNa.length) * 100) : 100;
+  return { score, auditResult: score >= 85 ? "Pass" : "Fail" };
+}
+
+function buildVersion(
+  version: number, patient: string, dob: string, memberId: string, payor: Payor,
+  finalizedAt: string, assessmentDate: string, reviewerId: string,
+  pdfOpts: Parameters<typeof makePdf>[3], reviewed: boolean, maturity: number,
+): PlanVersion {
+  const pdf = makePdf(patient, dob, memberId, pdfOpts);
+  const results = runMockReview(payor, maturity);
+  const { score, auditResult } = scoreResults(results);
+  return { version, finalizedAt, assessmentDate, reviewerId, pdf, results, score, auditResult, reviewed };
+}
+
 export const initialPatients: Patient[] = [
   {
     refId: "TP-2026-0812", name: "Ethan Ramirez", payor: "Healthfirst",
     versions: [
+      buildVersion(1, "Ethan Ramirez", "2019-04-12", "HF-8827321", "Healthfirst",
+        daysAgo(120), daysAgo(125), "u2",
+        { fbaDate: daysAgo(140), authStart: daysAgo(120), authEnd: daysAgo(120 - 180), bipIncluded: false, bcbaSigDate: daysAgo(120), parentSigDate: daysAgo(115) },
+        true, 1),
+      buildVersion(2, "Ethan Ramirez", "2019-04-12", "HF-8827321", "Healthfirst",
+        daysAgo(35), daysAgo(40), "u2",
+        { fbaDate: daysAgo(118), authStart: daysAgo(35), authEnd: daysAgo(35 - 180), bipIncluded: false, bcbaSigDate: daysAgo(35), parentSigDate: daysAgo(30) },
+        false, 2),
+    ],
+    // Demo patient: 2 draft attempts already in progress against the not-yet-finalized V3 slot.
+    uAttempts: [
       {
-        version: 1, uploadedAt: daysAgo(120), assessmentDate: daysAgo(125), reviewerId: "u2",
-        pdf: makePdf("Ethan Ramirez", "2019-04-12", "HF-8827321", {
-          fbaDate: daysAgo(140), authStart: daysAgo(120), authEnd: daysAgo(120 - 180),
-          hoursNote: "97153 (Direct Therapy): 30 hours/week (no unit count provided)",
-          bipIncluded: false, bcbaSigDate: daysAgo(120), parentSigDate: daysAgo(115),
-        }),
-        results: [], score: 71, auditResult: "Fail", reviewed: true,
+        id: "TP-2026-0812-u1", attemptNumber: 1, uploadedAt: daysAgo(5), assessmentDate: daysAgo(8), reviewerId: "u2", status: "complete",
+        pdf: makePdf("Ethan Ramirez", "2019-04-12", "HF-8827321", { fbaDate: daysAgo(20), authStart: daysAgo(5), authEnd: daysAgo(5 - 180), bipIncluded: false, bcbaSigDate: daysAgo(5), parentSigDate: daysAgo(3) }),
+        ...(() => { const results = runMockReview("Healthfirst", 1); return { results, ...scoreResults(results) }; })(),
       },
       {
-        version: 2, uploadedAt: daysAgo(35), assessmentDate: daysAgo(40), reviewerId: "u2",
-        pdf: makePdf("Ethan Ramirez", "2019-04-12", "HF-8827321", {
-          fbaDate: daysAgo(118), authStart: daysAgo(35), authEnd: daysAgo(35 - 180),
-          hoursNote: "97153 (Direct Therapy): 40 hours/week (no unit count provided)",
-          bipIncluded: false, bcbaSigDate: daysAgo(35), parentSigDate: daysAgo(30),
-        }),
-        results: [], score: 78, auditResult: "Fail", reviewed: false,
+        id: "TP-2026-0812-u2", attemptNumber: 2, uploadedAt: daysAgo(1), assessmentDate: daysAgo(8), reviewerId: "u2", status: "complete",
+        pdf: makePdf("Ethan Ramirez", "2019-04-12", "HF-8827321", { fbaDate: daysAgo(20), authStart: daysAgo(1), authEnd: daysAgo(1 - 180), bipIncluded: false, bcbaSigDate: daysAgo(1), parentSigDate: daysAgo(1) }),
+        ...(() => { const results = runMockReview("Healthfirst", 2); return { results, ...scoreResults(results) }; })(),
       },
     ],
   },
   {
     refId: "TP-2025-0102", name: "Sofia Chen-Alvarez", payor: "Emblem",
     versions: [
-      {
-        version: 1, uploadedAt: daysAgo(200), assessmentDate: daysAgo(205), reviewerId: "u3",
-        pdf: makePdf("Sofia Chen-Alvarez", "2018-11-03", "EM-4491082", {
-          fbaDate: daysAgo(215), authStart: daysAgo(200), authEnd: daysAgo(200 - 180),
-          bipIncluded: true, bcbaSigDate: daysAgo(200), parentSigDate: daysAgo(198),
-        }),
-        results: [], score: 92, auditResult: "Pass", reviewed: true,
-      },
-      {
-        version: 2, uploadedAt: daysAgo(18), assessmentDate: daysAgo(22), reviewerId: "u3",
-        pdf: makePdf("Sofia Chen-Alvarez", "2018-11-03", "EM-4491082", {
-          fbaDate: daysAgo(30), authStart: daysAgo(18), authEnd: daysAgo(18 - 180),
-          bipIncluded: true, bcbaSigDate: daysAgo(18), parentSigDate: daysAgo(15),
-        }),
-        results: [], score: 96, auditResult: "Pass", reviewed: true,
-      },
+      buildVersion(1, "Sofia Chen-Alvarez", "2018-11-03", "EM-4491082", "Emblem",
+        daysAgo(200), daysAgo(205), "u3",
+        { fbaDate: daysAgo(215), authStart: daysAgo(200), authEnd: daysAgo(200 - 180), bipIncluded: true, bcbaSigDate: daysAgo(200), parentSigDate: daysAgo(198) },
+        true, 1),
+      buildVersion(2, "Sofia Chen-Alvarez", "2018-11-03", "EM-4491082", "Emblem",
+        daysAgo(18), daysAgo(22), "u3",
+        { fbaDate: daysAgo(30), authStart: daysAgo(18), authEnd: daysAgo(18 - 180), bipIncluded: true, bcbaSigDate: daysAgo(18), parentSigDate: daysAgo(15) },
+        true, 3),
     ],
+    uAttempts: [],
   },
   {
     refId: "TP-2026-0155", name: "Marcus Okonkwo", payor: "Anthem",
     versions: [
-      {
-        version: 1, uploadedAt: daysAgo(10), assessmentDate: daysAgo(14), reviewerId: "u1",
-        pdf: makePdf("Marcus Okonkwo", "2020-07-22", "AN-7710948", {
-          fbaDate: daysAgo(60), authStart: daysAgo(10), authEnd: daysAgo(10 - 180),
-          bipIncluded: true, bcbaSigDate: daysAgo(10), parentSigDate: daysAgo(8),
-        }),
-        results: [], score: 88, auditResult: "Pass", reviewed: false,
-      },
+      buildVersion(1, "Marcus Okonkwo", "2020-07-22", "AN-7710948", "Anthem",
+        daysAgo(10), daysAgo(14), "u1",
+        { fbaDate: daysAgo(60), authStart: daysAgo(10), authEnd: daysAgo(10 - 180), bipIncluded: true, bcbaSigDate: daysAgo(10), parentSigDate: daysAgo(8) },
+        false, 2),
     ],
+    uAttempts: [],
   },
   {
     refId: "TP-2026-0201", name: "Ava Nakamura", payor: "Molina",
     versions: [
-      {
-        version: 1, uploadedAt: daysAgo(6), assessmentDate: daysAgo(9), reviewerId: "u5",
-        pdf: makePdf("Ava Nakamura", "2017-01-30", "MO-3391172", {
-          fbaDate: daysAgo(200), authStart: daysAgo(6), authEnd: daysAgo(6 - 240),
-          hoursNote: "97153 (Direct Therapy): recommended but hours not specified",
-          bipIncluded: false, bcbaSigDate: daysAgo(6),
-        }),
-        results: [], score: 54, auditResult: "Fail", reviewed: false,
-      },
+      buildVersion(1, "Ava Nakamura", "2017-01-30", "MO-3391172", "Molina",
+        daysAgo(6), daysAgo(9), "u5",
+        { fbaDate: daysAgo(200), authStart: daysAgo(6), authEnd: daysAgo(6 - 240), hoursNote: "97153 (Direct Therapy): recommended but hours not specified", bipIncluded: false, bcbaSigDate: daysAgo(6) },
+        false, 1),
     ],
+    uAttempts: [],
   },
   {
     refId: "TP-2026-0290", name: "Liam O'Sullivan", payor: "Aetna",
     versions: [
-      {
-        version: 1, uploadedAt: daysAgo(3), assessmentDate: daysAgo(5), reviewerId: "u2",
-        pdf: makePdf("Liam O'Sullivan", "2021-08-14", "AE-2298811", {
-          fbaDate: daysAgo(20), authStart: daysAgo(3), authEnd: daysAgo(3 - 180),
-          bipIncluded: true, bcbaSigDate: daysAgo(3), parentSigDate: daysAgo(2),
-        }),
-        results: [], score: 95, auditResult: "Pass", reviewed: true,
-      },
+      buildVersion(1, "Liam O'Sullivan", "2021-08-14", "AE-2298811", "Aetna",
+        daysAgo(3), daysAgo(5), "u2",
+        { fbaDate: daysAgo(20), authStart: daysAgo(3), authEnd: daysAgo(3 - 180), bipIncluded: true, bcbaSigDate: daysAgo(3), parentSigDate: daysAgo(2) },
+        true, 3),
     ],
+    uAttempts: [],
   },
   {
     refId: "TP-2026-0304", name: "Aaliyah Washington", payor: "Cigna",
     versions: [
-      {
-        version: 1, uploadedAt: daysAgo(60), assessmentDate: daysAgo(65), reviewerId: "u4",
-        pdf: makePdf("Aaliyah Washington", "2019-12-05", "CG-5528190", {
-          fbaDate: daysAgo(75), authStart: daysAgo(60), authEnd: daysAgo(60 - 180),
-          bipIncluded: true, bcbaSigDate: daysAgo(60), parentSigDate: daysAgo(58),
-        }),
-        results: [], score: 84, auditResult: "Pass", reviewed: true,
-      },
-      {
-        version: 2, uploadedAt: daysAgo(1), assessmentDate: daysAgo(4), reviewerId: "u4",
-        pdf: makePdf("Aaliyah Washington", "2019-12-05", "CG-5528190", {
-          fbaDate: daysAgo(15), authStart: daysAgo(1), authEnd: daysAgo(1 - 180),
-          bipIncluded: true, bcbaSigDate: daysAgo(1), parentSigDate: daysAgo(1),
-        }),
-        results: [], score: 91, auditResult: "Pass", reviewed: false,
-      },
+      buildVersion(1, "Aaliyah Washington", "2019-12-05", "CG-5528190", "Cigna",
+        daysAgo(60), daysAgo(65), "u4",
+        { fbaDate: daysAgo(75), authStart: daysAgo(60), authEnd: daysAgo(60 - 180), bipIncluded: true, bcbaSigDate: daysAgo(60), parentSigDate: daysAgo(58) },
+        true, 2),
+      buildVersion(2, "Aaliyah Washington", "2019-12-05", "CG-5528190", "Cigna",
+        daysAgo(1), daysAgo(4), "u4",
+        { fbaDate: daysAgo(15), authStart: daysAgo(1), authEnd: daysAgo(1 - 180), bipIncluded: true, bcbaSigDate: daysAgo(1), parentSigDate: daysAgo(1) },
+        false, 3),
     ],
+    uAttempts: [],
   },
   {
     refId: "TP-2026-0322", name: "Noah Blackwell", payor: "Healthfirst",
     versions: [
-      {
-        version: 1, uploadedAt: daysAgo(45), assessmentDate: daysAgo(50), reviewerId: "u1",
-        pdf: makePdf("Noah Blackwell", "2020-03-19", "HF-9987214", {
-          fbaDate: daysAgo(60), authStart: daysAgo(45), authEnd: daysAgo(45 - 180),
-          bipIncluded: false, bcbaSigDate: daysAgo(45), parentSigDate: daysAgo(43),
-        }),
-        results: [], score: 82, auditResult: "Pass", reviewed: true,
-      },
+      buildVersion(1, "Noah Blackwell", "2020-03-19", "HF-9987214", "Healthfirst",
+        daysAgo(45), daysAgo(50), "u1",
+        { fbaDate: daysAgo(60), authStart: daysAgo(45), authEnd: daysAgo(45 - 180), bipIncluded: false, bcbaSigDate: daysAgo(45), parentSigDate: daysAgo(43) },
+        true, 3),
     ],
+    uAttempts: [],
   },
 ];
 
-// Generate rule results for each version based on plan data
-function generateResults(patient: Patient, version: PlanVersion): RuleResult[] {
-  const p = patient;
-  const v = version;
-  const findingsFor: Record<string, () => RuleResult> = {
-    "R-001": () => ({ ruleId: "R-001", status: "Pass", pages: [1], finding: `Patient name "${p.name}" is present on the cover page.` }),
-    "R-002": () => ({ ruleId: "R-002", status: "Pass", pages: [1, 2], finding: `DOB matches on cover page and diagnosis section.` }),
-    "R-003": () => ({ ruleId: "R-003", status: "Pass", pages: [1], finding: `Insurance member ID documented on cover page.` }),
-    "R-010": () => ({ ruleId: "R-010", status: "Pass", pages: [2], finding: `DSM-5 diagnosis of Autism Spectrum Disorder (F84.0) is documented.` }),
-    "R-011": () => ({ ruleId: "R-011", status: "Pass", pages: [2], finding: `Diagnosing provider Dr. R. Kaplan, MD (NPI 1487293620) is listed.` }),
-    "R-020": () => {
-      const fbaAge = Math.round((new Date(v.uploadedAt).getTime() - new Date(v.pdf[2].body[0].match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? v.uploadedAt).getTime()) / 86400000);
-      const pass = fbaAge <= 90;
-      return { ruleId: "R-020", status: pass ? "Pass" : "Fail", pages: [3], finding: pass
-        ? `FBA is dated ${fbaAge} days prior to plan upload — within the 90-day requirement.`
-        : `FBA dated ${fbaAge} days prior to plan upload, exceeds the 90-day requirement.` };
-    },
-    "R-021": () => ({ ruleId: "R-021", status: "Pass", pages: [3], finding: `VB-MAPP (82/170), Vineland-3 (SS 68), and ABLLS-R scores are documented.` }),
-    "R-022": () => ({ ruleId: "R-022", status: "Pass", pages: [3], finding: `Caregiver interview with priorities documented.` }),
-    "R-030": () => ({ ruleId: "R-030", status: "Pass", pages: [5], finding: `Goals are written in measurable terms (frequency, accuracy percentages).` }),
-    "R-031": () => ({ ruleId: "R-031", status: "Pass", pages: [5], finding: `Mastery criteria present for all 4 goals (e.g., "80% accuracy across 3 consecutive sessions").` }),
-    "R-032": () => ({ ruleId: "R-032", status: "Pass", pages: [5], finding: `Baseline data documented for each goal.` }),
-    "R-033": () => ({ ruleId: "R-033", status: "Pass", pages: [5], finding: `Short-term objectives noted as linked to long-term goals.` }),
-    "R-040": () => {
-      const hoursLine = v.pdf[3].body[0];
-      const hasUnits = /unit/i.test(hoursLine) && !/no unit/i.test(hoursLine);
-      const specified = !/not specified/i.test(hoursLine);
-      const pass = hasUnits && specified;
-      return { ruleId: "R-040", status: pass ? "Pass" : "Fail", pages: [4], finding: pass
-        ? `97153 hours and unit count documented on Page 4.`
-        : specified
-          ? `97153 hours documented on Page 4, but no corresponding unit count is included anywhere in the plan.`
-          : `97153 recommended on Page 4 but weekly hours not specified.` };
-    },
-    "R-041": () => ({ ruleId: "R-041", status: "Pass", pages: [4], finding: `97155 documented at 4 hours/week (16 units).` }),
-    "R-042": () => ({ ruleId: "R-042", status: "Pass", pages: [4], finding: `97156 parent training documented at 1 hour/week.` }),
-    "R-043": () => ({ ruleId: "R-043", status: "Pass", pages: [4], finding: `Service location specified: Home and Clinic.` }),
-    "R-050": () => {
-      const bip = /Behavior Intervention Plan/i.test(v.pdf[5].title);
-      return { ruleId: "R-050", status: bip ? "Pass" : "Fail", pages: [6], finding: bip
-        ? `Behavior Intervention Plan is included with target behaviors and strategies.`
-        : `Interfering behaviors are noted on Page 6, but no full Behavior Intervention Plan is documented.` };
-    },
-    "R-051": () => {
-      const bip = /Behavior Intervention Plan/i.test(v.pdf[5].title);
-      return { ruleId: "R-051", status: bip ? "Pass" : "N/A", pages: [6], finding: bip
-        ? `Antecedent strategies documented for aggression and elopement.`
-        : `No BIP required per note on Page 6.` };
-    },
-    "R-052": () => {
-      const bip = /Behavior Intervention Plan/i.test(v.pdf[5].title);
-      return { ruleId: "R-052", status: bip ? "Pass" : "N/A", pages: [6], finding: bip
-        ? `Replacement behaviors identified (PECS mand for break; verbal "walk with me").`
-        : `Not applicable — no formal BIP present.` };
-    },
-    "R-060": () => ({ ruleId: "R-060", status: "Pass", pages: [1], finding: `Authorization period clearly stated on Page 1.` }),
-    "R-061": () => {
-      const line = v.pdf[0].body[5];
-      const m = line.match(/(\d{4}-\d{2}-\d{2}).+?(\d{4}-\d{2}-\d{2})/);
-      if (!m) return { ruleId: "R-061", status: "N/A", pages: [1], finding: "Unable to parse authorization dates." };
-      const days = Math.abs((new Date(m[2]).getTime() - new Date(m[1]).getTime()) / 86400000);
-      const pass = days <= 186;
-      return { ruleId: "R-061", status: pass ? "Pass" : "Fail", pages: [1], finding: pass
-        ? `Authorization period spans ${Math.round(days)} days (within 6 months).`
-        : `Authorization period spans ${Math.round(days)} days, exceeds the 6-month maximum.` };
-    },
-    "R-070": () => {
-      const line = v.pdf[6].body[0];
-      const pass = !/missing/i.test(line);
-      return { ruleId: "R-070", status: pass ? "Pass" : "Fail", pages: [7], finding: pass
-        ? `BCBA signature present and dated on Page 7.`
-        : `BCBA signature is missing on Page 7.` };
-    },
-    "R-071": () => {
-      const line = v.pdf[6].body[2];
-      const pass = !/missing/i.test(line);
-      return { ruleId: "R-071", status: pass ? "Pass" : "Fail", pages: [7], finding: pass
-        ? `Parent/guardian signature present and dated within 30 days of BCBA signature.`
-        : `Parent/guardian signature is missing on Page 7.` };
-    },
-    "R-072": () => ({ ruleId: "R-072", status: "Pass", pages: [7], finding: `Credential (BCBA-D) and certification #1-23-45678 listed.` }),
-  };
-
-  return rules.filter(r => r.active).map(r => findingsFor[r.id]?.() ?? {
-    ruleId: r.id, status: "Pass" as RuleStatus, pages: [1], finding: `Reviewed and passed.`
-  });
-}
-
-// Populate results
-initialPatients.forEach(p => {
-  p.versions.forEach(v => {
-    v.results = generateResults(p, v);
-    // Recompute score
-    const nonNa = v.results.filter(r => r.status !== "N/A");
-    const passed = nonNa.filter(r => r.status === "Pass").length;
-    v.score = Math.round((passed / nonNa.length) * 100);
-    v.auditResult = v.score >= 85 ? "Pass" : "Fail";
-  });
-});
-
 export const auditLog = [
-  { at: "2026-07-14 14:32", user: "M. Chen", action: "Edited rule R-020 (updated question wording)", refId: "" },
+  { at: "2026-07-14 14:32", user: "M. Chen", action: "Edited rule QA-GIP-16 (updated notes)", refId: "" },
   { at: "2026-07-14 11:18", user: "S. Patel", action: "Marked TP-2026-0812 v2 as Reviewed", refId: "TP-2026-0812" },
-  { at: "2026-07-13 16:47", user: "J. Rivera", action: "Overrode answer for R-033 (Pass → N/A)", refId: "TP-2025-0102" },
-  { at: "2026-07-13 09:22", user: "A. Thompson", action: "Uploaded new version (v1)", refId: "TP-2026-0155" },
-  { at: "2026-07-12 15:03", user: "L. Nguyen", action: "Created new rule R-072", refId: "" },
-  { at: "2026-07-12 10:41", user: "M. Chen", action: "Deactivated rule R-999 (deprecated)", refId: "" },
+  { at: "2026-07-13 16:47", user: "J. Rivera", action: "Overrode answer for QA-GIP-06 (Pass → N/A)", refId: "TP-2025-0102" },
+  { at: "2026-07-13 09:22", user: "A. Thompson", action: "Uploaded new draft attempt (U1)", refId: "TP-2026-0155" },
+  { at: "2026-07-12 15:03", user: "L. Nguyen", action: "Created new rule QA-SIG-06", refId: "" },
+  { at: "2026-07-12 10:41", user: "M. Chen", action: "Deactivated rule QA-GIP-15 (blocked, out of scope for V1)", refId: "" },
   { at: "2026-07-11 13:29", user: "S. Patel", action: "Sent correction email to reviewer", refId: "TP-2026-0201" },
   { at: "2026-07-10 17:12", user: "J. Rivera", action: "Marked TP-2026-0304 v1 as Reviewed", refId: "TP-2026-0304" },
-  { at: "2026-07-10 08:55", user: "A. Thompson", action: "Uploaded new version (v2)", refId: "TP-2026-0812" },
+  { at: "2026-07-10 08:55", user: "A. Thompson", action: "Finalized draft attempt as v2", refId: "TP-2026-0812" },
   { at: "2026-07-09 14:07", user: "M. Chen", action: "Edited notification default CC list", refId: "" },
 ];
 

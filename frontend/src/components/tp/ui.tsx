@@ -32,6 +32,34 @@ export function CategoryTag({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Surfaces the routing/lane concept wherever a rule result renders: which
+ * lane a failing/uncertain result routes to (BCBA-fix vs. Facilitator-
+ * assign), plus the Director/QA/Coordinator/General sub-tag under
+ * Facilitator-assign. Mock/placeholder values for now -- this is a real
+ * place in the UI for it, not real routing logic yet (per AGENT_STATE.md,
+ * two-lane output routing with tags is one of the larger unbuilt pieces). */
+export function LaneTag({ lane, tag, className }: {
+  lane: "BCBA-fix" | "Facilitator-assign";
+  tag?: "Director" | "QA" | "Coordinator" | "General" | null;
+  className?: string;
+}) {
+  return (
+    <span className={cn("inline-flex items-center gap-1", className)}>
+      <span className={cn(
+        "inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+        lane === "BCBA-fix" ? "bg-violet-50 text-violet-700 border-violet-200" : "bg-cyan-50 text-cyan-700 border-cyan-200",
+      )}>
+        {lane === "BCBA-fix" ? "BCBA Fix" : "Facilitator Assign"}
+      </span>
+      {tag && (
+        <span className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-slate-100 text-slate-600 border-slate-200">
+          {tag}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 pb-6 border-b border-slate-200">

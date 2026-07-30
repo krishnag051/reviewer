@@ -14,7 +14,7 @@ function Dashboard() {
   const reviewed = passed + failed;
 
   const recent = [...versions]
-    .sort((a, b) => b.v.uploadedAt.localeCompare(a.v.uploadedAt))
+    .sort((a, b) => b.v.finalizedAt.localeCompare(a.v.finalizedAt))
     .slice(0, 8);
 
   const cards = [
@@ -86,7 +86,7 @@ function Dashboard() {
                       <td className="px-4 py-3 text-slate-600 font-mono text-xs">{p.refId}</td>
                       <td className="px-4 py-3 text-slate-600">v{v.version}</td>
                       <td className="px-4 py-3 text-slate-600">{rev.name}, {rev.credentials}</td>
-                      <td className="px-4 py-3 text-slate-600">{v.uploadedAt}</td>
+                      <td className="px-4 py-3 text-slate-600">{v.finalizedAt}</td>
                       <td className="px-4 py-3"><StatusBadge status={v.auditResult} /></td>
                     </tr>
                   );

@@ -18,6 +18,11 @@ function EmailPage() {
   const { patients } = useTP();
   const patient = patients.find(p => p.refId === refId);
   if (!patient) throw notFound();
+  // Same edge case as plans.$refId.index.tsx: a patient can have zero
+  // finalized versions (nothing finalized yet). This page only makes
+  // sense once a real version exists, so a direct/stale link here for a
+  // draft-only patient bounces back rather than crashing on a missing version.
+  if (patient.versions.length === 0) throw notFound();
   const version = [...patient.versions].sort((a, b) => b.version - a.version)[0];
   const reviewer = reviewers.find(r => r.id === version.reviewerId)!;
 
@@ -43,7 +48,7 @@ function EmailPage() {
       grouped = Object.entries(bySection).map(([cat, items]) => {
         const lines = items.map(f => {
           const rule = allRules.find(r => r.id === f.ruleId)!;
-          return `  • [${rule.id}] ${rule.question}\n    Finding: ${f.finding}\n    Reference: p.${f.pages.join(", p.")}`;
+          return `  • [${rule.id}] ${rule.description}\n    Finding: ${f.finding}\n    Reference: p.${f.pages.join(", p.")}`;
         }).join("\n\n");
         return `${cat}\n${lines}`;
       }).join("\n\n");
@@ -53,7 +58,7 @@ function EmailPage() {
       grouped = Object.entries(byPage).sort((a, b) => Number(a[0]) - Number(b[0])).map(([p, items]) => {
         const lines = items.map(f => {
           const rule = allRules.find(r => r.id === f.ruleId)!;
-          return `  • [${rule.id}] ${rule.question}\n    Finding: ${f.finding}`;
+          return `  • [${rule.id}] ${rule.description}\n    Finding: ${f.finding}`;
         }).join("\n\n");
         return `Page ${p}\n${lines}`;
       }).join("\n\n");

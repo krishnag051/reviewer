@@ -26,7 +26,7 @@ function Reports() {
       const label = `W-${4 - i}`;
       const from = i * 7, to = (i + 1) * 7;
       const inRange = versions.filter(v => {
-        const days = Math.abs((new Date(v.uploadedAt).getTime() - new Date("2026-07-15").getTime()) / 86400000);
+        const days = Math.abs((new Date(v.finalizedAt).getTime() - new Date("2026-07-15").getTime()) / 86400000);
         return days >= from && days < to;
       });
       const passed = inRange.filter(v => v.auditResult === "Pass").length;
