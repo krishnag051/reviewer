@@ -1,0 +1,116 @@
+{
+  "n_runs_completed": 5,
+  "n_runs_requested": 5,
+  "stopped_early_on_call_cap": false,
+  "total_api_calls": 10,
+  "estimated_cost": 0.9803299999999999,
+  "per_rule": {
+    "QA-ACF-07": {
+      "results": [
+        "uncertain",
+        "pass",
+        "uncertain",
+        "uncertain",
+        "uncertain"
+      ],
+      "counts": {
+        "uncertain": 4,
+        "pass": 1
+      },
+      "unanimous": false
+    },
+    "QA-BIO-06": {
+      "results": [
+        "pass",
+        "pass",
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "counts": {
+        "pass": 5
+      },
+      "unanimous": true
+    },
+    "QA-BIP-07": {
+      "results": [
+        "fail",
+        "fail",
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "counts": {
+        "fail": 5
+      },
+      "unanimous": true
+    },
+    "QA-GIP-06": {
+      "results": [
+        "uncertain",
+        "uncertain",
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "counts": {
+        "uncertain": 2,
+        "fail": 3
+      },
+      "unanimous": false
+    },
+    "QA-GIP-10": {
+      "results": [
+        "fail",
+        "fail",
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "counts": {
+        "fail": 5
+      },
+      "unanimous": true
+    },
+    "QA-GIP-16": {
+      "results": [
+        "fail",
+        "fail",
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "counts": {
+        "fail": 5
+      },
+      "unanimous": true
+    },
+    "QA-PAR-01": {
+      "results": [
+        "uncertain",
+        "fail",
+        "uncertain",
+        "uncertain",
+        "uncertain"
+      ],
+      "counts": {
+        "uncertain": 4,
+        "fail": 1
+      },
+      "unanimous": false
+    },
+    "QA-TEMP-03": {
+      "results": [
+        "fail",
+        "fail",
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "counts": {
+        "fail": 5
+      },
+      "unanimous": true
+    }
+  }
+}

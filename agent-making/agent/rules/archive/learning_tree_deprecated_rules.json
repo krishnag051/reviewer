@@ -1,0 +1,17 @@
+{
+  "_archived_reason": "Retired per Project1_Full_Build_Scope.docx (2026-07-27 round): the Learning Tree concept is confirmed dead scope and is being removed from source checklists. Both rules below were already inactive (deprecated per an earlier Section 14 note) and their entire description IS the Learning-Tree comparison -- nothing independently meaningful remains once that clause is removed, so they were moved here rather than edited in place. Not deleted -- kept for history in case Learning Tree content is ever revived in a different form.",
+  "rules": [
+    {
+      "rule_id": "QA-BIO-04",
+      "category": "Biopsychosocial",
+      "description": "Developmental history compared with Learning Tree",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "Deprecated concept per Section 14 - do not implement.",
+      "action_lane": null,
+      "action_tag": null,
+      "active": false
+    }
+  ]
+}

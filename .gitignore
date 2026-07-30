@@ -24,7 +24,7 @@ node_modules/
 frontend/dist/
 .vite/
 *.local
-
+agent-making/.env
 # --- Editors / OS ---
 .vscode/*
 !.vscode/extensions.json
