@@ -1,5 +1,97 @@
 # Frontend State — TP Review System (React / TanStack Start)
 
+## 🛑 HARD RULE (2026-07-31, permanent, effective immediately) — NO REAL API CALLS WITHOUT EXPLICIT PER-INSTANCE PERMISSION
+
+> Hard rule, effective immediately and permanent: no real API calls without my explicit, per-instance permission
+>
+> Real Anthropic API credits are being spent by a paying account, and the last round's full real-content backend test suite (multiple files, real agent calls per test case, self-consistency doubling/tripling each one) burned a large amount of money without that cost being visible or approved in advance. That cannot happen again.
+>
+> Going forward:
+>
+> Never run anything that makes a real call to the Anthropic API — not a live document review, not a "real content" test file, not a diagnostic probe, not a background verification pass — without stopping first and telling me exactly what you want to run and why, including your best estimate of how many calls/how much it will cost. Wait for explicit approval before running it.
+> If a task seems to need real-API verification to be considered "done," don't run it yourself. Tell me the exact command to run, and I will run it myself, or explicitly tell you to proceed. Default to reporting code as complete-but-unverified-against-real-API rather than spending money to verify it without asking.
+> Mock/synthetic tests, tsc, linters, and anything that costs nothing stay exactly as encouraged as before — this rule is only about real Anthropic API spend, not about testing rigor in general. Keep doing thorough non-live verification; just stop short of the real-API step and ask.
+
+As of Round 42 this frontend is no longer 100% mock — see §0 immediately below for what's actually real now. A real click-through (frontend → real backend → real agent) still makes a real Anthropic API call the moment an upload's background pipeline actually runs to completion — treat any request to exercise that path the same as a live-API request: ask first. See the identical copy of this rule in the root `CLAUDE.md`, `agent-making/AGENT_STATE.md`, and `agent-making/INTEGRATION_PLAN.md`.
+
+---
+
+## 0. Round 41 / Round 42 update — what's actually real now
+
+The rest of this document (§1 onward) was written before Round 41 and
+describes the ORIGINAL all-mock architecture. It's kept below because most
+of it is still accurate for the surfaces it hasn't touched (Rules Studio,
+Reports, Dashboard, Admin Settings, correction email) — but where it
+conflicts with this section, THIS section wins.
+
+**Real (hits the actual FastAPI backend over real HTTP, real JWT auth):**
+- Login (`login.tsx`, `auth-context.tsx`) — real `POST /auth/login` +
+  `GET /auth/me`, JWT in `localStorage`, real per-user role
+  (admin/user/developer) read from the live DB, not a client-side toggle.
+  The old "View as: Admin / Standard User" mock switch described in §2/§5
+  below no longer exists.
+- `plans.index.tsx`, `plans.$refId.index.tsx` — real `GET /patients`,
+  `GET /patients/:id/versions`, `GET /versions/:id`, `GET /uploads/:id`.
+  Round 42 adds the real PDF pane (`GET /uploads/:id/file`, via
+  `PdfViewer.tsx`) alongside the real rule results, for both a draft's
+  latest upload and a finalized version's final upload.
+- `dev.tsx` — real diagnostics, gated on the real `developer` role.
+- `upload.tsx` — Round 42: real `POST /patients` (new-patient mode),
+  real `POST /patients/:id/versions`, real `POST /versions/:id/uploads`
+  (the actual pipeline trigger). The old BCBA/Reviewer selector is gone —
+  the real `VersionCreate` body has no `reviewer_id` field at creation time
+  (that's a Stage 3 `PATCH /versions/:id` concern), so there was nothing
+  real left for it to do. **Round 51: a second, mandatory file — the
+  "supporting document" — is now required alongside the TP in both modes;
+  submit is disabled until both are selected. Storage/display only (see
+  below), no parsing.**
+- `plans.$refId.index.tsx` — Round 43 (Stage 3) added real override
+  (`PATCH /rule_results/:id`) and real finalize (`POST /uploads/:id/
+  finalize`, typed reference_id confirmation) — this page is no longer
+  read-only; it's the correction below "Still mock" further down in this
+  doc, which was never updated when Stage 3 landed. **Round 51** adds a
+  "Helping Document" button (opens `GET /uploads/:id/supporting-file` in a
+  new tab, never inline) for both draft and finalized views.
+- `rules.tsx` (Rules Studio) — **Round 50**: real `GET/POST/PATCH /rules`
+  + `/rules/:id/(de)activate`, real payor-scoped metadata. Editing here is
+  metadata-only — see §4 below, itself now partially stale, corrected here:
+  Rules Studio is real, not mock.
+- `real-data.ts` / `api-client.ts` — the only two files that know the
+  backend's real route shapes; every real hook/fetch in the app goes
+  through them.
+
+**Still mock** (§1-§5 below describe these accurately, EXCEPT §4's Rules
+Studio section, superseded above): Reports, Dashboard's activity feed for
+anything not covered above, Admin Settings' non-user-provisioning tabs
+(Organization/Notifications/Integrations/Billing), correction email send,
+mark-reviewed. "Escalate to BCBA" on the review page stays a toast-only
+placeholder (no backend lane-routing system exists).
+
+Not yet exercised for real by this frontend's own automated verification,
+by design: a real upload actually completing its pipeline run (zero
+Anthropic credit, per the hard rule above) — see
+`src/test/lifecycle.test.tsx`'s Round 42 wiring test, which proves the
+request/response shape using content the pipeline rejects at the parse
+step, before it would ever reach the real agent. (A real end-to-end run
+was later approved and completed in Round 48 — see that round's report;
+this doc's "not yet exercised" caveat is about this file's own automated
+test suite, not the system overall.)
+
+**Round 51 — mandatory supporting document (Mrs. Ungar's confirmed
+requirement).** Every real upload now requires a second file, alongside
+the TP, in both new-patient and existing-patient flows — no exceptions.
+Stored and retained permanently, exactly like the TP's own file (same
+backend lifecycle, see `CLAUDE.md`). **Currently display-only**: a
+"Helping Document" button on the review page opens the real file in a new
+browser tab via `GET /uploads/:id/supporting-file` — it is never rendered
+inline (the main PDF/rule-results area is untouched), never parsed, and
+not fed into `review_treatment_plan` or any part of the rule-checking
+pipeline. Extraction/sub-agent consumption of this document is planned for
+a future round, not yet built — don't describe this document as
+influencing any rule result today.
+
+---
+
 Cold-start reference for this frontend. Written 2026-07-30. If you're a
 future Claude Code session (or a human) picking this up with no memory of
 how it got here, this document is meant to be enough on its own — you
@@ -81,20 +173,29 @@ needed, none of them permanent on their own. `Patient` holds both:
   brand-new patient's first version is created via `addAttempt` →
   `finalizeAttempt`, exactly like V2, V3, etc. — no special-cased "instant
   V1" path.
-- **Overrides are V-only.** `overrideRuleStatus` only ever mutates a
-  `PlanVersion`'s results — a draft `UAttempt` gets no override affordance
-  anywhere in the UI. If a finding on a draft looks wrong, the correct
-  action is to revise the document and upload a new attempt, not override
-  a disposable draft. (See §6 for a real tension this creates against the
-  actual backend's data model — flagged, not resolved.)
-- **The "V0" label is UI-only.** `pendingSlotLabel(versionsCount)` returns
-  `"V0"` only when a patient has zero finalized versions, so pre-finalization
-  copy doesn't imply a V1 already exists (e.g. "Create Attempt U1 (against
-  V0)"). The "Finalize as V[n]" action itself never uses this — it always
-  names the real target being created, which for the first slot IS "V1".
-  This is purely a frontend string convention with **no backing data
-  record** — there is no "V0" row anywhere. That matters once wired to a
-  real backend (see §6).
+- **Overrides are draft-only (2026-07-30, corrected — this is the final
+  answer).** `overrideRuleStatus` mutates a `UAttempt`'s results, never a
+  `PlanVersion`'s — the override dropdown only renders when a draft attempt
+  is selected in the unified review page, never for a finalized version.
+  This is the real workflow: the agent flags each rule pass/fail/N-A with a
+  finding and page number, a human reviewer corrects whatever's wrong
+  while the attempt is still a draft, and finalizing locks the document —
+  no further edits after that, by override or anything else. This reverses
+  two earlier, now-wrong statements of this same decision (one said
+  finalized-only, the next said both) and now matches the backend's real
+  `override_rule_result` guard (rejects 409 once the parent upload is
+  `is_final`) — see §6, this tension is now resolved, not just flagged.
+- **The "V0" label is UI-only, and that's fine as designed — confirmed,
+  not just asserted (2026-07-30).** `pendingSlotLabel(versionsCount)`
+  returns `"V0"` only when a patient has zero finalized versions, so
+  pre-finalization copy doesn't imply a V1 already exists (e.g. "Create
+  Attempt U1 (against V0)"). The "Finalize as V[n]" action itself never
+  uses this — it always names the real target being created, which for the
+  first slot IS "V1". Checked against the real backend schema this round:
+  the backend actually assigns a real `version_number` up front, before
+  the first upload — so once wired up, the fix is replacing "V0" with that
+  real number (read from the backend, not derived client-side), not
+  restructuring anything backend-side. See §6.
 
 ---
 
@@ -127,11 +228,11 @@ viewer + full rule-results panel a finalized version does.
   tags** — identical for both, same components (`StatusBadge`,
   `CategoryTag`, `LaneTag` in `src/components/tp/ui.tsx`).
 - **One deliberate exception**: the per-rule Override dropdown (the pencil
-  icon → "Override to Pass/Fail/N-A") only renders when a finalized version
-  is selected, never for a draft — preserving the V-only override decision
-  above. This was a judgment call made when unifying the view, not
-  something the user explicitly asked for either way; flagged here in case
-  it should be revisited.
+  icon → "Override to Pass/Fail/N-A") only renders when a DRAFT attempt is
+  selected, never for a finalized version — the draft-only override
+  decision above (2026-07-30, corrected — this reverses an earlier version
+  of this same page that had it the other way around, matching the
+  override decision's own two earlier wrong statements).
 - **Processing state**: while the selected draft's `status === "processing"`,
   the header shows an "Agent reviewing…" badge in place of the pass/fail
   badge, the score line shows "Agent reviewing…" instead of a number, the
@@ -154,6 +255,7 @@ viewer + full rule-results panel a finalized version does.
 | `admin.tsx` | Organization / Users & Roles / Notifications / Integrations / Audit Log / Billing tabs. All mock: org settings and notification defaults are disabled inputs with a no-op "Save" once `role !== "Admin"`, "Connect" on any integration just shows a toast, the Users table is local `useState` seeded from `reviewers` (edits don't persist past a refresh), Audit Log and Billing render static arrays (`auditLog`, `invoices`) from `tp-mock.ts`. |
 | `reports.tsx` | Overview tab: 3 stat cards, a weekly Pass/Fail bar "chart" (plain styled `<div>`s, not a charting library — see §5), and a per-reviewer breakdown table. Trend Data tab: a reviewer/rule-code pass-rate matrix. Everything derived live from `patients` state via `useMemo` — nothing persisted, nothing paginated. |
 | `index.tsx` | Dashboard — 3 stat cards, 4 quick-action links, and a "recent activity" table of the 8 most-recently-finalized versions across all patients. |
+| `dev.tsx` | **Developer Mode (added 2026-07-30)** — diagnostics only, not part of the normal review workflow. One flat, sortable-by-date list of every draft `UAttempt` AND every finalized `PlanVersion` across every patient, each as its own row (kind, U/v label, status incl. "Processing", score, date, reviewer, and up to 4 failing rule_ids so a developer can spot what's failing without opening the patient page). Clicking a row navigates to that patient's real review page. Purely additive — reads existing `patients` state, no new mock data, no mutations, nothing rebuilt from the per-patient review page. Linked from `AppShell`'s nav (last item, `Bug` icon). |
 
 `__root.tsx` mounts `TPProvider` once at the app root (inside
 `QueryClientProvider`, wrapping `AppShell`) — this is the single source of
@@ -246,11 +348,21 @@ code implication in the current mock frontend (there's no real persistence
 to be reliable about yet), but it's recorded there — and referenced here —
 so it isn't lost before real backend work starts.
 
-That same document's reconciliation pass also flags one real, unresolved
-tension worth restating here: the frontend's confirmed **"overrides are
-V-only"** decision (§1 above) does not currently match the real backend's
-actual data model, which allows overriding a `rule_result` on *any*
-upload, finalized or not — it only conditionally recomputes the parent
-version's score if that upload happens to already be the finalized one.
-Which behavior is correct for the real product is a real product decision,
-not something either this document or the frontend code has settled.
+**Update, 2026-07-30 — the override tension is now resolved, not open.**
+An earlier round of this document flagged a real mismatch: the frontend's
+then-current "overrides are V-only" decision didn't match the backend's
+then-current behavior (which allowed overriding any upload, finalized or
+not). That's settled now, in both places, the other direction: overrides
+are **draft-only**. `overrideRuleStatus` (frontend, §1) only ever mutates a
+`UAttempt`; the real backend's `override_rule_result` now rejects (409)
+any override attempt once the parent upload is `is_final` — see
+`CLAUDE.md`'s corrected invariant and `INTEGRATION_PLAN.md` for the backend
+side. Both sides agree; nothing left open here.
+
+**Also added this round, backend-only, not reachable from this frontend at
+all**: `backend/scripts/purge_test_data.py` — a dev/test-data cleanup
+script (dry-run by default, `--yes` to actually delete) for removing
+`TP-TEST-*`-style dummy patients and their full upload/rule_result chain
+directly from the database. Deliberately has no frontend affordance and no
+API route — per this round's explicit instruction, this stays outside what
+the running application exposes.

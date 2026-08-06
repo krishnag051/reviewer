@@ -190,6 +190,16 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
         {"type": "text", "text": "Full extracted page text, in page order:"},
     ]
 
+    # Round 55: the Round 52 blanket injection of the supporting document's
+    # extracted fields into EVERY judgment call (regardless of which rule)
+    # was removed here -- replaced with the scoped, two-phase design in
+    # pipeline/supporting_doc_resolution.py. Phase 1 (this function) is
+    # clean of supporting_doc context for all ~120 rules, same as before
+    # Round 52; only a small, known set of rules that come back uncertain/
+    # not_checkable get tagged for a conditional, much smaller phase-2
+    # follow-up call that sends just their relevant supporting-doc fields --
+    # see that module's own docstring for why.
+
     for page in fields["pages"]:
         low_text_note = " [LOW TEXT — likely image-only; see rendered image if provided below]" if page.get("low_text") else ""
         content.append({

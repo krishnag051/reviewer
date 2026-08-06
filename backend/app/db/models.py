@@ -21,12 +21,27 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 # --- Native Postgres enum types (per §2: "Enums are Postgres enums") ---
-user_role_enum = Enum("admin", "standard", name="user_role")
+user_role_enum = Enum("admin", "user", "developer", name="user_role")
 version_status_enum = Enum("in_progress", "finalized", name="version_status")
 audit_result_enum = Enum("pass", "fail", name="audit_result")
 upload_status_enum = Enum("processing", "ready", "error", name="upload_status")
 rule_type_enum = Enum("structural", "semantic", "cross_reference", name="rule_type")
-rule_result_status_enum = Enum("pass", "fail", "na", "uncertain", name="rule_result_status")
+rule_result_status_enum = Enum("pass", "fail", "na", "uncertain", "not_checkable", name="rule_result_status")
+# Round 50: metadata only, same as every other Rule column -- see
+# app/rule_engine/client.py's docstring. NULL means "applies to every
+# payor" (mirrors the old mock's "ALL" sentinel).
+rule_payor_enum = Enum(
+    "Aetna", "Anthem", "Cigna", "Emblem", "Empire", "Healthfirst", "Molina",
+    "MVP", "Straight Medicaid", "New York Medicaid",
+    name="rule_payor",
+)
+# Round 56: which upload path is active. "document" is Rounds 51-55's
+# free-form supporting document + AI extraction (kept fully intact, just
+# dormant by default). "structured_form" is the new 5-question form +
+# multi-file session notes upload. Switchable from Developer Mode/admin
+# settings (see app/services/app_config.py) -- this is a live config
+# value, not a deploy-time constant.
+supporting_doc_mode_enum = Enum("document", "structured_form", name="supporting_doc_mode")
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
@@ -90,8 +105,18 @@ class Version(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     patient: Mapped["Patient"] = relationship(back_populates="versions")
+    # Round 53: explicit order_by -- without it, Postgres/SQLAlchemy give no
+    # ordering guarantee for this collection at all. The frontend's "which
+    # draft attempt is currently being reviewed" logic
+    # (plans.$refId.index.tsx: `uploads[uploads.length - 1]` when the
+    # version isn't finalized yet) silently depended on this happening to
+    # come back in insertion order -- a real bug, not a hypothetical one,
+    # since a wrong pick here means overriding or finalizing the wrong
+    # draft. upload_number is system-assigned/sequential/never-reused
+    # (CLAUDE.md invariant), so ascending by it is the correct, deterministic
+    # "oldest to newest" order this relationship's consumers already assume.
     uploads: Mapped[list["Upload"]] = relationship(
-        back_populates="version", foreign_keys="Upload.version_id"
+        back_populates="version", foreign_keys="Upload.version_id", order_by="Upload.upload_number"
     )
 
 
@@ -108,6 +133,17 @@ class Upload(Base):
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     voided_reason: Mapped[str | None] = mapped_column(Text)
     file_path: Mapped[str | None] = mapped_column(Text)
+    # Round 51: the mandatory "supporting document" -- a second, required
+    # file at every upload creation point (app/services/uploads.py::
+    # create_upload enforces "required" at the application layer, same
+    # two-phase insert-then-set-path pattern as file_path above, which is
+    # why this is nullable at the schema level too). Shares file_path's
+    # exact retention lifecycle (same file_purged flag, same purge_after,
+    # same never-purged-while-is_final protection) -- see
+    # app/services/retention.py. Display-only for now (GET /uploads/:id/
+    # supporting-file) -- no parsing/extraction/pipeline consumption yet,
+    # deliberately deferred to a future round.
+    supporting_document_path: Mapped[str | None] = mapped_column(Text)
     file_purged: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rules_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("rule_snapshots.id", ondelete="RESTRICT"))
@@ -117,7 +153,83 @@ class Upload(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     version: Mapped["Version"] = relationship(back_populates="uploads", foreign_keys=[version_id])
-    rule_results: Mapped[list["RuleResult"]] = relationship(back_populates="upload")
+    # Round 53: explicit order_by -- GET /uploads/:id serializes this
+    # relationship directly into the reviewer's rule checklist
+    # (plans.$refId.index.tsx's `results`/`filteredResults`), which renders
+    # rows in exactly this order with no re-sort of its own. created_at ties
+    # (the pipeline writes every pinned rule's result in one batch) are
+    # broken by id for full determinism -- without both, the checklist's
+    # row order was unspecified DB row order, not a designed ordering.
+    rule_results: Mapped[list["RuleResult"]] = relationship(
+        back_populates="upload", order_by="RuleResult.created_at, RuleResult.id"
+    )
+    # Round 56: 1:1 detail row, populated only when this upload was created
+    # under supporting_doc_mode="structured_form". None for every "document"
+    # -mode upload (past and future, while that mode stays active for a
+    # given upload) -- never both on the same upload.
+    intake_answers: Mapped["UploadIntakeAnswers | None"] = relationship(back_populates="upload", uselist=False)
+    # Round 56: one-to-many, unlike supporting_document_path's single column
+    # -- multiple session-note files per upload. Explicit order_by for the
+    # same reason Round 53 added one to uploads/rule_results above: an
+    # unordered list rendered directly in the "Session Notes" page would be
+    # unspecified DB row order, not a designed one.
+    session_note_files: Mapped[list["SessionNoteFile"]] = relationship(
+        back_populates="upload", order_by="SessionNoteFile.created_at, SessionNoteFile.id"
+    )
+
+
+class UploadIntakeAnswers(Base):
+    """Round 56: the 5 structured Q&A answers, replacing the old free-form
+    supporting document + AI extraction for new uploads (that path stays
+    fully intact behind app_config.supporting_doc_mode="document" -- see
+    SupportingDocMode). Plain text, typed by the reviewer, no AI extraction
+    involved. One row per upload (a snapshot of what was answered at THAT
+    submission, not a live-editable patient-level record) -- the "editable
+    across versions" requirement is a frontend prefill behavior (show the
+    previous upload's answers as the new form's starting values), not a
+    shared mutable row, matching this codebase's audit/historical-accuracy
+    convention (each upload's own facts-at-the-time never change after the
+    fact, even if a later upload's answers differ).
+    """
+
+    __tablename__ = "upload_intake_answers"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    upload_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("uploads.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    client_insurance: Mapped[str] = mapped_column(Text, nullable=False)
+    bcba_name_credentials_npi: Mapped[str] = mapped_column(Text, nullable=False)
+    authorization_dates: Mapped[str] = mapped_column(Text, nullable=False)
+    pos_schedule_vs_97153_hours: Mapped[str] = mapped_column(Text, nullable=False)
+    hours_requesting: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    upload: Mapped["Upload"] = relationship(back_populates="intake_answers")
+
+
+class SessionNoteFile(Base):
+    """Round 56: multi-file session notes upload, required alongside the
+    structured Q&A form (same mandatory pattern the old supporting document
+    had). Retained permanently like the TP's own file -- purge lifecycle is
+    entirely the PARENT upload's (file_purged/purge_after/is_final); this
+    table has its own file_purged flag only so retention.py can mark each
+    blob's deletion individually/idempotently, not because it expires on a
+    different schedule. Display-only: never parsed, never fed into any
+    pipeline (real date-range extraction is deliberately deferred agent-side
+    work, see the "Session Notes" page's own placeholder UI).
+    """
+
+    __tablename__ = "session_note_files"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    upload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("uploads.id", ondelete="RESTRICT"), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    file_purged: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    upload: Mapped["Upload"] = relationship(back_populates="session_note_files")
 
 
 class Rule(Base):
@@ -129,8 +241,20 @@ class Rule(Base):
     question_set: Mapped[str] = mapped_column(Text, nullable=False)
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     rule_type: Mapped[str] = mapped_column(rule_type_enum, nullable=False)
+    payor: Mapped[str | None] = mapped_column(rule_payor_enum)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # Round 56: metadata only, same convention as the payor column above
+    # (Round 50) -- zero comparison logic lives here or anywhere in this
+    # backend. session_notes_only=true means this rule's real check can
+    # only ever be resolved from session notes, never the TP text alone
+    # (the actual agent-side wiring to enforce that is a deliberately
+    # deferred future round). tp_section names where in the TP this check
+    # anchors (e.g. "Assessment of Current Functioning") for that future
+    # work's benefit -- independent of `category` above, which is this
+    # rule's own checklist grouping and may or may not be the same string.
+    session_notes_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    tp_section: Mapped[str | None] = mapped_column(Text)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -147,7 +271,12 @@ class RuleVersionHistory(Base):
     category: Mapped[str] = mapped_column(Text, nullable=False)
     question_set: Mapped[str] = mapped_column(Text, nullable=False)
     rule_type: Mapped[str] = mapped_column(rule_type_enum, nullable=False)
+    payor: Mapped[str | None] = mapped_column(rule_payor_enum)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # Round 56: mirrored from Rule, same as every other versioned metadata
+    # field -- see Rule.session_notes_only/tp_section above.
+    session_notes_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    tp_section: Mapped[str | None] = mapped_column(Text)
     changed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -255,5 +384,15 @@ class AppConfig(Base):
     notif_default_cc: Mapped[str | None] = mapped_column(Text)
     auto_send: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     integration_state: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    # Round 56: feature flag, live-switchable (Developer Mode/admin settings
+    # -- see app/services/app_config.py and app/routers/admin.py), not a
+    # deploy-time constant. "document" = Rounds 51-55's free-form supporting
+    # document + AI extraction, kept fully intact and testable. "structured_
+    # form" (the new default for every row) = the 5-question form + session
+    # notes upload this round adds. Read once per upload creation, at
+    # request time -- switching it never rewrites past uploads' own data.
+    supporting_doc_mode: Mapped[str] = mapped_column(
+        supporting_doc_mode_enum, nullable=False, server_default="structured_form"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

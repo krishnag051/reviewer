@@ -1552,6 +1552,20 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
     real document has more than one instance of either field, so the
     genuine multi-mention consistency path is unverified against real
     evidence (same caveat as QA-TEMP-01's untriggered condition).
+
+    Round 54: this rule's own notes used to say "True validation against a
+    provider roster remains out of scope" -- that gap is exactly what the
+    supporting document's bcba_credentials_npi field can now close, when a
+    reviewer attached one and extraction found an NPI in it (Round 52/53
+    wiring made `fields["supporting_doc"]` reachable here; nothing before
+    this round actually READ it). This only adds a ground-truth CROSS-CHECK
+    on top of the existing internal-consistency check above -- it never
+    replaces "no NPI on the TP at all" with a pass/fail borrowed purely
+    from the supporting document; a TP that never states its own NPI is
+    still not_checkable, since there's nothing in the TP itself to hold
+    "correct." A supporting_doc confidence of "none" (field not found in
+    that document) is treated as no ground truth available, not as a
+    mismatch.
     """
     text = fields["full_text"]
     npi_vals = sorted({m.group(1).strip() for m in re.finditer(r"NPI:[ \t]*([0-9]+)", text)})
@@ -1566,8 +1580,26 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
     if len(license_vals) > 1:
         problems.append(f"Multiple different License values found: {license_vals}.")
 
+    supporting_npi_field = (fields.get("supporting_doc") or {}).get("bcba_credentials_npi")
+    ground_truth_npi_vals: set[str] = set()
+    if supporting_npi_field and supporting_npi_field.get("confidence") != "none" and supporting_npi_field.get("value"):
+        ground_truth_npi_vals = {m.group(0) for m in re.finditer(r"[0-9]{10}", supporting_npi_field["value"])}
+    if ground_truth_npi_vals and npi_vals and not (set(npi_vals) & ground_truth_npi_vals):
+        problems.append(
+            f"TP states NPI {npi_vals}, but the supporting document's BCBA "
+            f"credentials/NPI field states {sorted(ground_truth_npi_vals)} -- these do not match."
+        )
+
     if problems:
         return "fail", " ".join(problems), None, 0.8
+    if ground_truth_npi_vals and npi_vals and (set(npi_vals) & ground_truth_npi_vals):
+        return (
+            "pass",
+            f"NPI ({npi_vals or 'n/a'}) and License ({license_vals or 'n/a'}) are internally "
+            f"consistent, AND the TP's NPI matches the supporting document's stated NPI "
+            f"({sorted(ground_truth_npi_vals)}).",
+            None, 0.9,
+        )
     return (
         "pass",
         f"NPI ({npi_vals or 'n/a'}) and License ({license_vals or 'n/a'}) are consistent "

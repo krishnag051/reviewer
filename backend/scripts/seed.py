@@ -1,9 +1,21 @@
 """Idempotent dev seed script — Master Build Doc §8.
 
 Seeds: 1 organization, 5 users (matching the frontend mock names/roles),
-~24 placeholder rules across the six categories (each via the create_rule
-service, so history v1 + audit are never skipped), 1 app_config row, and
-Snapshot 0 + rule_sync_state (gap A4 bootstrap).
+the 120 real rules from agent-making/agent/rules/rules.json (each via the
+create_rule service, so history v1 + audit are never skipped), 1
+app_config row, and Snapshot 0 + rule_sync_state (gap A4 bootstrap).
+
+2026-07-30: reseeded from agent-making's real rule set, replacing the
+previous ~24 hand-written placeholder rules (R-001, R-010, etc) — this is
+required for app/rule_engine/client.py's real implementation to produce
+anything but "not_checkable" fallbacks, since it maps agent-making's
+findings back onto backend Rule rows by rule_code, and the old placeholder
+codes don't exist in agent-making's rule set at all. NOT a hard delete of
+the old rows — this script only ever INSERTs (idempotent by rule_code) —
+so a dev DB that already has the old 24 seeded will end up with BOTH sets
+present unless someone separately deactivates the old ones by hand. A
+fresh DB (this round's own verification, and any new dev setup) only ever
+sees the real 120.
 
 Safe to re-run: every insert is preceded by an existence check on its
 natural key, so running this twice creates zero duplicate rows.
@@ -11,6 +23,7 @@ natural key, so running this twice creates zero duplicate rows.
 Run from backend/:
     .venv/Scripts/python.exe scripts/seed.py
 """
+import json
 import sys
 from pathlib import Path
 
@@ -25,104 +38,63 @@ from app.security import hash_password
 from app.services.rule_snapshots import bootstrap_snapshot_zero
 from app.services.rules import create_rule
 
+# Relative to this backend/ directory, matching app/rule_engine/client.py's
+# own path resolution -- kept independent (not imported from there) so this
+# script has no import-time dependency on that module's sys.path/dotenv
+# side effects.
+_AGENT_MAKING_RULES_JSON = Path(__file__).resolve().parent.parent / settings.agent_making_agent_path / "rules" / "rules.json"
+
+# agent-making's check_type has no equivalent axis in this backend's schema
+# (rule_type is structural/semantic/cross_reference, not
+# deterministic/judgment) -- this is a judgment call made for this reseed,
+# not a given mapping: "structural" for pattern/field-based deterministic
+# checks, "semantic" for meaning-requiring judgment checks. cross_reference
+# stays unused, same as before (blocked on the CentralReach integration).
+_CHECK_TYPE_TO_RULE_TYPE = {"deterministic": "structural", "judgment": "semantic"}
+
+
+def _load_rules_from_agent_making() -> list[dict]:
+    data = json.loads(_AGENT_MAKING_RULES_JSON.read_text(encoding="utf-8"))
+    return [
+        dict(
+            rule_code=r["rule_id"],
+            category=r["category"],
+            # No equivalent field exists in agent-making's rules -- category
+            # is reused here rather than inventing a fake grouping.
+            question_set=r["category"],
+            question_text=r["description"],
+            rule_type=_CHECK_TYPE_TO_RULE_TYPE[r["check_type"]],
+            # Round 50: seeded from agent-making's own applies_to_payor for a
+            # real initial value rather than leaving every rule NULL --
+            # "ALL" maps to NULL (this backend's own universal sentinel,
+            # matching the pre-existing mock's "ALL"), any real payor value
+            # maps straight through (agent-making's own values are already
+            # a subset of this backend's 10-value rule_payor enum). This is
+            # a one-time seed convenience, not a live link -- editing payor
+            # here afterward never reaches agent-making's rules.json.
+            payor=None if r["applies_to_payor"] == "ALL" else r["applies_to_payor"],
+            active=r["active"],
+        )
+        for r in data["rules"]
+    ]
+
 # Dev-only default password for every seeded user. Never reuse this in a
 # shared/staging/prod environment — it exists purely so a fresh local dev DB
 # has working logins on day one.
 DEV_PASSWORD = "ChangeMe123!"
 
 USERS = [
+    # 2026-07-31: three flat roles (admin/user/developer), no
+    # BCBA/Facilitator-specific naming -- "standard" renamed to "user" in
+    # the same round (migration b66328017716). None of the seeded staff
+    # get "developer" by default; that role is for whoever's actually doing
+    # dev/diagnostics work, provisioned separately via POST /admin/users.
     {"name": "M. Chen", "email": "m.chen@brightpath-aba.com", "role": "admin", "credential_title": "BCBA-D"},
-    {"name": "S. Patel", "email": "s.patel@brightpath-aba.com", "role": "standard", "credential_title": "BCBA"},
-    {"name": "J. Rivera", "email": "j.rivera@brightpath-aba.com", "role": "standard", "credential_title": "BCBA"},
-    {"name": "L. Nguyen", "email": "l.nguyen@brightpath-aba.com", "role": "standard", "credential_title": "BCBA"},
-    {"name": "A. Thompson", "email": "a.thompson@brightpath-aba.com", "role": "standard", "credential_title": "BCaBA"},
+    {"name": "S. Patel", "email": "s.patel@brightpath-aba.com", "role": "user", "credential_title": "BCBA"},
+    {"name": "J. Rivera", "email": "j.rivera@brightpath-aba.com", "role": "user", "credential_title": "BCBA"},
+    {"name": "L. Nguyen", "email": "l.nguyen@brightpath-aba.com", "role": "user", "credential_title": "BCBA"},
+    {"name": "A. Thompson", "email": "a.thompson@brightpath-aba.com", "role": "user", "credential_title": "BCaBA"},
 ]
-
-# 24 rules, 4 per category, mixed rule_type. Every rule is mandatory — no
-# severity tier. cross_reference is deliberately unused — that rule_type is
-# blocked on the CentralReach integration per the architecture doc, out of
-# scope until that exists.
-RULES = [
-    # Patient Info
-    dict(rule_code="R-001", category="Patient Info", question_set="Treatment Plan",
-         question_text="Is the patient's full legal name present on the cover page?",
-         rule_type="structural"),
-    dict(rule_code="R-002", category="Patient Info", question_set="Treatment Plan",
-         question_text="Is the patient's date of birth documented and consistent throughout the plan?",
-         rule_type="structural"),
-    dict(rule_code="R-003", category="Patient Info", question_set="Treatment Plan",
-         question_text="Is the insurance member ID present on the plan?",
-         rule_type="structural"),
-    dict(rule_code="R-004", category="Patient Info", question_set="Treatment Plan",
-         question_text="Is parent/guardian contact information documented?",
-         rule_type="structural"),
-    # Diagnosis
-    dict(rule_code="R-010", category="Diagnosis", question_set="Treatment Plan",
-         question_text="Is a current DSM-5 diagnosis of ASD (F84.0) documented?",
-         rule_type="semantic"),
-    dict(rule_code="R-011", category="Diagnosis", question_set="Treatment Plan",
-         question_text="Is the diagnosing provider's name and NPI listed?",
-         rule_type="structural"),
-    dict(rule_code="R-012", category="Diagnosis", question_set="Treatment Plan",
-         question_text="Is the date of diagnosis documented?",
-         rule_type="structural"),
-    dict(rule_code="R-013", category="Diagnosis", question_set="Treatment Plan",
-         question_text="Is relevant medical history or comorbid conditions documented?",
-         rule_type="semantic"),
-    # Assessment
-    dict(rule_code="R-020", category="Assessment", question_set="97151",
-         question_text="Is the FBA dated within the last 90 days?",
-         rule_type="structural"),
-    dict(rule_code="R-021", category="Assessment", question_set="97151",
-         question_text="Are standardized assessment tools (VB-MAPP, ABLLS, Vineland) documented with scores?",
-         rule_type="semantic"),
-    dict(rule_code="R-022", category="Assessment", question_set="97151",
-         question_text="Is caregiver/parent input on skill priorities documented?",
-         rule_type="semantic"),
-    dict(rule_code="R-023", category="Assessment", question_set="97151",
-         question_text="Do the assessment results support the recommended service intensity?",
-         rule_type="semantic"),
-    # Goals & Objectives
-    dict(rule_code="R-030", category="Goals & Objectives", question_set="Treatment Plan",
-         question_text="Are goals written in measurable, observable terms?",
-         rule_type="semantic"),
-    dict(rule_code="R-031", category="Goals & Objectives", question_set="Treatment Plan",
-         question_text="Does each goal include mastery criteria?",
-         rule_type="structural"),
-    dict(rule_code="R-032", category="Goals & Objectives", question_set="Treatment Plan",
-         question_text="Does each goal include baseline data?",
-         rule_type="structural"),
-    dict(rule_code="R-033", category="Goals & Objectives", question_set="Treatment Plan",
-         question_text="Are short-term objectives linked to long-term goals?",
-         rule_type="semantic"),
-    # Service Delivery
-    dict(rule_code="R-040", category="Service Delivery", question_set="97153",
-         question_text="Is the recommended weekly hours of 97153 documented with a specific unit count?",
-         rule_type="structural"),
-    dict(rule_code="R-041", category="Service Delivery", question_set="97155",
-         question_text="Is the recommended weekly hours of 97155 (protocol modification) documented?",
-         rule_type="structural"),
-    dict(rule_code="R-042", category="Service Delivery", question_set="97156",
-         question_text="Is parent training (97156) included with a specific frequency?",
-         rule_type="structural"),
-    dict(rule_code="R-043", category="Service Delivery", question_set="Treatment Plan",
-         question_text="Is the location of services (home, clinic, school) specified?",
-         rule_type="structural"),
-    # Signatures
-    dict(rule_code="R-070", category="Signatures", question_set="Treatment Plan",
-         question_text="Is the BCBA signature present and dated?",
-         rule_type="structural"),
-    dict(rule_code="R-071", category="Signatures", question_set="Treatment Plan",
-         question_text="Is the parent/guardian signature present and dated within 30 days of the BCBA signature?",
-         rule_type="structural"),
-    dict(rule_code="R-072", category="Signatures", question_set="Treatment Plan",
-         question_text="Is the BCBA's credential and certification number listed under the signature?",
-         rule_type="structural"),
-    dict(rule_code="R-073", category="Signatures", question_set="Treatment Plan",
-         question_text="If the plan was authored by a BCaBA, is a supervising BCBA co-signature present?",
-         rule_type="semantic"),
-]
-
 
 def seed_organization(session) -> None:
     if session.execute(select(Organization)).first() is not None:
@@ -158,15 +130,16 @@ def seed_users(session) -> dict[str, User]:
 
 
 def seed_rules(session, *, actor_user_id) -> None:
+    rules = _load_rules_from_agent_making()
     created = 0
-    for r in RULES:
+    for r in rules:
         existing = session.execute(select(Rule).where(Rule.rule_code == r["rule_code"])).scalar_one_or_none()
         if existing is not None:
             continue
         create_rule(session, actor_user_id=actor_user_id, **r)
         session.commit()
         created += 1
-    print(f"rules: created {created} row(s), {len(RULES) - created} already existed")
+    print(f"rules: created {created} row(s), {len(rules) - created} already existed")
 
 
 def seed_app_config(session) -> None:

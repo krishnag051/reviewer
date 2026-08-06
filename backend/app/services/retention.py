@@ -63,6 +63,37 @@ def _purge_one(upload_id: uuid.UUID) -> None:
                 session.rollback()
                 return
 
+        # Round 51: the supporting document follows the exact same
+        # retention lifecycle as the TP's own file -- same purge_after,
+        # same file_purged flag (not a separate one), same "never purged
+        # while is_final" protection above. No independent expiry logic.
+        if upload.supporting_document_path:
+            try:
+                delete_blob(upload.supporting_document_path)
+            except Exception:
+                logger.exception("Failed to purge supporting-document blob for upload %s — will retry next run", upload_id)
+                session.rollback()
+                return
+
+        # Round 56: session-note files follow the exact same lifecycle too
+        # -- the PARENT upload's file_purged/purge_after/is_final, not any
+        # expiry of their own. Each file gets its own file_purged flip so a
+        # failure partway through (blob 2 of 3 fails to delete) leaves an
+        # accurate per-file record and retries only what's actually left,
+        # instead of a single all-or-nothing flag across every file.
+        for note in upload.session_note_files:
+            if note.file_purged:
+                continue
+            try:
+                delete_blob(note.file_path)
+            except Exception:
+                logger.exception(
+                    "Failed to purge session-note blob %s for upload %s — will retry next run", note.id, upload_id
+                )
+                session.rollback()
+                return
+            note.file_purged = True
+
         upload.file_purged = True
         record(
             session,

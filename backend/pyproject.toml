@@ -17,6 +17,17 @@ dependencies = [
     "python-multipart>=0.0.12",
     "apscheduler>=3.10",
     "pypdf>=4.0",
+    # --- rule-checking agent wiring (2026-07-30) ---
+    # app/rule_engine/client.py imports agent-making/agent/pipeline/api.py
+    # by path (not as an installed package — see client.py's comment), but
+    # that module's own import chain (pipeline/__init__.py -> integrity.py
+    # -> judge.py -> render.py) needs these three at import time, in
+    # WHICHEVER process does the importing — that's this backend process,
+    # not just agent-making's own. Versions matched to
+    # agent-making/agent/requirements.txt.
+    "anthropic>=0.68.0",
+    "python-dotenv>=1.0.0",
+    "PyMuPDF>=1.24.0",
 ]
 
 [project.optional-dependencies]

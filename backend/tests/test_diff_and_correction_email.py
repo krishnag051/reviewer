@@ -8,7 +8,7 @@ from pypdf import PdfWriter
 from sqlalchemy import select
 
 from app.db.models import AuditLog, GeneratedEmail
-from tests.conftest import login_headers
+from tests.conftest import ROUND56_QA_FORM_DATA, login_headers
 
 
 def _pdf_bytes() -> bytes:
@@ -29,7 +29,12 @@ def _ready_upload(client, headers, version_id: str | None = None, patient=None) 
         version_id = version["id"]
     upload = client.post(
         f"/versions/{version_id}/uploads",
-        files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()

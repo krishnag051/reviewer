@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRootRouteWithContext, useRouter } from "@tanstack/react-router";
+import { createRootRouteWithContext, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { TPProvider } from "@/lib/tp-context";
+import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { AppShell } from "@/components/tp/AppShell";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -45,14 +46,46 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   errorComponent: ErrorComponent,
 });
 
+// Real login is required for every route except /login itself. `user` is
+// `undefined` while the initial "is there a valid stored token?" check
+// (auth-context.tsx's getMe() call) is still in flight -- rendering
+// nothing during that window avoids a flash of the login screen for an
+// already-logged-in user on every page refresh.
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const pathname = useRouterState({ select: s => s.location.pathname });
+  const nav = useNavigate();
+
+  useEffect(() => {
+    if (user === undefined) return;
+    if (user === null && pathname !== "/login") {
+      nav({ to: "/login" });
+    } else if (user && pathname === "/login") {
+      nav({ to: "/" });
+    }
+  }, [user, pathname, nav]);
+
+  if (user === undefined) {
+    return <div className="min-h-screen grid place-items-center text-sm text-slate-500">Loading…</div>;
+  }
+  if (user === null && pathname !== "/login") {
+    return null; // redirect effect above is about to fire
+  }
+  return <>{children}</>;
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
     <QueryClientProvider client={queryClient}>
-      <TPProvider>
-        <AppShell />
-        <Toaster />
-      </TPProvider>
+      <AuthProvider>
+        <TPProvider>
+          <AuthGate>
+            <AppShell />
+          </AuthGate>
+          <Toaster />
+        </TPProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

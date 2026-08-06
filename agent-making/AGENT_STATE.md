@@ -1,5 +1,25 @@
 # Agent State — TP Rule-Engine POC
 
+## 🛑 HARD RULE (2026-07-31, permanent, effective immediately) — NO REAL API CALLS WITHOUT EXPLICIT PER-INSTANCE PERMISSION
+
+> Hard rule, effective immediately and permanent: no real API calls without my explicit, per-instance permission
+>
+> Real Anthropic API credits are being spent by a paying account, and the last round's full real-content backend test suite (multiple files, real agent calls per test case, self-consistency doubling/tripling each one) burned a large amount of money without that cost being visible or approved in advance. That cannot happen again.
+>
+> Going forward:
+>
+> Never run anything that makes a real call to the Anthropic API — not a live document review, not a "real content" test file, not a diagnostic probe, not a background verification pass — without stopping first and telling me exactly what you want to run and why, including your best estimate of how many calls/how much it will cost. Wait for explicit approval before running it.
+> If a task seems to need real-API verification to be considered "done," don't run it yourself. Tell me the exact command to run, and I will run it myself, or explicitly tell you to proceed. Default to reporting code as complete-but-unverified-against-real-API rather than spending money to verify it without asking.
+> Mock/synthetic tests, tsc, linters, and anything that costs nothing stay exactly as encouraged as before — this rule is only about real Anthropic API spend, not about testing rigor in general. Keep doing thorough non-live verification; just stop short of the real-API step and ask.
+
+This is exactly the mistake this document's own §5 (ground-truth harness) already warned about cost-wise ("the judgment tier costs real money... should be run periodically... not on every change") — this rule tightens that from "use judgment, but be careful" to "never without asking first, no exceptions." Applies to every real call this repo can make: `run_full_pipeline`, `pipeline/api.py::review_treatment_plan`, the judgment-tier ground-truth tests, `test.py`'s own credential check, all of it. See the identical copy of this rule in the root `CLAUDE.md`, `agent-making/INTEGRATION_PLAN.md`, and `frontend/FRONTEND_STATE.md`.
+
+**Structural guardrail (2026-07-31, Round 44 — enforced on the backend side of the seam, not here).** The backend's test suite (`backend/tests/conftest.py::_block_real_api_calls`) now patches out `app.rule_engine.client.review_treatment_plan` — the exact import of this repo's `pipeline/api.py::review_treatment_plan` that `client.py` calls into — for every backend test by default, so no backend test can reach this repo's real pipeline (and therefore the real Anthropic API) at all, regardless of which test file runs. The one opt-out is `@pytest.mark.real_api` on a specific backend test, which still requires this same hard rule's explicit per-instance approval before use — the marker existing is not permission. This repo (`agent-making/`) has no test suite of its own that calls the real API unguarded today, but if one is ever added here, it should get the identical treatment (patch `review_treatment_plan` or whatever the real call site is, autouse, opt-out via marker) rather than relying on anyone remembering to check fixtures first — see `backend/tests/test_real_api_guardrail.py` for the pattern.
+
+**Hard spend ceiling (2026-07-31, Round 45, also enforced backend-side) + standing policy (Round 47).** `backend/tests/conftest.py`'s `MAX_REAL_API_CALLS_PER_SESSION` (default 4, env-overridable) caps total real calls across a whole pytest session, counted in raw Anthropic API requests (not per-`review_treatment_plan`-invocation — one document review is itself 2+ real calls via this repo's own self-consistency pass). Once hit, any further real call in that session is blocked before the request goes out, same as the guardrail above. **This is permanent, standing policy, not specific to the round that built it: every real-API test run, no matter how small, must run under the active session spend ceiling, with the exact command, call count, and cost estimate stated and approved before execution — every future round, no exceptions.** If a real-call-making test or script is ever added directly to this repo (`agent-making/`) rather than only reached via the backend, it must get the identical ceiling treatment, not just the guardrail's block/opt-out marker.
+
+---
+
 Cold-start reference for this standalone agent. Written 2026-07-28. If
 you're a future Claude Code session (or a human) picking this up with no
 memory of how it got here, this document is meant to be enough on its own —
@@ -295,6 +315,20 @@ Say this plainly: the rule engine's *judgment quality* is the only thing
 that has had serious investment. Everything about *turning that judgment
 into a working product* — routing, messaging, an admin UI, a real metadata
 cross-check, real schedule-table parsing — has not been started.
+
+**Update, 2026-08-02 (Round 51, backend-side only):** the backend now
+requires and stores a second, mandatory file per upload — the "supporting
+document" (`uploads.supporting_document_path`, `GET /uploads/:id/
+supporting-file`) — which is exactly the kind of external ground-truth
+source the "pre-upload metadata cross-check" bullet above describes
+needing. **This repo (agent-making) does not read it, know about it, or
+consume it in any way.** `review_treatment_plan(pdf_path, ...)` still takes
+only the TP's own file path — nothing has changed here. The backend's file
+is display-only (opened in a new browser tab by a reviewer), never passed
+into this pipeline. If/when extraction or sub-agent consumption of this
+document is built, it will need its own explicit wiring into this repo's
+`review_treatment_plan` signature or a new entry point — not assumed to
+already exist because the file is now stored somewhere.
 
 ---
 

@@ -1,7 +1,13 @@
 """Step 6 regression coverage: patients/versions/uploads routes, sequential
 number assignment (including under real concurrency), and the upload
-pipeline (success producing "na" rule_results for every active rule via the
-hollow rule_engine stub; failure leaving nothing partial).
+pipeline (success producing one real rule_result per pinned rule via the
+now-real rule_engine wiring to agent-making — 2026-07-30, previously the
+hollow stub's "na"/"agent not yet implemented" for everything; failure
+leaving nothing partial). The success-path test below makes a real, billed
+call to the rule-checking agent — this file's fixture PDF is a genuinely
+blank page, so exact result values aren't asserted (they're whatever the
+agent honestly returns for a document with no extractable content), only
+the structural guarantees the pipeline itself is responsible for.
 """
 import io
 import threading
@@ -13,7 +19,7 @@ from sqlalchemy import select
 from app.db.models import AuditLog, Patient, RuleResult, RuleSnapshot, Version
 from app.services.uploads import create_upload
 from app.services.versions import create_version
-from tests.conftest import login_headers, unique_rule_code
+from tests.conftest import ROUND56_QA_FORM_DATA, login_headers, unique_rule_code
 
 
 def _pdf_bytes() -> bytes:
@@ -48,7 +54,16 @@ def _create_upload(client, headers, version_id: str, content: bytes = None, file
     content = content if content is not None else _pdf_bytes()
     resp = client.post(
         f"/versions/{version_id}/uploads",
-        files={"file": (filename, content, "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": (filename, content, "application/pdf"),
+            # Round 51's mandatory second file -- always sent as a real, valid
+            # PDF here regardless of `content` (which some callers deliberately
+            # set to garbage to test the TP's own parse-failure path); the
+            # supporting document is never parsed, so it never needs to be.
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     )
     assert resp.status_code == 201, resp.text
@@ -305,7 +320,9 @@ def test_concurrent_upload_creation_no_duplicate_numbers(db_session, engine, see
                     lock_acquired.wait(timeout=2)
 
             upload = create_upload(
-                session, version_id, filename="tp.pdf", content=pdf_content, uploaded_by=admin_id, _after_lock=_after_lock
+                session, version_id, filename="tp.pdf", content=pdf_content,
+                supporting_document_filename="supporting.pdf", supporting_document_content=pdf_content,
+                uploaded_by=admin_id, _after_lock=_after_lock,
             )
             results.append(upload.upload_number)
         except Exception as exc:  # pragma: no cover
@@ -324,7 +341,14 @@ def test_concurrent_upload_creation_no_duplicate_numbers(db_session, engine, see
     assert sorted(results) == [1, 2], f"expected exactly one 1 and one 2, got {results}"
 
 
-def test_pipeline_success_produces_na_results_for_every_active_rule(client, db_session, seeded_baseline):
+def test_pipeline_success_produces_one_real_result_per_pinned_rule(client, db_session, seeded_baseline):
+    """Real, billed call to the rule-checking agent (agent-making via
+    app/rule_engine/client.py) — not mocked. Asserts the structural
+    guarantees the PIPELINE is responsible for (one result per pinned rule,
+    a real status/finding, nothing pre-overridden) — not specific status
+    values, since this fixture's blank-page PDF has no real content for
+    the agent to judge and its actual answers are honest, not scripted.
+    """
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     patient = _create_patient(client, headers)
     version = _create_version(client, headers, patient["id"])
@@ -344,8 +368,9 @@ def test_pipeline_success_produces_na_results_for_every_active_rule(client, db_s
     # supposed to have used.
     snapshot = db_session.get(RuleSnapshot, uuid.UUID(body["rules_snapshot_id"]))
     assert len(body["rule_results"]) == len(snapshot.rule_ids_and_versions)
-    assert all(r["final_status"] == "na" for r in body["rule_results"])
-    assert all(r["final_finding"] == "(agent not yet implemented)" for r in body["rule_results"])
+    valid_statuses = {"pass", "fail", "na", "uncertain", "not_checkable"}
+    assert all(r["final_status"] in valid_statuses for r in body["rule_results"])
+    assert all(r["final_finding"] for r in body["rule_results"]), "every result needs a real, non-empty finding"
     assert all(r["is_overridden"] is False for r in body["rule_results"])
 
 

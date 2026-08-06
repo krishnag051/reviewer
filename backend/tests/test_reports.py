@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pypdf import PdfWriter
 from sqlalchemy import text
 
-from tests.conftest import login_headers
+from tests.conftest import ROUND56_QA_FORM_DATA, login_headers
 
 
 def _pdf_bytes() -> bytes:
@@ -36,11 +36,32 @@ def _finalized_version(client, headers, reviewer_id: str | None = None, statuses
 
     upload = client.post(
         f"/versions/{version['id']}/uploads",
-        files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready"
+
+    # The real rule-checking agent (2026-07-30, previously the hollow stub)
+    # honestly returns whatever it returns for this fixture's content-free
+    # blank-page PDF — every report/trend test below does exact arithmetic
+    # assuming ONLY the explicitly-listed `statuses` rows are non-"na" (the
+    # hollow stub used to guarantee that for free). Reset every row to "na"
+    # FIRST, then apply the caller's specific targets on top, so that
+    # arithmetic stays exactly what each test expects regardless of what
+    # the real agent actually said about this content-free document.
+    for rr in detail["rule_results"]:
+        if rr["final_status"] != "na":
+            client.patch(
+                f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"},
+                headers=headers,
+            )
+    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
 
     for i, target_status in enumerate(statuses or []):
         rr = detail["rule_results"][i]
@@ -287,7 +308,12 @@ def test_v_override_analytics_excludes_non_finalized_uploads(client, db_session,
     version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
     upload = client.post(
         f"/versions/{version['id']}/uploads",
-        files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
@@ -304,8 +330,12 @@ def test_v_override_analytics_excludes_non_finalized_uploads(client, db_session,
 
     before = _total_for_rule_code()
 
+    # Must be a REAL diff (not a no-op) to actually exercise "an override
+    # happened" — pick any status guaranteed different from whatever the
+    # real agent returned for this row.
+    target = next(s for s in ("pass", "fail", "na", "uncertain", "not_checkable") if s != rr["final_status"])
     client.patch(
-        f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "pass"}, headers=headers
+        f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": target}, headers=headers
     )
 
     after = _total_for_rule_code()

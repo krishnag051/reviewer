@@ -176,6 +176,55 @@ def test_ppi05_not_checkable_with_no_fields():
     assert result == "not_checkable"
 
 
+# --- QA-PPI-05: Round 54 -- cross-check against supporting_doc's NPI ---
+
+def _fields_with_supporting_npi(text: str, npi_value: str | None, confidence: str = "high") -> dict:
+    f = _fields(text)
+    f["supporting_doc"] = {"bcba_credentials_npi": {"value": npi_value, "confidence": confidence, "source_quote": None}}
+    return f
+
+
+def test_ppi05_fails_when_tp_npi_disagrees_with_supporting_doc_npi():
+    """The exact gap this rule's own notes used to describe: internally
+    consistent within the TP is not the same as CORRECT -- a TP that
+    consistently states the wrong NPI must now fail once a supporting
+    document gives a real ground truth to check against."""
+    text = "NPI: 1578293197\n"
+    f = _fields_with_supporting_npi(text, "Jane Smith, BCBA-D — NPI 9999999999")
+    result, evidence, page, confidence = fields._check_PPI05({}, f)
+    assert result == "fail"
+    assert "1578293197" in evidence and "9999999999" in evidence
+
+
+def test_ppi05_passes_and_upgrades_confidence_when_tp_npi_matches_supporting_doc():
+    text = "NPI: 1578293197\n"
+    f = _fields_with_supporting_npi(text, "Jane Smith, BCBA-D — NPI 1578293197")
+    result, evidence, page, confidence = fields._check_PPI05({}, f)
+    assert result == "pass"
+    assert "supporting document" in evidence.lower()
+    assert confidence == 0.9, "a confirmed cross-check should read as more confident than internal-consistency-only"
+
+
+def test_ppi05_ignores_supporting_doc_when_confidence_is_none():
+    """confidence='none' means the supporting document didn't actually
+    state this field -- must be treated as no ground truth available, not
+    silently compared as if it disagreed."""
+    text = "NPI: 1578293197\n"
+    f = _fields_with_supporting_npi(text, None, confidence="none")
+    result, evidence, page, confidence = fields._check_PPI05({}, f)
+    assert result == "pass"
+    assert "supporting document" not in evidence.lower()
+
+
+def test_ppi05_stays_not_checkable_when_tp_has_no_npi_even_with_supporting_doc_present():
+    """A supporting document's NPI is not a substitute for the TP stating
+    its own -- there's nothing in the TP itself for this rule to hold
+    'correct' about if the TP never states an NPI at all."""
+    f = _fields_with_supporting_npi("unrelated text", "Jane Smith, BCBA-D — NPI 1578293197")
+    result, evidence, page, confidence = fields._check_PPI05({}, f)
+    assert result == "not_checkable"
+
+
 # --- QA-BIP-01 / QA-GIP-03: severity rating not all mild (shared checker) ---
 
 def test_severity_pass_when_one_rating_is_moderate():

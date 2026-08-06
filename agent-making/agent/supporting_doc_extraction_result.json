@@ -1,0 +1,42 @@
+{
+  "bcba_credentials_npi": {
+    "value": "Jane Smith, BCBA-D — NPI 1234567890",
+    "confidence": "high",
+    "source_quote": "Jane Smith, BCBA-D — NPI 1234567890"
+  },
+  "authorization_dates": {
+    "value": "01/15/2026 – 07/15/2026",
+    "confidence": "high",
+    "source_quote": "01/15/2026 – 07/15/2026"
+  },
+  "report_date_range": {
+    "value": "01/15/2026 – 04/15/2026",
+    "confidence": "high",
+    "source_quote": "01/15/2026 – 04/15/2026"
+  },
+  "assessment_date_pos_assessor": {
+    "value": "01/10/2026, Home/Telehealth, Jane Smith BCBA-D",
+    "confidence": "high",
+    "source_quote": "01/10/2026, Home/Telehealth, Jane Smith BCBA-D"
+  },
+  "cpt_97153_hours_pos_schedule": {
+    "value": "25 hrs/week, Home & Community, Mon–Fri 9am–2pm",
+    "confidence": "high",
+    "source_quote": "25 hrs/week, Home & Community, Mon–Fri 9am–2pm"
+  },
+  "requested_hours": {
+    "value": "25 hrs/week",
+    "confidence": "high",
+    "source_quote": "25 hrs/week requested — within Aetna's 30 hr/week cap"
+  },
+  "assessment_vs_payor_guideline": {
+    "value": "ABLLS-R meets Aetna's required assessment type",
+    "confidence": "high",
+    "source_quote": "ABLLS-R — meets Aetna's required assessment type"
+  },
+  "diagnostic_report_match": {
+    "value": "Yes — no discrepancies noted",
+    "confidence": "high",
+    "source_quote": "Yes — no discrepancies noted"
+  }
+}

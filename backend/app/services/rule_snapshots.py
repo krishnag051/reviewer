@@ -35,18 +35,20 @@ def compute_content_hash(rule_ids_and_versions: list[dict]) -> str:
 
 def rule_content_payload(session: Session) -> list[dict]:
     """The defining content of each active rule — question_text, category,
-    question_set, rule_type, active — used ONLY for the sync tick's
+    question_set, rule_type, payor, active — used ONLY for the sync tick's
     no-op-on-revert check (see compute_content_fingerprint). Deliberately
     separate from rule_ids_and_versions_payload: current_version increments
     monotonically and never reverts, so a rule edited then reverted to its
     original wording has different {rule_id, version} pairs but identical
     content — this payload is what lets that be detected as a true no-op.
     Same `ORDER BY rule_code` / active-only discipline as the version payload,
-    for the same determinism reasons.
+    for the same determinism reasons. `payor` included (Round 50) since it's
+    real, editable rule content now too, even though — same as every other
+    field here — it's metadata that never reaches the real rule-checking agent.
     """
     rows = session.execute(
         select(
-            Rule.id, Rule.question_text, Rule.category, Rule.question_set, Rule.rule_type, Rule.active
+            Rule.id, Rule.question_text, Rule.category, Rule.question_set, Rule.rule_type, Rule.payor, Rule.active
         ).where(Rule.active.is_(True)).order_by(Rule.rule_code)
     ).all()
     return [
@@ -56,9 +58,10 @@ def rule_content_payload(session: Session) -> list[dict]:
             "category": category,
             "question_set": question_set,
             "rule_type": rule_type,
+            "payor": payor,
             "active": active,
         }
-        for rule_id, question_text, category, question_set, rule_type, active in rows
+        for rule_id, question_text, category, question_set, rule_type, payor, active in rows
     ]
 
 

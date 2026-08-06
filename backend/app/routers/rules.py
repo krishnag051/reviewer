@@ -8,12 +8,24 @@ from sqlalchemy.orm import Session
 
 from app.db.base import get_db
 from app.db.models import Rule, User
-from app.deps import require_admin
+from app.deps import get_current_user, require_admin
 from app.services.rules import create_rule, edit_rule, set_rule_active
 
-router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_admin)])
+# Round 50: relaxed from Depends(require_admin) to Depends(get_current_user)
+# at the router level -- Rules Studio is meant to be READABLE by any
+# authenticated role (matches the pre-existing mock's `role !== "Admin" =>
+# readOnly` UI behavior: user/developer could always at least SEE rules,
+# only editing was admin-gated). Every mutating route below still
+# independently declares `Depends(require_admin)` on its own
+# `current_user` param, so write access is unaffected by this relaxation --
+# only GET /rules (list) actually changes behavior.
+router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(get_current_user)])
 
 RuleType = Literal["structural", "semantic", "cross_reference"]
+RulePayor = Literal[
+    "Aetna", "Anthem", "Cigna", "Emblem", "Empire", "Healthfirst", "Molina",
+    "MVP", "Straight Medicaid", "New York Medicaid",
+]
 
 
 class RuleOut(BaseModel):
@@ -25,8 +37,14 @@ class RuleOut(BaseModel):
     question_set: str
     question_text: str
     rule_type: RuleType
+    payor: RulePayor | None
     active: bool
     current_version: int
+    # Round 56: metadata only -- see Rule.session_notes_only/tp_section's
+    # own docstring in db/models.py. Never read by any comparison logic
+    # anywhere in this backend.
+    session_notes_only: bool
+    tp_section: str | None
 
 
 class RuleCreate(BaseModel):
@@ -35,7 +53,10 @@ class RuleCreate(BaseModel):
     question_set: str
     question_text: str
     rule_type: RuleType
+    payor: RulePayor | None = None
     active: bool = True
+    session_notes_only: bool = False
+    tp_section: str | None = None
 
 
 class RuleUpdate(BaseModel):
@@ -43,6 +64,9 @@ class RuleUpdate(BaseModel):
     question_set: str | None = None
     question_text: str | None = None
     rule_type: RuleType | None = None
+    payor: RulePayor | None = None
+    session_notes_only: bool | None = None
+    tp_section: str | None = None
 
 
 @router.get("", response_model=list[RuleOut])

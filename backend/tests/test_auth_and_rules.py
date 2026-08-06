@@ -31,7 +31,7 @@ def test_login_wrong_password_401(client, seeded_baseline):
 
 
 def test_login_inactive_user_401(db_session, client):
-    user = make_user(db_session, role="standard", active=False)
+    user = make_user(db_session, role="user", active=False)
     resp = login(client, user.email)
     assert resp.status_code == 401
 
@@ -48,7 +48,7 @@ def test_authorization_rechecks_db_role_not_stale_jwt_claim(db_session, client):
     payload = decode_access_token(token)
     assert payload["role"] == "admin"
 
-    db_session.execute(text("UPDATE users SET role = 'standard' WHERE id = :id"), {"id": user.id})
+    db_session.execute(text("UPDATE users SET role = 'user' WHERE id = :id"), {"id": user.id})
     db_session.commit()
 
     resp = client.post(
@@ -107,7 +107,7 @@ def test_get_and_post_rules_as_admin_succeeds(client, db_session, seeded_baselin
     assert sync_state.pending_change_count == pending_before + 1
 
 
-def test_post_rules_as_standard_user_403(client, seeded_baseline):
+def test_post_rules_as_user_role_403(client, seeded_baseline):
     headers = login_headers(client, "s.patel@brightpath-aba.com")
 
     resp = client.post(
@@ -122,6 +122,61 @@ def test_post_rules_as_standard_user_403(client, seeded_baseline):
         headers=headers,
     )
     assert resp.status_code == 403
+
+
+def test_get_rules_as_user_role_succeeds_read_only(client, seeded_baseline):
+    """Round 50: GET /rules is readable by any authenticated role -- only
+    the mutating routes are admin-gated (mirrors the pre-existing mock's
+    `role !== "Admin" => readOnly` behavior, which always let a non-admin
+    at least SEE the rule list).
+    """
+    headers = login_headers(client, "s.patel@brightpath-aba.com")  # role=user
+    resp = client.get("/rules", headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 24
+
+
+def test_create_and_patch_rule_payor_field(client, db_session, seeded_baseline):
+    """Round 50: payor is real, editable Rule metadata now (was mock-only
+    before) -- still metadata-only, never reaches the real rule-checking
+    agent (see app/rule_engine/client.py's docstring), but genuinely
+    persists, versions, and audits like every other Rule field.
+    """
+    headers = login_headers(client, "m.chen@brightpath-aba.com")
+    code = unique_rule_code()
+
+    resp = client.post(
+        "/rules",
+        json={
+            "rule_code": code,
+            "category": "Patient Info",
+            "question_set": "Treatment Plan",
+            "question_text": "Payor-scoped test rule",
+            "rule_type": "structural",
+            "payor": "Aetna",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201
+    rule_id = resp.json()["id"]
+    assert resp.json()["payor"] == "Aetna"
+
+    patch_resp = client.patch(f"/rules/{rule_id}", json={"payor": "Molina"}, headers=headers)
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["payor"] == "Molina"
+    assert patch_resp.json()["current_version"] == 2
+
+    # clearing back to universal (NULL) must also be a real, persisted diff
+    clear_resp = client.patch(f"/rules/{rule_id}", json={"payor": None}, headers=headers)
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["payor"] is None
+    assert clear_resp.json()["current_version"] == 3
+
+    db_session.expire_all()
+    history_rows = db_session.execute(
+        select(RuleVersionHistory).where(RuleVersionHistory.rule_id == uuid.UUID(rule_id)).order_by(RuleVersionHistory.version)
+    ).scalars().all()
+    assert [h.payor for h in history_rows] == ["Aetna", "Molina", None]
 
 
 def _create_test_rule(client, headers) -> dict:
@@ -294,6 +349,85 @@ def test_expired_jwt_is_rejected(client, seeded_baseline):
 
     resp = client.get("/rules", headers={"Authorization": f"Bearer {expired_token}"})
     assert resp.status_code == 401
+
+
+def test_get_me_returns_fresh_db_role_not_stale_jwt_claim(db_session, client):
+    """Round 41: GET /auth/me is the frontend's source of truth for "who am
+    I" after login -- must reflect the DB role right now, not whatever the
+    token happened to claim at login time (same principle as the 403
+    recheck above, just for a read instead of a write).
+    """
+    user = make_user(db_session, role="user")
+    resp = login(client, user.email)
+    token = resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    me = client.get("/auth/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["role"] == "user"
+    assert me.json()["email"] == user.email
+
+    db_session.execute(text("UPDATE users SET role = 'developer' WHERE id = :id"), {"id": user.id})
+    db_session.commit()
+
+    me2 = client.get("/auth/me", headers=headers)
+    assert me2.status_code == 200
+    assert me2.json()["role"] == "developer", "must reflect the live DB role, not the token's stale claim"
+
+
+def test_get_me_requires_auth(client):
+    resp = client.get("/auth/me")
+    assert resp.status_code == 401
+
+
+# ------------------------------------------------------- admin-provisioned users
+
+def test_admin_can_create_user_of_any_role(client, db_session, seeded_baseline):
+    headers = login_headers(client, "m.chen@brightpath-aba.com")
+
+    for role in ("admin", "user", "developer"):
+        email = f"new-{role}-{uuid.uuid4().hex[:8]}@test.local"
+        resp = client.post(
+            "/admin/users",
+            json={"name": f"Test {role.title()}", "email": email, "password": "TestPass123!", "role": role},
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["role"] == role
+        assert body["email"] == email
+        assert body["active"] is True
+
+        # The new account can actually log in as that role.
+        login_resp = login(client, email, password="TestPass123!")
+        assert login_resp.status_code == 200
+        payload = decode_access_token(login_resp.json()["access_token"])
+        assert payload["role"] == role
+
+        audit_row = db_session.execute(
+            select(AuditLog).where(AuditLog.target_type == "user", AuditLog.target_id == uuid.UUID(body["id"]))
+        ).scalar_one()
+        assert audit_row.details["role"]["to"] == role
+
+
+def test_admin_create_user_duplicate_email_409(client, seeded_baseline):
+    headers = login_headers(client, "m.chen@brightpath-aba.com")
+    resp = client.post(
+        "/admin/users",
+        json={"name": "Dup", "email": "m.chen@brightpath-aba.com", "password": "x", "role": "user"},
+        headers=headers,
+    )
+    assert resp.status_code == 409
+
+
+def test_non_admin_cannot_create_user_403(client, seeded_baseline):
+    headers = login_headers(client, "s.patel@brightpath-aba.com")  # role=user
+    resp = client.post(
+        "/admin/users",
+        json={"name": "x", "email": f"blocked-{uuid.uuid4().hex[:8]}@test.local", "password": "x", "role": "admin"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
 
 
 def test_optimistic_lock_helper_accepts_matching_timestamp():

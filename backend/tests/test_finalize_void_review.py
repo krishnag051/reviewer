@@ -9,7 +9,7 @@ from pypdf import PdfWriter
 from sqlalchemy import select
 
 from app.db.models import AppConfig, AuditLog, Upload, Version
-from tests.conftest import login_headers
+from tests.conftest import ROUND56_QA_FORM_DATA, login_headers
 
 
 def _pdf_bytes() -> bytes:
@@ -20,6 +20,26 @@ def _pdf_bytes() -> bytes:
     return buf.getvalue()
 
 
+def _resolve_all_uncertain(client, headers, detail: dict) -> dict:
+    """The real rule-checking agent (2026-07-30, previously the hollow
+    stub) can honestly return "uncertain" for some rules against this
+    fixture's content-free blank-page PDF -- finalize's uncertain-results
+    guard would then block tests that don't care about that guard at all.
+    Resolves every uncertain result to "na" (a safe, generic resolution,
+    not asserting a real answer) so finalize calls in tests NOT about that
+    specific guard aren't randomly blocked by real agent non-determinism.
+    Returns the refreshed upload detail.
+    """
+    for rr in detail["rule_results"]:
+        if rr["final_status"] == "uncertain":
+            client.patch(
+                f"/rule_results/{rr['id']}",
+                json={"updated_at": rr["updated_at"], "final_status": "na"},
+                headers=headers,
+            )
+    return client.get(f"/uploads/{detail['id']}", headers=headers).json()
+
+
 def _ready_upload(client, headers) -> dict:
     ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
     patient = client.post(
@@ -28,11 +48,17 @@ def _ready_upload(client, headers) -> dict:
     version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
     upload = client.post(
         f"/versions/{version['id']}/uploads",
-        files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready", detail
+    detail = _resolve_all_uncertain(client, headers, detail)
     return {"patient": patient, "version": version, "upload": detail}
 
 
@@ -81,7 +107,12 @@ def test_finalize_rejects_existing_final_sibling(client, seeded_baseline):
     # A second upload for the SAME version.
     upload2 = client.post(
         f"/versions/{ctx['version']['id']}/uploads",
-        files={"file": ("tp2.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     detail2 = client.get(f"/uploads/{upload2['id']}", headers=headers).json()
@@ -138,7 +169,12 @@ def test_finalize_rejects_already_finalized_upload_and_changes_nothing(client, d
 
     sibling = client.post(
         f"/versions/{ctx['version']['id']}/uploads",
-        files={"file": ("tp2.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
 
@@ -192,7 +228,12 @@ def test_finalize_success_sets_purge_after_on_siblings_not_self(client, db_sessi
     # Second, non-final sibling upload for the same version.
     upload2 = client.post(
         f"/versions/{ctx['version']['id']}/uploads",
-        files={"file": ("tp2.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
 
@@ -216,6 +257,19 @@ def test_finalize_success_computes_score_via_scoring_module(client, db_session, 
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _ready_upload(client, headers)
     results = ctx["upload"]["rule_results"]
+
+    # This test's arithmetic (score = 2/3 * 100) needs EXACTLY 2 pass + 1
+    # fail among ALL rule_results, not just the 3 rows it touches — reset
+    # everything else to "na" first (compute_score excludes na from both
+    # sides) so real agent content elsewhere on this fixture's blank-page
+    # PDF can't add extra pass/fail into the denominator.
+    for rr in results:
+        if rr["final_status"] != "na":
+            client.patch(
+                f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"},
+                headers=headers,
+            )
+    results = client.get(f"/uploads/{ctx['upload']['id']}", headers=headers).json()["rule_results"]
 
     # Override 2 to pass, 1 to fail before finalizing -> score = 2/3 * 100.
     for rr in results[:2]:
@@ -310,7 +364,12 @@ def test_voided_upload_excluded_from_finalize_sibling_check(client, seeded_basel
 
     upload2 = client.post(
         f"/versions/{ctx['version']['id']}/uploads",
-        files={"file": ("tp2.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     detail2 = client.get(f"/uploads/{upload2['id']}", headers=headers).json()
@@ -331,7 +390,12 @@ def test_voided_siblings_purge_after_not_extended_by_finalize(client, db_session
 
     upload2 = client.post(
         f"/versions/{ctx['version']['id']}/uploads",
-        files={"file": ("tp2.pdf", _pdf_bytes(), "application/pdf")},
+        data=ROUND56_QA_FORM_DATA,
+        files={
+            "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
+            "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
+            "session_notes": ("session-note.pdf", _pdf_bytes(), "application/pdf"),
+        },
         headers=headers,
     ).json()
     void_resp = client.post(f"/uploads/{upload2['id']}/void", json={"reason": "wrong file"}, headers=headers)

@@ -41,7 +41,12 @@ def create_rule(
     question_set: str,
     question_text: str,
     rule_type: str,
+    payor: str | None = None,
     active: bool = True,
+    # Round 56: metadata-only, same convention as payor above -- see
+    # Rule.session_notes_only/tp_section's own docstring in db/models.py.
+    session_notes_only: bool = False,
+    tp_section: str | None = None,
     actor_user_id: uuid.UUID | None = None,
 ) -> Rule:
     """Creates a rule and writes its rule_version_history v1 row in the same
@@ -56,7 +61,10 @@ def create_rule(
         question_set=question_set,
         question_text=question_text,
         rule_type=rule_type,
+        payor=payor,
         active=active,
+        session_notes_only=session_notes_only,
+        tp_section=tp_section,
         current_version=1,
         updated_by=actor_user_id,
     )
@@ -71,7 +79,10 @@ def create_rule(
             category=category,
             question_set=question_set,
             rule_type=rule_type,
+            payor=payor,
             active=active,
+            session_notes_only=session_notes_only,
+            tp_section=tp_section,
             changed_by=actor_user_id,
         )
     )
@@ -92,7 +103,10 @@ def create_rule(
             "question_set": {"from": None, "to": question_set},
             "question_text": {"from": None, "to": question_text},
             "rule_type": {"from": None, "to": rule_type},
+            "payor": {"from": None, "to": payor},
             "active": {"from": None, "to": active},
+            "session_notes_only": {"from": None, "to": session_notes_only},
+            "tp_section": {"from": None, "to": tp_section},
         },
     )
 
@@ -113,7 +127,10 @@ def _post_change_history_row(rule: Rule, actor_user_id: uuid.UUID | None) -> Rul
         category=rule.category,
         question_set=rule.question_set,
         rule_type=rule.rule_type,
+        payor=rule.payor,
         active=rule.active,
+        session_notes_only=rule.session_notes_only,
+        tp_section=rule.tp_section,
         changed_by=actor_user_id,
     )
 
@@ -126,7 +143,7 @@ def edit_rule(
     actor_user_id: uuid.UUID,
 ) -> Rule | None:
     """PATCH /rules/:id. `changes` is whatever subset of {category,
-    question_set, question_text, rule_type} the request included. Returns
+    question_set, question_text, rule_type, payor} the request included. Returns
     None if the rule doesn't exist. Does not commit — caller controls the
     transaction boundary (matches create_rule's convention).
 

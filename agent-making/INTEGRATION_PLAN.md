@@ -1,5 +1,21 @@
 # Front-End/Back-End Integration Plan
 
+## 🛑 HARD RULE (2026-07-31, permanent, effective immediately) — NO REAL API CALLS WITHOUT EXPLICIT PER-INSTANCE PERMISSION
+
+> Hard rule, effective immediately and permanent: no real API calls without my explicit, per-instance permission
+>
+> Real Anthropic API credits are being spent by a paying account, and the last round's full real-content backend test suite (multiple files, real agent calls per test case, self-consistency doubling/tripling each one) burned a large amount of money without that cost being visible or approved in advance. That cannot happen again.
+>
+> Going forward:
+>
+> Never run anything that makes a real call to the Anthropic API — not a live document review, not a "real content" test file, not a diagnostic probe, not a background verification pass — without stopping first and telling me exactly what you want to run and why, including your best estimate of how many calls/how much it will cost. Wait for explicit approval before running it.
+> If a task seems to need real-API verification to be considered "done," don't run it yourself. Tell me the exact command to run, and I will run it myself, or explicitly tell you to proceed. Default to reporting code as complete-but-unverified-against-real-API rather than spending money to verify it without asking.
+> Mock/synthetic tests, tsc, linters, and anything that costs nothing stay exactly as encouraged as before — this rule is only about real Anthropic API spend, not about testing rigor in general. Keep doing thorough non-live verification; just stop short of the real-API step and ask.
+
+Directly relevant here: the `review_treatment_plan` wrapper (§1) and anything that calls it — the backend's `run_upload_pipeline` background task included — makes real, billed calls every time it runs. That is no longer something to just run to confirm "it works." See the identical copy of this rule in the root `CLAUDE.md`, `agent-making/AGENT_STATE.md`, and `frontend/FRONTEND_STATE.md`.
+
+---
+
 Proposal only — no code has been written against this yet. Nothing in
 `agent-making/` is modified by this plan; the hard requirement going in is
 that `agent-making/` stays completely standalone, called into from outside
@@ -88,23 +104,30 @@ side: `docs/BACKEND_IMPLEMENTATION_SUMMARY.md`.
   its own job/poll abstraction — it needs to be callable from *inside* that
   existing `BackgroundTask`, in the same slot where `rule_engine.run_rule_checks`
   (the deliberately hollow stub — see root `CLAUDE.md`) is called today.
-- **The frontend's mock U/V draft model maps reasonably well onto the
-  backend's real `versions`(`in_progress`/`finalized`)/`uploads`
+- **The frontend's mock U/V draft model maps cleanly onto the backend's
+  real `versions`(`in_progress`/`finalized`)/`uploads`
   (`processing`/`ready`/`error`, `upload_number` sequential per version)
-  tables** — a frontend `UAttempt` ≈ a backend `upload` row, a frontend
-  `PlanVersion` ≈ a backend `versions` row once `status="finalized"`. But
-  one real mismatch to resolve, not just a naming difference: **the
+  tables — confirmed 2026-07-30, not just asserted.** A frontend
+  `UAttempt` ≈ a backend `upload` row; a frontend `PlanVersion` ≈ a backend
+  `versions` row once `status="finalized"`. The one real mismatch flagged
+  here previously stands, now confirmed rather than speculated: **the
   backend creates the `versions` row — with a real, already-assigned
   `version_number` — up front, in `in_progress` status, before the first
-  upload even happens.** The frontend today does the opposite: it creates
-  no version-shaped record at all until finalize; the "V0" label used for
-  a not-yet-finalized first slot (see `FRONTEND_STATE.md` §1) is a pure UI
-  string with nothing backing it. Once wired to the real backend, that
-  slot will already have a real `version_number` (e.g. `1`) the moment the
-  first upload happens — the frontend's locally-computed "next slot is
-  `versions.length + 1`" logic and its "V0" convention will both need to
-  be replaced by reading the real in-progress version's assigned number
-  from the backend, not deriving it client-side.
+  upload even happens** (`POST /patients/:id/versions` always precedes
+  `POST /versions/:id/uploads` — there is no route ordering that lets an
+  upload exist without an already-numbered version). The frontend's "V0"
+  label (see `FRONTEND_STATE.md` §1) is confirmed to be a pure UI string
+  with nothing backing it in the mock — no restructuring needed on the
+  backend side to fix this, per this round's explicit instruction. Once
+  wired to the real backend, the fix is entirely on the frontend side:
+  read the real in-progress version's already-assigned `version_number`
+  from the backend instead of deriving "next slot" client-side, and drop
+  the "V0" placeholder — a real number is always available the moment a
+  version exists, which is before the first upload, not after. The
+  frontend's "pending/draft" UI *language* (not the number) is exactly
+  right as-is and needs no change: showing "Draft · pending V{n}" until
+  that upload's status flips to finalized is precisely how the real
+  `in_progress` -> `finalized` transition should be surfaced.
 - **Siblings-on-finalize: the frontend's speculative "should probably be
   soft-retained later" note is now confirmed correct, not just a guess.**
   The backend's real `finalize_upload` sets non-chosen sibling uploads'
@@ -113,21 +136,17 @@ side: `docs/BACKEND_IMPLEMENTATION_SUMMARY.md`.
   (`finalizeAttempt` in `tp-context.tsx` drops every sibling `UAttempt`
   outright) is a mock-only simplification that should NOT carry over
   as-is when this connects to the real backend.
-- **One real, unresolved tension, flagged here rather than silently
-  decided either way:** the frontend has a confirmed product decision that
-  overrides are **V-only** — a draft `UAttempt` gets no override
-  affordance anywhere in the UI (see `FRONTEND_STATE.md` §1 and §2). The
-  real backend's `override_rule_result` does **not** enforce that — it
-  allows overriding a `rule_result` on any upload, finalized or not, and
-  only *conditionally* recomputes the parent version's score if that
-  particular upload happens to already be the finalized one. Which
-  behavior is actually correct for the real product — restrict override to
-  finalized versions only (matching the frontend's current decision,
-  requiring a backend-side guard that doesn't exist today), or allow it on
-  drafts too (matching the backend's current behavior, requiring the
-  frontend's override UI to be extended to drafts) — is a real product
-  decision that needs to be made before wiring this up, not something to
-  quietly pick one way just because one side happens to already do it.
+- **Override scope — resolved (2026-07-30), not open anymore.** An earlier
+  version of this bullet flagged a real tension: the frontend's override
+  UI was V-only while the backend's `override_rule_result` allowed
+  overriding any upload. That's settled now, on both sides, the other
+  direction: overrides are **draft-only**. The frontend's override
+  dropdown only renders for a selected draft attempt, never a finalized
+  version (`FRONTEND_STATE.md` §1–§2); the backend's `override_rule_result`
+  now takes a `FOR UPDATE` lock on the parent `Upload` row and rejects with
+  409 once `is_final` is true (fixed and concurrency-tested Round 40 —
+  closed a real race where a plain read could miss an in-flight finalize).
+  Nothing left to decide here.
 
 ---
 
@@ -262,6 +281,67 @@ semantics. `schema_version` exists specifically so these are never silent.
   `review_treatment_plan(pdf_path)` can read a real file path from. Needs
   a real decision on temp-file lifecycle — delete after processing, or
   retain for re-review?
+- **Update, 2026-08-02 (Round 51):** the backend now requires a SECOND
+  file at every upload — the "supporting document" (Mrs. Ungar's confirmed
+  requirement), stored permanently (`uploads.supporting_document_path`,
+  same retention lifecycle as the TP's own file) and served display-only
+  via `GET /uploads/:id/supporting-file`. **`review_treatment_plan`'s
+  signature is unchanged — this document is not passed to it, not read by
+  this repo at all, this round.** It exists purely as a second real file a
+  reviewer can open. If a future round wires extraction/sub-agent
+  consumption of it into the pipeline (the natural next step for §4's
+  "pre-upload metadata cross-check" gap noted in `AGENT_STATE.md`), that's
+  new work on this repo's side of the boundary — don't assume it's already
+  flowing through just because the backend now stores it.
+- **Update, 2026-07-31 (Round 52) — this IS that future round; the
+  signature and return shape above are now stale, flagged here rather than
+  silently:**
+  - `review_treatment_plan` gained a new optional keyword param:
+    `supporting_doc_path: str | None = None`. `None` (the default) is the
+    exact pre-Round-52 shape — zero behavior change for any existing
+    caller. When given, `pipeline/supporting_doc_extraction.py` makes ONE
+    ADDITIONAL real API call (a separate, model-driven extraction of
+    Mrs. Ungar's 8 fields — BCBA credentials/NPI, authorization dates,
+    report date range, assessment date/POS/assessor, 97153
+    hours/POS/schedule, requested hours, assessment-vs-payor-guideline,
+    diagnostic-report match), checked against and counted into the SAME
+    `ApiCallTracker`/`max_calls` cap as every other call this function
+    makes — see that file's own docstring.
+  - The `ReviewResult` return shape gained one new top-level key:
+    `"supporting_doc_extraction": dict[str, {"value": str | None,
+    "confidence": "high"|"medium"|"low"|"none", "source_quote": str |
+    None}] | None`. `None` when `supporting_doc_path` wasn't passed
+    (including every pre-Round-52 caller); otherwise a dict keyed by
+    `supporting_doc_extraction.SUPPORTING_DOC_FIELDS`, one entry per field,
+    each carrying its own honest confidence (`"none"` is a real, expected
+    outcome — "this document didn't say" — never coerced into a blank or
+    an error).
+  - Per §3 above, this is a "risky" category change (new param, new
+    return-shape key) — flagged here as that section requires, not done
+    quietly. It is additive/backward-compatible in practice (nothing
+    breaks for a caller ignoring both), but the shape itself did change.
+  - `pipeline/__init__.py` did NOT need to change to support this —
+    confirmed by investigation before building: `pipeline/api.py`'s
+    existing `_run_with_field_override` duplication pattern (now widened
+    and renamed `_run_pipeline_with_extras`) already proved
+    `extracted_fields` can be mutated before either rule-checking layer
+    runs; adding `extracted_fields["supporting_doc"]` the same way payor/
+    plan_type overrides already worked required no change to the
+    off-limits file. See `_run_pipeline_with_extras`'s own docstring in
+    `pipeline/api.py` for the real cost of this approach: because the
+    backend now sends `supporting_doc_path` on every real call (Round 51
+    made the second file mandatory), this widened function — not the bare
+    `run_full_pipeline` passthrough — is what real production traffic
+    actually takes now, so `api.py` duplicates a larger share of
+    `pipeline/__init__.py`'s orchestration than it did before, even though
+    no line of `__init__.py` itself changed.
+  - Zero real API calls were made verifying this — proven entirely with a
+    mocked Anthropic client boundary (`tests/test_supporting_doc_extraction.py`),
+    per the standing rule. That file also confirms the shared-tracker/cap
+    claim above with an actual test (not an assumption): a `max_calls=0`
+    run blocks the extraction call before either fake client is touched,
+    and a `max_calls=1` run lets extraction through but stops the judgment
+    call that would follow — both against the SAME tracker.
 - **Async/job handling**: given real run times, a background-job pattern
   (queue + poll or webhook) rather than a blocking request, per the
   progress note above. **Already built**, not still to design — see the

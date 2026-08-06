@@ -12,9 +12,12 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UploadRouteImport } from './routes/upload'
 import { Route as RulesRouteImport } from './routes/rules'
 import { Route as ReportsRouteImport } from './routes/reports'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as DevRouteImport } from './routes/dev'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PlansIndexRouteImport } from './routes/plans.index'
+import { Route as SessionNotesUploadIdRouteImport } from './routes/session-notes.$uploadId'
 import { Route as PlansRefIdIndexRouteImport } from './routes/plans.$refId.index'
 import { Route as PlansRefIdEmailRouteImport } from './routes/plans.$refId.email'
 
@@ -33,6 +36,16 @@ const ReportsRoute = ReportsRouteImport.update({
   path: '/reports',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DevRoute = DevRouteImport.update({
+  id: '/dev',
+  path: '/dev',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminRoute = AdminRouteImport.update({
   id: '/admin',
   path: '/admin',
@@ -46,6 +59,11 @@ const IndexRoute = IndexRouteImport.update({
 const PlansIndexRoute = PlansIndexRouteImport.update({
   id: '/plans/',
   path: '/plans/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SessionNotesUploadIdRoute = SessionNotesUploadIdRouteImport.update({
+  id: '/session-notes/$uploadId',
+  path: '/session-notes/$uploadId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PlansRefIdIndexRoute = PlansRefIdIndexRouteImport.update({
@@ -62,9 +80,12 @@ const PlansRefIdEmailRoute = PlansRefIdEmailRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/dev': typeof DevRoute
+  '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/rules': typeof RulesRoute
   '/upload': typeof UploadRoute
+  '/session-notes/$uploadId': typeof SessionNotesUploadIdRoute
   '/plans/': typeof PlansIndexRoute
   '/plans/$refId/email': typeof PlansRefIdEmailRoute
   '/plans/$refId/': typeof PlansRefIdIndexRoute
@@ -72,9 +93,12 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/dev': typeof DevRoute
+  '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/rules': typeof RulesRoute
   '/upload': typeof UploadRoute
+  '/session-notes/$uploadId': typeof SessionNotesUploadIdRoute
   '/plans': typeof PlansIndexRoute
   '/plans/$refId/email': typeof PlansRefIdEmailRoute
   '/plans/$refId': typeof PlansRefIdIndexRoute
@@ -83,9 +107,12 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/dev': typeof DevRoute
+  '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/rules': typeof RulesRoute
   '/upload': typeof UploadRoute
+  '/session-notes/$uploadId': typeof SessionNotesUploadIdRoute
   '/plans/': typeof PlansIndexRoute
   '/plans/$refId/email': typeof PlansRefIdEmailRoute
   '/plans/$refId/': typeof PlansRefIdIndexRoute
@@ -95,9 +122,12 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/admin'
+    | '/dev'
+    | '/login'
     | '/reports'
     | '/rules'
     | '/upload'
+    | '/session-notes/$uploadId'
     | '/plans/'
     | '/plans/$refId/email'
     | '/plans/$refId/'
@@ -105,9 +135,12 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/admin'
+    | '/dev'
+    | '/login'
     | '/reports'
     | '/rules'
     | '/upload'
+    | '/session-notes/$uploadId'
     | '/plans'
     | '/plans/$refId/email'
     | '/plans/$refId'
@@ -115,9 +148,12 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/admin'
+    | '/dev'
+    | '/login'
     | '/reports'
     | '/rules'
     | '/upload'
+    | '/session-notes/$uploadId'
     | '/plans/'
     | '/plans/$refId/email'
     | '/plans/$refId/'
@@ -126,9 +162,12 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
+  DevRoute: typeof DevRoute
+  LoginRoute: typeof LoginRoute
   ReportsRoute: typeof ReportsRoute
   RulesRoute: typeof RulesRoute
   UploadRoute: typeof UploadRoute
+  SessionNotesUploadIdRoute: typeof SessionNotesUploadIdRoute
   PlansIndexRoute: typeof PlansIndexRoute
   PlansRefIdEmailRoute: typeof PlansRefIdEmailRoute
   PlansRefIdIndexRoute: typeof PlansRefIdIndexRoute
@@ -157,6 +196,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dev': {
+      id: '/dev'
+      path: '/dev'
+      fullPath: '/dev'
+      preLoaderRoute: typeof DevRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin': {
       id: '/admin'
       path: '/admin'
@@ -176,6 +229,13 @@ declare module '@tanstack/react-router' {
       path: '/plans'
       fullPath: '/plans/'
       preLoaderRoute: typeof PlansIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/session-notes/$uploadId': {
+      id: '/session-notes/$uploadId'
+      path: '/session-notes/$uploadId'
+      fullPath: '/session-notes/$uploadId'
+      preLoaderRoute: typeof SessionNotesUploadIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/plans/$refId/': {
@@ -198,9 +258,12 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
+  DevRoute: DevRoute,
+  LoginRoute: LoginRoute,
   ReportsRoute: ReportsRoute,
   RulesRoute: RulesRoute,
   UploadRoute: UploadRoute,
+  SessionNotesUploadIdRoute: SessionNotesUploadIdRoute,
   PlansIndexRoute: PlansIndexRoute,
   PlansRefIdEmailRoute: PlansRefIdEmailRoute,
   PlansRefIdIndexRoute: PlansRefIdIndexRoute,

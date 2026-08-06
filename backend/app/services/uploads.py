@@ -7,8 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record
-from app.db.models import Upload, Version
-from app.storage import save_blob
+from app.db.models import SessionNoteFile, Upload, UploadIntakeAnswers, Version
+from app.storage import save_blob, save_session_note_blob, save_supporting_blob
 
 
 def create_upload(
@@ -17,6 +17,18 @@ def create_upload(
     *,
     filename: str,
     content: bytes,
+    supporting_document_filename: str | None = None,
+    supporting_document_content: bytes | None = None,
+    # Round 56: the structured_form-mode alternative to the two params
+    # above. `intake_answers` is the 5 plain-text Q&A answers (dict keyed by
+    # UploadIntakeAnswers' own column names); `session_notes` is a list of
+    # (filename, content) tuples, one per uploaded file. The router decides
+    # which of these two shapes to populate based on the live
+    # app_config.supporting_doc_mode and validates required-ness BEFORE
+    # calling this function — this function itself just persists whatever
+    # it's given, it doesn't re-check mode or requiredness.
+    intake_answers: dict[str, str] | None = None,
+    session_notes: list[tuple[str, bytes]] | None = None,
     uploaded_by: uuid.UUID,
     _after_lock: Callable[[], None] | None = None,
 ) -> Upload | None:
@@ -27,6 +39,14 @@ def create_upload(
     backstop here, not the only protection). Returns None if the version
     doesn't exist. `_after_lock` is a test-only hook, invoked right after
     the lock is acquired — production callers never pass it.
+
+    Round 51: `supporting_document_filename`/`_content`, when given, are
+    stored via save_supporting_blob, a separate function from save_blob so
+    the two files' on-disk paths can never collide. Round 56 widened both
+    to Optional since a structured_form-mode upload supplies
+    intake_answers/session_notes instead — the router guarantees exactly
+    the pair matching the live mode is populated before this is ever
+    called.
     """
     version = session.execute(
         select(Version).where(Version.id == version_id).with_for_update()
@@ -56,6 +76,19 @@ def create_upload(
 
     upload.file_path = save_blob(upload.id, filename, content)
 
+    if supporting_document_filename is not None:
+        upload.supporting_document_path = save_supporting_blob(
+            upload.id, supporting_document_filename, supporting_document_content
+        )
+
+    if intake_answers is not None:
+        session.add(UploadIntakeAnswers(upload_id=upload.id, **intake_answers))
+
+    if session_notes:
+        for note_filename, note_content in session_notes:
+            path = save_session_note_blob(upload.id, note_filename, note_content)
+            session.add(SessionNoteFile(upload_id=upload.id, file_path=path, original_filename=note_filename))
+
     record(
         session,
         user_id=uploaded_by,
@@ -69,6 +102,25 @@ def create_upload(
     )
     session.commit()
     return upload
+
+
+def get_latest_intake_answers(session: Session, patient_id: uuid.UUID) -> UploadIntakeAnswers | None:
+    """Round 56: "editable across versions" (Item 2) -- the structured Q&A
+    form prefills from whatever the most recent upload for this patient
+    (across every version, draft or finalized) answered, so a later
+    submission never forces blank re-entry. Purely a read for the
+    frontend's own prefill; does not copy/mutate anything server-side --
+    each upload still gets its own UploadIntakeAnswers row at submission
+    time (see create_upload above), a fresh snapshot, not a shared one.
+    """
+    return session.execute(
+        select(UploadIntakeAnswers)
+        .join(Upload, Upload.id == UploadIntakeAnswers.upload_id)
+        .join(Version, Version.id == Upload.version_id)
+        .where(Version.patient_id == patient_id)
+        .order_by(UploadIntakeAnswers.created_at.desc(), UploadIntakeAnswers.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def void_upload(

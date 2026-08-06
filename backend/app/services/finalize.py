@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -16,6 +17,7 @@ def finalize_upload(
     *,
     reference_id: str | None,
     actor_user_id: uuid.UUID,
+    _after_lock: Callable[[], None] | None = None,
 ) -> Upload | None:
     """POST /uploads/:id/finalize. Returns None if the upload doesn't exist.
     Raises HTTPException(409, detail=...) on any guard failure — nothing is
@@ -60,7 +62,17 @@ def finalize_upload(
     uploads of the SAME version (otherwise two siblings could both read
     "no other upload is final yet" before either commits, and both finalize
     — exactly the invariant guard 3 exists to prevent). The upload-row lock
-    additionally serializes against a concurrent void of this same upload.
+    additionally serializes against a concurrent void of this same upload,
+    and (2026-07-31) against a concurrent override on this same upload's
+    rule_results — `app/services/rule_results.py::override_rule_result`
+    now takes the same `FOR UPDATE` lock on this upload row before checking
+    `is_final`, closing a race where an override could slip through in the
+    window after this function's guards pass but before its commit lands.
+
+    `_after_lock` is a test-only hook, called right after both locks are
+    acquired but before any guard check — used to force deterministic
+    interleaving in concurrency tests (see
+    tests/test_rule_result_overrides.py's override-vs-finalize race tests).
     """
     upload = session.execute(
         select(Upload).where(Upload.id == upload_id).with_for_update()
@@ -72,6 +84,9 @@ def finalize_upload(
     version = session.execute(
         select(Version).where(Version.id == upload.version_id).with_for_update()
     ).scalar_one()
+
+    if _after_lock is not None:
+        _after_lock()
 
     # 0.
     if upload.is_final:

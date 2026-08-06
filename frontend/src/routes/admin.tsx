@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTP } from "@/lib/tp-context";
-import { reviewers as initialReviewers, auditLog, invoices } from "@/lib/tp-mock";
+import { useAuth } from "@/lib/auth-context";
+import { reviewers as initialReviewers, auditLog, invoices, rules as mockRuleLibrary } from "@/lib/tp-mock";
 import { PageHeader } from "@/components/tp/ui";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -15,8 +16,9 @@ import { toast } from "sonner";
 export const Route = createFileRoute("/admin")({ component: AdminSettings });
 
 function AdminSettings() {
-  const { role, patients, rules } = useTP();
-  const readOnly = role !== "Admin";
+  const { patients } = useTP();
+  const { user } = useAuth();
+  const readOnly = user?.role !== "admin";
 
   return (
     <div className="h-full overflow-y-auto">
@@ -44,7 +46,7 @@ function AdminSettings() {
               {[
                 { label: "Company Name", value: "BrightPath ABA Services" },
                 { label: "Region", value: "New York, USA" },
-                { label: "Rule Library", value: `${rules.length} rules` },
+                { label: "Rule Library", value: `${mockRuleLibrary.length} rules` },
                 { label: "Seeded Patients", value: `${patients.length} patients` },
               ].map(c => (
                 <div key={c.label} className="rounded-lg border border-slate-200 bg-white p-4">

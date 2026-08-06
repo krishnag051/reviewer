@@ -36,3 +36,15 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     return current_user
+
+
+def require_developer(current_user: User = Depends(get_current_user)) -> User:
+    # Same freshly-loaded-row discipline as require_admin. Gates the Round 49
+    # dev-only simulated-completion route -- a real BCBA/reviewer account is
+    # never provisioned with the `developer` role (scripts/seed.py seeds none;
+    # it's created only via POST /admin/users), so this is never reachable
+    # from the normal review workflow, only for whoever's doing dev/
+    # diagnostics work and was deliberately given that role.
+    if current_user.role != "developer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Developer role required")
+    return current_user

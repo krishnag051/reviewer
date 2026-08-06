@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useTP } from "@/lib/tp-context";
-import { PAYORS, type Payor, type Rule, type ActionLane, type ActionTag, type RuleCheckType } from "@/lib/tp-mock";
-import { PageHeader, CategoryTag, LaneTag } from "@/components/tp/ui";
+import { useAuth } from "@/lib/auth-context";
+import { useRules, useCreateRule, useUpdateRule, useSetRuleActive } from "@/lib/real-data";
+import { ApiError, apiErrorMessage, type RuleOut, type RuleType, type RulePayor } from "@/lib/api-client";
+import { PAYORS } from "@/lib/tp-mock";
+import { PageHeader, CategoryTag } from "@/components/tp/ui";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,46 +12,113 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Pencil, Trash2, Search, Lock } from "lucide-react";
+import { Plus, Pencil, Search, Lock, Loader2, Info, NotebookText } from "lucide-react";
 import { toast } from "sonner";
 import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/rules")({ component: RulesStudio });
 
-const LANES: ActionLane[] = ["BCBA-fix", "Facilitator-assign"];
-const TAGS: NonNullable<ActionTag>[] = ["Director", "QA", "Coordinator", "General"];
-const CHECK_TYPES: RuleCheckType[] = ["deterministic", "judgment"];
+const RULE_TYPES: RuleType[] = ["structural", "semantic", "cross_reference"];
+const ALL_TAB = "__all__";
 
+type EditForm = {
+  id: string | null; // null = creating a new rule
+  rule_code: string;
+  category: string;
+  question_set: string;
+  question_text: string;
+  rule_type: RuleType;
+  payor: RulePayor | null;
+  active: boolean;
+};
+
+// Round 50: real Rules Studio, wired to the real backend `rules` table --
+// GET /rules is readable by any authenticated role; every mutation is
+// admin-gated on the backend independent of this UI (see api-client.ts's
+// own comment). Explicitly dropped from the old mock version: check-type
+// ("deterministic"/"judgment"), action lane, and action tag -- those are
+// agent-making's own internal concepts and were NEVER backend columns,
+// only ever mock fields. Rather than fake them here, they're gone; the
+// backend's own `rule_type` (structural/semantic/cross_reference) is a
+// different, real classification and is shown as itself, not conflated
+// with agent-making's check_type.
 function RulesStudio() {
-  const { rules, role, upsertRule, deleteRule, toggleRule } = useTP();
-  const readOnly = role !== "Admin";
-  const [payor, setPayor] = useState<Payor>(PAYORS[0]);
+  const { user } = useAuth();
+  const readOnly = user?.role !== "admin";
+
+  const rulesQuery = useRules();
+  const rules = rulesQuery.data ?? [];
+  const createMutation = useCreateRule();
+  const updateMutation = useUpdateRule();
+  const setActiveMutation = useSetRuleActive();
+
+  const [payorTab, setPayorTab] = useState<string>(ALL_TAB);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState<string>("all");
-  const [editing, setEditing] = useState<Rule | null>(null);
+  const [editing, setEditing] = useState<EditForm | null>(null);
   const [open, setOpen] = useState(false);
 
-  // This payor's applicable rules: universal ("ALL") + this payor's own
-  // specific rules -- the same scoping agent-making's own pipeline applies
-  // internally (see AGENT_STATE.md/INTEGRATION_PLAN.md), just surfaced here
-  // as an explicit tab instead of detected from a document.
-  const payorRules = useMemo(() => rules.filter(r => r.payor === "ALL" || r.payor === payor), [rules, payor]);
+  const payorRules = useMemo(
+    () => payorTab === ALL_TAB ? rules : rules.filter(r => r.payor === null || r.payor === payorTab),
+    [rules, payorTab],
+  );
   const categoriesForPayor = useMemo(() => Array.from(new Set(payorRules.map(r => r.category))).sort(), [payorRules]);
-
   const filtered = useMemo(() => payorRules.filter(r =>
     (cat === "all" || r.category === cat) &&
-    (!q || r.description.toLowerCase().includes(q.toLowerCase()) || r.id.toLowerCase().includes(q.toLowerCase()))
+    (!q || r.question_text.toLowerCase().includes(q.toLowerCase()) || r.rule_code.toLowerCase().includes(q.toLowerCase()))
   ), [payorRules, cat, q]);
 
-  const universalCount = payorRules.filter(r => r.payor === "ALL").length;
+  const universalCount = payorRules.filter(r => r.payor === null).length;
   const specificCount = payorRules.length - universalCount;
 
   function openNew() {
     setEditing({
-      id: "", category: categoriesForPayor[0] ?? "Template", payor,
-      description: "", checkType: "judgment", actionLane: "BCBA-fix", actionTag: null, active: true,
+      id: null, rule_code: "", category: categoriesForPayor[0] ?? "", question_set: "", question_text: "",
+      rule_type: "structural", payor: payorTab === ALL_TAB ? null : (payorTab as RulePayor), active: true,
     });
     setOpen(true);
+  }
+  function openEdit(r: RuleOut) {
+    setEditing({
+      id: r.id, rule_code: r.rule_code, category: r.category, question_set: r.question_set,
+      question_text: r.question_text, rule_type: r.rule_type, payor: r.payor, active: r.active,
+    });
+    setOpen(true);
+  }
+
+  async function handleSave() {
+    if (!editing) return;
+    try {
+      if (editing.id === null) {
+        if (!editing.rule_code.trim()) { toast.error("Rule code is required."); return; }
+        await createMutation.mutateAsync({
+          rule_code: editing.rule_code, category: editing.category, question_set: editing.question_set,
+          question_text: editing.question_text, rule_type: editing.rule_type, payor: editing.payor, active: editing.active,
+        });
+        toast.success(`${editing.rule_code} created.`);
+      } else {
+        await updateMutation.mutateAsync({
+          ruleId: editing.id,
+          changes: {
+            category: editing.category, question_set: editing.question_set, question_text: editing.question_text,
+            rule_type: editing.rule_type, payor: editing.payor,
+          },
+        });
+        toast.success(`${editing.rule_code} saved.`);
+      }
+      setOpen(false);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? apiErrorMessage(err) : "Something went wrong.");
+    }
+  }
+
+  async function handleToggleActive(r: RuleOut) {
+    try {
+      await setActiveMutation.mutateAsync({ ruleId: r.id, active: !r.active });
+      toast.success(`${r.rule_code} ${r.active ? "deactivated" : "activated"}.`);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? apiErrorMessage(err) : "Something went wrong.");
+    }
   }
 
   return (
@@ -57,102 +126,141 @@ function RulesStudio() {
       <div className="max-w-7xl mx-auto p-8 space-y-6">
         <PageHeader
           title="Rules Studio"
-          description={`${rules.length} rules total · ${rules.filter(r => r.active).length} active`}
+          description={rulesQuery.isLoading ? "Loading real rules from the backend…" : `${rules.length} rules total · ${rules.filter(r => r.active).length} active`}
           actions={readOnly
-            ? <div className="inline-flex items-center gap-1.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1 text-xs"><Lock className="h-3 w-3" />Read-only for Standard Users</div>
+            ? <div className="inline-flex items-center gap-1.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1 text-xs"><Lock className="h-3 w-3" />Read-only for this role</div>
             : <Button onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />New Rule</Button>}
         />
 
-        <Tabs value={payor} onValueChange={v => { setPayor(v as Payor); setCat("all"); }}>
-          <TabsList className="flex flex-wrap gap-1 h-auto p-1">
-            {PAYORS.map(p => <TabsTrigger key={p} value={p}>{p}</TabsTrigger>)}
-          </TabsList>
+        <div className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <div>
+            Editing here changes real, persisted rule <span className="font-medium">metadata only</span> — category, question set/text,
+            rule type, payor, and active status. It does <span className="font-medium">not</span> change what the real rule-checking
+            agent actually checks: that logic (prompts, deterministic checkers) lives in the agent's own codebase and isn't editable
+            from this UI. Rule code is permanent once created.
+          </div>
+        </div>
 
-          <TabsContent value={payor} className="mt-6 space-y-4">
-            <div className="text-xs text-slate-500">
-              {universalCount} universal rule(s) + {specificCount} {payor}-specific rule(s) = {payorRules.length} applicable to this payor.
-            </div>
+        {rulesQuery.isLoading ? (
+          <div className="flex items-center justify-center gap-2 text-sm text-slate-500 py-10">
+            <Loader2 className="h-4 w-4 animate-spin" />Loading real rules…
+          </div>
+        ) : (
+          <Tabs value={payorTab} onValueChange={v => { setPayorTab(v); setCat("all"); }}>
+            <TabsList className="flex flex-wrap gap-1 h-auto p-1">
+              <TabsTrigger value={ALL_TAB}>All payors</TabsTrigger>
+              {PAYORS.map(p => <TabsTrigger key={p} value={p}>{p}</TabsTrigger>)}
+            </TabsList>
 
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1 max-w-md">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search rules" className="pl-8" />
+            <TabsContent value={payorTab} className="mt-6 space-y-4">
+              {payorTab !== ALL_TAB && (
+                <div className="text-xs text-slate-500">
+                  {universalCount} universal rule(s) + {specificCount} {payorTab}-specific rule(s) = {payorRules.length} applicable to this payor.
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1 max-w-md">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                  <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search rules" className="pl-8" />
+                </div>
+                <Select value={cat} onValueChange={setCat}>
+                  <SelectTrigger className="w-64"><SelectValue placeholder="Category" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All categories</SelectItem>
+                    {categoriesForPayor.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
-              <Select value={cat} onValueChange={setCat}>
-                <SelectTrigger className="w-64"><SelectValue placeholder="Category" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All categories</SelectItem>
-                  {categoriesForPayor.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
 
-            <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="text-left px-4 py-2.5 font-medium w-28">Rule ID</th>
-                    <th className="text-left px-4 py-2.5 font-medium w-48">Category</th>
-                    <th className="text-left px-4 py-2.5 font-medium">Description</th>
-                    <th className="text-left px-4 py-2.5 font-medium w-28">Check Type</th>
-                    <th className="text-left px-4 py-2.5 font-medium w-48">Lane / Tag</th>
-                    <th className="text-left px-4 py-2.5 font-medium w-20">Active</th>
-                    <th className="text-right px-4 py-2.5 font-medium w-24"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filtered.map(r => (
-                    <tr key={r.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 font-mono text-xs">
-                        {r.id}
-                        {r.payor !== "ALL" && <span className="ml-1 text-[10px] text-amber-700">•{r.payor}</span>}
-                      </td>
-                      <td className="px-4 py-3"><CategoryTag>{r.category}</CategoryTag></td>
-                      <td className="px-4 py-3">{r.description}</td>
-                      <td className="px-4 py-3 text-slate-600 font-mono text-xs">{r.checkType}</td>
-                      <td className="px-4 py-3"><LaneTag lane={r.actionLane} tag={r.actionTag} /></td>
-                      <td className="px-4 py-3">
-                        <Switch checked={r.active} disabled={readOnly} onCheckedChange={() => { toggleRule(r.id); toast.success(`${r.id} ${r.active ? "deactivated" : "activated"}`); }} />
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {!readOnly && (
-                          <div className="inline-flex gap-0.5">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setEditing(r); setOpen(true); }}><Pencil className="h-3.5 w-3.5" /></Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-600 hover:text-red-700" onClick={() => { deleteRule(r.id); toast.success(`${r.id} deleted`); }}><Trash2 className="h-3.5 w-3.5" /></Button>
-                          </div>
-                        )}
-                      </td>
+              <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="text-left px-4 py-2.5 font-medium w-32">Rule Code</th>
+                      <th className="text-left px-4 py-2.5 font-medium w-40">Category</th>
+                      <th className="text-left px-4 py-2.5 font-medium">Question</th>
+                      <th className="text-left px-4 py-2.5 font-medium w-32">Rule Type</th>
+                      <th className="text-left px-4 py-2.5 font-medium w-20">Active</th>
+                      <th className="text-right px-4 py-2.5 font-medium w-20"></th>
                     </tr>
-                  ))}
-                  {filtered.length === 0 && (
-                    <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-500">No rules match this filter.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </TabsContent>
-        </Tabs>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filtered.map(r => (
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-3 font-mono text-xs">
+                          {r.rule_code}
+                          {r.payor !== null && <span className="ml-1 text-[10px] text-amber-700">•{r.payor}</span>}
+                        </td>
+                        <td className="px-4 py-3"><CategoryTag>{r.category}</CategoryTag></td>
+                        <td className="px-4 py-3">
+                          {r.question_text}
+                          {r.session_notes_only && (
+                            <span
+                              title={`Data source: session notes only — must never be resolved from the TP alone.${r.tp_section ? ` Anchors to: ${r.tp_section}.` : ""}`}
+                              className="ml-2 inline-flex items-center gap-1 rounded bg-violet-50 text-violet-700 border border-violet-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide align-middle"
+                            >
+                              <NotebookText className="h-3 w-3" />Session Notes Only
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 font-mono text-xs">{r.rule_type}</td>
+                        <td className="px-4 py-3">
+                          <Switch
+                            checked={r.active}
+                            disabled={readOnly || setActiveMutation.isPending}
+                            onCheckedChange={() => handleToggleActive(r)}
+                          />
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {!readOnly && (
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {filtered.length === 0 && (
+                      <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-500">No rules match this filter.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </TabsContent>
+          </Tabs>
+        )}
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>{editing && rules.find(r => r.id === editing.id) ? "Edit rule" : "New rule"}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editing?.id === null ? "New rule" : "Edit rule"}</DialogTitle></DialogHeader>
           {editing && (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
-                <div><Label>Rule ID</Label><Input value={editing.id} onChange={e => setEditing({ ...editing, id: e.target.value })} placeholder="e.g., QA-GIP-18" /></div>
-                <div><Label>Check Type</Label>
-                  <Select value={editing.checkType} onValueChange={v => setEditing({ ...editing, checkType: v as RuleCheckType })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{CHECK_TYPES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <div>
+                  <Label htmlFor="rule-code">Rule Code {editing.id !== null && <span className="text-slate-400">(permanent)</span>}</Label>
+                  <Input
+                    id="rule-code"
+                    value={editing.rule_code}
+                    disabled={editing.id !== null}
+                    onChange={e => setEditing({ ...editing, rule_code: e.target.value })}
+                    placeholder="e.g., QA-GIP-18"
+                  />
+                </div>
+                <div><Label htmlFor="rule-type">Rule Type</Label>
+                  <Select value={editing.rule_type} onValueChange={v => setEditing({ ...editing, rule_type: v as RuleType })}>
+                    <SelectTrigger id="rule-type"><SelectValue /></SelectTrigger>
+                    <SelectContent>{RULE_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div><Label>Category</Label><Input value={editing.category} onChange={e => setEditing({ ...editing, category: e.target.value })} /></div>
-                <div><Label>Payor</Label>
-                  <Select value={editing.payor} onValueChange={v => setEditing({ ...editing, payor: v as Rule["payor"] })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                <div><Label htmlFor="rule-category">Category</Label><Input id="rule-category" value={editing.category} onChange={e => setEditing({ ...editing, category: e.target.value })} /></div>
+                <div><Label htmlFor="rule-payor">Payor</Label>
+                  <Select value={editing.payor ?? "ALL"} onValueChange={v => setEditing({ ...editing, payor: v === "ALL" ? null : v as RulePayor })}>
+                    <SelectTrigger id="rule-payor"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="ALL">ALL (universal)</SelectItem>
                       {PAYORS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
@@ -160,36 +268,18 @@ function RulesStudio() {
                   </Select>
                 </div>
               </div>
-              <div><Label>Description</Label><Textarea value={editing.description} onChange={e => setEditing({ ...editing, description: e.target.value })} rows={3} /></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Action Lane</Label>
-                  <Select value={editing.actionLane} onValueChange={v => setEditing({ ...editing, actionLane: v as ActionLane, actionTag: v === "BCBA-fix" ? null : editing.actionTag })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{LANES.map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-                <div><Label>Action Tag {editing.actionLane === "BCBA-fix" && <span className="text-slate-400">(Facilitator-assign only)</span>}</Label>
-                  <Select value={editing.actionTag ?? "none"} disabled={editing.actionLane === "BCBA-fix"} onValueChange={v => setEditing({ ...editing, actionTag: v === "none" ? null : v as ActionTag })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">None</SelectItem>
-                      {TAGS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="flex items-center gap-2"><Switch checked={editing.active} onCheckedChange={v => setEditing({ ...editing, active: v })} /><span className="text-sm">Active</span></div>
+              <div><Label htmlFor="rule-question-set">Question Set</Label><Input id="rule-question-set" value={editing.question_set} onChange={e => setEditing({ ...editing, question_set: e.target.value })} /></div>
+              <div><Label htmlFor="rule-question-text">Question Text</Label><Textarea id="rule-question-text" value={editing.question_text} onChange={e => setEditing({ ...editing, question_text: e.target.value })} rows={3} /></div>
+              {editing.id === null && (
+                <div className="flex items-center gap-2"><Switch checked={editing.active} onCheckedChange={v => setEditing({ ...editing, active: v })} /><span className="text-sm">Active</span></div>
+              )}
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={() => {
-              if (!editing) return;
-              if (!editing.id.trim()) { toast.error("Rule ID is required."); return; }
-              upsertRule(editing);
-              toast.success(`${editing.id} saved`);
-              setOpen(false);
-            }}>Save rule</Button>
+            <Button onClick={handleSave} disabled={createMutation.isPending || updateMutation.isPending}>
+              {(createMutation.isPending || updateMutation.isPending) ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Saving…</> : "Save rule"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

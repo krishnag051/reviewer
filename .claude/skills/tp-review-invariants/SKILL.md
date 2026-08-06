@@ -35,24 +35,38 @@ the audit entry must roll back with it.
 
 ## Override (`PATCH /rule_results/:id`)
 
+**2026-07-30, corrected — this is the final answer, reversing two earlier
+wrong statements of this same guard (one said finalized-only, the next said
+both):** overrides are **draft-only**. The real workflow is: the agent
+flags each rule pass/fail/N-A with a finding and page number; a human
+reviewer goes through the draft, corrects whatever the agent got wrong
+(status, finding text, page numbers), and routes what needs fixing to BCBA
+or wherever it belongs — all of this happens only while the upload is still
+in progress. Once an upload is finalized, it's the final, locked document —
+nothing about it changes again, ever, including via override.
+
 Order matters:
-1. Optimistic lock check first: compare the `updated_at` the client sent
-   against the current row; mismatch → 409, do not apply anything.
-2. Apply only the fields present in the request body
+1. **Check whether the parent `upload.is_final == true` FIRST, before the
+   optimistic-lock check or anything else.** If true, reject with 409 —
+   do not apply anything, do not touch the row lock. This is now the single
+   most important guard in this operation (previously it gated a
+   score-recompute step that no longer exists — see below).
+2. Optimistic lock check: compare the `updated_at` the client sent against
+   the current row; mismatch → 409, do not apply anything.
+3. Apply only the fields present in the request body
    (`final_status` / `final_finding` / `final_pages` / `reason`), any subset,
    independently. Do not require all three together.
-3. Set `is_overridden = true`, `last_edited_by`, `last_edited_at`.
-4. Insert a `rule_result_edits` row with only the changed fields as
+4. Set `is_overridden = true`, `last_edited_by`, `last_edited_at`.
+5. Insert a `rule_result_edits` row with only the changed fields as
    `{field: {from, to}}`.
-5. Write the audit entry (see pattern above).
-6. **Check whether the parent `upload.is_final == true`.** If so, recompute
-   `versions.score` and `versions.audit_result` from this upload's current
-   `rule_results` (via `app/services/scoring.py` — never inline the formula
-   here) and write a *second* audit entry describing the score change. This
-   step is not optional and not an edge case — it is the single most
-   important guard in this codebase (see Gap A2 in the gap analysis doc for
-   what happens if it's skipped: a silently stale score on a finalized,
-   already-reviewed version).
+6. Write the audit entry (see pattern above).
+
+**There is no score-recompute step anymore.** A draft upload's parent
+version has no `score`/`audit_result` yet (those stay null until finalize
+sets them together, once, from whatever `final_status` values exist at
+that moment) — so there's nothing to recompute mid-draft, and finalized
+uploads can no longer be overridden at all. `app/services/scoring.py::compute_score`
+is called from exactly one place now: `finalize.py`.
 
 All of the above happens in one transaction. Any failure after step 1 rolls
 back everything, including the audit entries.

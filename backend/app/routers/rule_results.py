@@ -13,7 +13,7 @@ from app.services.rule_results import override_rule_result
 
 router = APIRouter(prefix="/rule_results", tags=["rule_results"], dependencies=[Depends(get_current_user)])
 
-RuleResultStatus = Literal["pass", "fail", "na", "uncertain"]
+RuleResultStatus = Literal["pass", "fail", "na", "uncertain", "not_checkable"]
 
 
 class RuleResultPatch(BaseModel):

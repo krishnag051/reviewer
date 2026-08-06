@@ -1,17 +1,22 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import {
-  initialPatients, reviewers, rules as initialRules, runMockReview, scoreResults, randomProcessingDelayMs,
-  type Patient, type PdfPage, type Rule, type RuleStatus, type UAttempt, type Payor,
+  initialPatients, runMockReview, scoreResults, randomProcessingDelayMs,
+  type Patient, type PdfPage, type RuleStatus, type UAttempt, type Payor,
 } from "./tp-mock";
 
-type Role = "Admin" | "Standard User";
-
+// Round 41: the mock role/current-user concept that used to live here
+// (`role`/`setRole`/`currentUserId`/`useCurrentUser`) is gone -- replaced
+// by real login (see auth-context.tsx's useAuth()). Every consumer that
+// used to read role/current-user from useTP() now reads useAuth() instead
+// (AppShell, rules.tsx, admin.tsx). This context is now scoped to what's
+// still mock-only: draft/version CRUD (see FRONTEND_STATE.md's "mock data
+// path" note). The rules library (`rules`/`upsertRule`/`deleteRule`/
+// `toggleRule`) that used to live here is gone as of Round 50 -- Rules
+// Studio now reads/writes the real backend via real-data.ts/api-client.ts
+// instead. reports.tsx's own rule-derived stats still import `rules`
+// directly from tp-mock.ts (unrelated to this context, untouched).
 type Ctx = {
-  role: Role;
-  setRole: (r: Role) => void;
-  currentUserId: string;
   patients: Patient[];
-  rules: Rule[];
   addPatient: (p: { refId: string; name: string; payor: Payor }) => void;
   // Fire-and-forget by design (see addAttempt's own comment below for why
   // it can't reliably return the created attempt synchronously) --
@@ -20,19 +25,19 @@ type Ctx = {
   addAttempt: (refId: string, reviewerId: string, pdf: PdfPage[], assessmentDate: string) => void;
   finalizeAttempt: (refId: string, attemptId: string) => number | null;
   markReviewed: (refId: string, version: number) => void;
-  overrideRuleStatus: (refId: string, version: number, ruleId: string, status: RuleStatus, finding?: string) => void;
-  upsertRule: (r: Rule) => void;
-  deleteRule: (id: string) => void;
-  toggleRule: (id: string) => void;
+  // Draft-only (2026-07-30, corrected -- this is the final answer,
+  // reversing two earlier wrong statements of this same decision: one
+  // round said finalized-only, the next said both). The real workflow is
+  // the agent flags each rule with a finding + page number, a human
+  // reviewer corrects whatever's wrong WHILE the attempt is still a draft,
+  // and finalizing locks the document -- no further overrides after that.
+  overrideRuleStatus: (refId: string, attemptId: string, ruleId: string, status: RuleStatus, finding?: string) => void;
 };
 
 const TPContext = createContext<Ctx | null>(null);
 
 export function TPProvider({ children }: { children: ReactNode }) {
-  const [role, setRole] = useState<Role>("Admin");
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
-  const [rules, setRules] = useState<Rule[]>(initialRules);
-  const currentUserId = "u1";
 
   // New patient: creates the patient shell only -- versions:[] and
   // uAttempts:[]. V1 gets created the exact same way every later version
@@ -166,34 +171,30 @@ export function TPProvider({ children }: { children: ReactNode }) {
     }));
   };
 
-  // V-only, by design -- draft UAttempts get no override affordance. If a
-  // finding on a draft looks wrong, the correct action is to revise the
-  // document and upload a new attempt, not override a disposable draft.
-  const overrideRuleStatus: Ctx["overrideRuleStatus"] = (refId, version, ruleId, status, finding) => {
+  // Draft-only (2026-07-30, corrected -- final answer, reversing two
+  // earlier statements of this same decision). The real workflow: the
+  // agent flags each rule pass/fail/N-A with a finding and page number; a
+  // human reviewer corrects whatever's wrong while the attempt is still a
+  // draft, and whatever needs fixing gets routed to BCBA or wherever it
+  // belongs -- all before finalizing. Once finalized, the version is
+  // locked: no override affordance exists on a PlanVersion anywhere in the
+  // UI (see plans.$refId.index.tsx -- the override dropdown only renders
+  // for a selected draft attempt now, never a selected finalized version).
+  const overrideRuleStatus: Ctx["overrideRuleStatus"] = (refId, attemptId, ruleId, status, finding) => {
     setPatients(prev => prev.map(p => p.refId !== refId ? p : {
-      ...p, versions: p.versions.map(v => {
-        if (v.version !== version) return v;
-        const results = v.results.map(r => r.ruleId === ruleId ? { ...r, status, finding: finding ?? r.finding, overridden: true } : r);
+      ...p, uAttempts: p.uAttempts.map(a => {
+        if (a.id !== attemptId) return a;
+        const results = a.results.map(r => r.ruleId === ruleId ? { ...r, status, finding: finding ?? r.finding, overridden: true } : r);
         const { score, auditResult } = scoreResults(results);
-        return { ...v, results, score, auditResult };
+        return { ...a, results, score, auditResult };
       }),
     }));
   };
 
-  const upsertRule: Ctx["upsertRule"] = (r) => {
-    setRules(prev => {
-      const exists = prev.find(x => x.id === r.id);
-      return exists ? prev.map(x => x.id === r.id ? r : x) : [...prev, r];
-    });
-  };
-  const deleteRule = (id: string) => setRules(prev => prev.filter(r => r.id !== id));
-  const toggleRule = (id: string) => setRules(prev => prev.map(r => r.id === id ? { ...r, active: !r.active } : r));
-
   return (
     <TPContext.Provider value={{
-      role, setRole, currentUserId, patients, rules,
+      patients,
       addPatient, addAttempt, finalizeAttempt, markReviewed, overrideRuleStatus,
-      upsertRule, deleteRule, toggleRule,
     }}>
       {children}
     </TPContext.Provider>
@@ -204,9 +205,4 @@ export function useTP() {
   const ctx = useContext(TPContext);
   if (!ctx) throw new Error("TPProvider missing");
   return ctx;
-}
-
-export function useCurrentUser() {
-  const { currentUserId } = useTP();
-  return reviewers.find(r => r.id === currentUserId)!;
 }
