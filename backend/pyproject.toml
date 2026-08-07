@@ -18,16 +18,24 @@ dependencies = [
     "apscheduler>=3.10",
     "pypdf>=4.0",
     # --- rule-checking agent wiring (2026-07-30) ---
-    # app/rule_engine/client.py imports agent-making/agent/pipeline/api.py
-    # by path (not as an installed package — see client.py's comment), but
+    # app/agent_client.py (Round 66 — was app/rule_engine/client.py before
+    # that refactor) imports agent-making/agent/pipeline/api.py by path
+    # (not as an installed package — see agent_client.py's comment), but
     # that module's own import chain (pipeline/__init__.py -> integrity.py
-    # -> judge.py -> render.py) needs these three at import time, in
-    # WHICHEVER process does the importing — that's this backend process,
-    # not just agent-making's own. Versions matched to
+    # -> judge.py -> render.py / model_provider.py) needs these at import
+    # time, in WHICHEVER process does the importing — that's this backend
+    # process, not just agent-making's own. Versions matched to
     # agent-making/agent/requirements.txt.
     "anthropic>=0.68.0",
     "python-dotenv>=1.0.0",
     "PyMuPDF>=1.24.0",
+    # agent-making Round 59 added pipeline/model_provider.py's OpenRouter
+    # support (a plain `requests.post`, no new SDK) -- this transitive
+    # need was never propagated into this list until Round 66, when this
+    # backend's own test suite actually re-imported pipeline.api for the
+    # first time since Round 59 landed and hit the resulting
+    # ModuleNotFoundError. Confirmed via the exact same failure live.
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]

@@ -1,19 +1,22 @@
 import { createFileRoute, useNavigate, notFound } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   usePatients, usePatientVersions, useVersionDetail, useUploadDetail,
   useOverrideRuleResult, useFinalizeUpload,
 } from "@/lib/real-data";
-import { apiErrorMessage, fetchUploadSupportingFileBlob, type RuleResultOut } from "@/lib/api-client";
+import {
+  apiErrorMessage, fetchUploadFileBlob, fetchUploadSupportingFileBlob, generateCorrectionEmail,
+  type RuleResultOut, type GeneratedEmailOut,
+} from "@/lib/api-client";
 import { StatusBadge, ReviewedBadge } from "@/components/tp/ui";
-import { PdfViewer } from "@/components/tp/PdfViewer";
+import { RuleResultCard, RuleResultContent } from "@/components/tp/RuleResultCard";
+import { PdfViewer, type PdfViewerHandle } from "@/components/tp/PdfViewer";
 import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
-import { Loader2, Pencil, Megaphone, FlaskConical, FileText, NotebookText } from "lucide-react";
+import { Loader2, Megaphone, FlaskConical, FileText, NotebookText } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/plans/$refId/")({ component: PlanDetail });
@@ -91,6 +94,13 @@ function PlanDetail() {
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [confirmRefId, setConfirmRefId] = useState("");
 
+  // Round 70, Item 2: real page-jump target -- PdfViewer.tsx exposes
+  // goToPage via forwardRef/useImperativeHandle.
+  const pdfViewerRef = useRef<PdfViewerHandle>(null);
+  function goToPage(page: number) {
+    pdfViewerRef.current?.goToPage(page);
+  }
+
   function handleOverride(res: RuleResultOut, newStatus: RuleResultOut["final_status"]) {
     if (!finalUpload) return;
     overrideMutation.mutate(
@@ -100,6 +110,73 @@ function PlanDetail() {
         onError: err => toast.error(apiErrorMessage(err)),
       },
     );
+  }
+
+  // Round 70, Item 3: real editing of a result's evidence/pages -- extends
+  // the SAME override mechanism (one PATCH /rule_results/:id call), not a
+  // second one. The backend's contract already accepted final_finding/
+  // final_pages/reason; only the frontend never sent them until now.
+  function handleSaveEdit(res: RuleResultOut, finding: string, pages: number[], reason: string) {
+    if (!finalUpload) return;
+    overrideMutation.mutate(
+      {
+        ruleResultId: res.id,
+        uploadId: finalUpload.id,
+        updated_at: res.updated_at,
+        final_finding: finding,
+        final_pages: pages,
+        ...(reason ? { reason } : {}),
+      },
+      {
+        onSuccess: () => toast.success("Finding updated."),
+        onError: err => toast.error(apiErrorMessage(err)),
+      },
+    );
+  }
+
+  // Round 70, Item 5: "Escalate to BCBA" is no longer a mock toast -- calls
+  // the real, existing POST /versions/:id/correction-email (built earlier
+  // for a different, still-mock frontend surface, never wired to a real
+  // caller until now). Generates AND PERSISTS a real GeneratedEmail row
+  // from this upload's own real failed/uncertain results -- but does NOT
+  // send anything; there is no SMTP/mail transport in this codebase.
+  // Showing the draft is as far as this goes without separate approval.
+  const [escalateOpen, setEscalateOpen] = useState(false);
+  const [escalating, setEscalating] = useState(false);
+  const [escalationDraft, setEscalationDraft] = useState<GeneratedEmailOut | null>(null);
+  // Round 71: real, editable recipient fields -- there is no stored BCBA
+  // email anywhere in this system (Round 70 confirmed this gap); rather
+  // than inventing a new DB field for it this round, the user just types
+  // the recipient(s) directly here each time, pre-filled with whatever the
+  // backend's own resolution returned (blank if it returned nothing).
+  const [escalateTo, setEscalateTo] = useState("");
+  const [escalateCc, setEscalateCc] = useState("");
+  const [escalateBcc, setEscalateBcc] = useState("");
+  // Round 71: every non-Pass status, not just fail/uncertain -- matches
+  // the SAME broadened FAILING_STATUSES set app/services/correction_email.py
+  // now uses to build the real persisted draft below, so this on-screen
+  // list and the actual generated email cover identical items.
+  const nonPassResults = useMemo(() => results.filter(r => r.final_status !== "pass"), [results]);
+
+  async function handleEscalate() {
+    if (!finalUpload || !effectiveVersionId) return;
+    setEscalating(true);
+    try {
+      const email = await generateCorrectionEmail(effectiveVersionId, {
+        upload_id: finalUpload.id,
+        routed_to: "bcba",
+        group_by: "category",
+      });
+      setEscalationDraft(email);
+      setEscalateTo(email.to_addr ?? "");
+      setEscalateCc(email.cc ?? "");
+      setEscalateBcc(email.bcc ?? "");
+      setEscalateOpen(true);
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    } finally {
+      setEscalating(false);
+    }
   }
 
   // Round 57, Item 1: whether THIS specific upload was created under
@@ -240,11 +317,10 @@ function PlanDetail() {
               )}
               {isDraft && uploadDetailQuery.data?.status === "ready" && (
                 <>
-                  <Button
-                    variant="outline"
-                    onClick={() => toast("Escalated to BCBA (mock — no real routing yet).")}
-                  >
-                    <Megaphone className="h-4 w-4 mr-1.5" />Escalate to BCBA
+                  <Button variant="outline" onClick={handleEscalate} disabled={escalating}>
+                    {escalating
+                      ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Drafting…</>
+                      : <><Megaphone className="h-4 w-4 mr-1.5" />Escalate to BCBA</>}
                   </Button>
                   <Button
                     onClick={() => setFinalizeOpen(true)}
@@ -327,6 +403,75 @@ function PlanDetail() {
         </DialogContent>
       </Dialog>
 
+      {/* Round 71: same modal pattern as the Intake Q&A dialog above --
+          same Dialog/DialogContent/DialogHeader/DialogFooter primitives,
+          same "Close" footer, same real-data-not-mock content -- just with
+          editable recipient fields (no stored BCBA email anywhere in this
+          system, see Round 70's report) and the real problem list below
+          them, rendered with the EXACT SAME RuleResultContent formatting
+          the results panel itself uses -- not a second rendering. */}
+      <Dialog open={escalateOpen} onOpenChange={setEscalateOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Escalate to BCBA — draft only, not sent</DialogTitle>
+            <DialogDescription>
+              Generated from this upload's real non-Pass results (upload U{finalUpload?.upload_number}) and saved to
+              the audit trail. There is no email-sending capability in this system yet — nothing is actually
+              delivered from here; edit recipients freely, this is a draft.
+            </DialogDescription>
+          </DialogHeader>
+          {escalationDraft && (
+            <div className="flex-1 overflow-y-auto space-y-4 text-sm pr-1">
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="escalate-to">To</Label>
+                  <Input
+                    id="escalate-to"
+                    value={escalateTo}
+                    onChange={e => setEscalateTo(e.target.value)}
+                    placeholder="No BCBA email on file — type a recipient"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="escalate-cc">Cc</Label>
+                  <Input id="escalate-cc" value={escalateCc} onChange={e => setEscalateCc(e.target.value)} placeholder="Optional" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="escalate-bcc">Bcc</Label>
+                  <Input id="escalate-bcc" value={escalateBcc} onChange={e => setEscalateBcc(e.target.value)} placeholder="Optional" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Subject</Label>
+                  <div className="text-sm font-medium text-slate-900">{escalationDraft.subject}</div>
+                </div>
+              </div>
+              <div className="border-t border-slate-200 pt-3">
+                <div className="text-xs font-medium text-slate-500 mb-2">
+                  {nonPassResults.length} item{nonPassResults.length === 1 ? "" : "s"} that didn't pass — fail, uncertain, N/A, and not-checkable all included
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {nonPassResults.map(res => (
+                    <div key={res.id} className="py-3 flex">
+                      <RuleResultContent
+                        res={res}
+                        pageLabelMap={uploadDetailQuery.data?.page_label_map ?? {}}
+                        onGoToPage={goToPage}
+                      />
+                    </div>
+                  ))}
+                  {nonPassResults.length === 0 && (
+                    <div className="py-4 text-center text-slate-500">Every result on this upload passed — nothing to escalate.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEscalateOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex-1 min-h-0 overflow-y-auto">
         {sortedVersions.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8 text-center">
@@ -346,7 +491,12 @@ function PlanDetail() {
         ) : (
           <div className="h-full flex">
             <div className="w-1/2 h-full border-r border-slate-200 bg-slate-100">
-              <PdfViewer uploadId={finalUpload.id} />
+              <PdfViewer
+                ref={pdfViewerRef}
+                cacheKey={finalUpload.id}
+                fetchBlob={() => fetchUploadFileBlob(finalUpload.id)}
+                title="Treatment plan PDF"
+              />
             </div>
             <div className="w-1/2 h-full overflow-y-auto">
               {uploadDetailQuery.isLoading ? (
@@ -395,51 +545,16 @@ function PlanDetail() {
                   </div>
                   <div className="divide-y divide-slate-100">
                     {filteredResults.map(res => (
-                      <div key={res.id} className="px-2 py-4 hover:bg-slate-50">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                              <span className="text-[10px] font-mono text-slate-400">rule_id: {res.rule_id.slice(0, 8)}…</span>
-                              {res.is_overridden && <span className="text-[10px] font-medium uppercase tracking-wide text-blue-700">Overridden</span>}
-                            </div>
-                            <div className="mt-1.5 text-sm text-slate-600">{res.final_finding}</div>
-                            {res.final_pages.length > 0 && (
-                              <div className="mt-2 flex items-center gap-1.5">
-                                {res.final_pages.map(p => (
-                                  <span key={p} className="text-[11px] font-mono rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5">p.{p}</span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          <div className="shrink-0 flex items-center gap-1.5">
-                            <StatusBadge status={res.final_status === "pass" ? "Pass" : res.final_status === "fail" ? "Fail" : "N/A"} />
-                            {isDraft && (
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <button
-                                    className="rounded p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-                                    disabled={overrideMutation.isPending}
-                                    title="Override this finding"
-                                    aria-label={`Override this finding (rule_id ${res.rule_id.slice(0, 8)})`}
-                                  >
-                                    <Pencil className="h-3.5 w-3.5" />
-                                  </button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end">
-                                  <DropdownMenuLabel>Override to</DropdownMenuLabel>
-                                  {(["pass", "fail", "na", "uncertain", "not_checkable"] as const)
-                                    .filter(s => s !== res.final_status)
-                                    .map(s => (
-                                      <DropdownMenuItem key={s} onClick={() => handleOverride(res, s)}>
-                                        {STATUS_LABELS[s]}
-                                      </DropdownMenuItem>
-                                    ))}
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                            )}
-                          </div>
-                        </div>
-                      </div>
+                      <RuleResultCard
+                        key={res.id}
+                        res={res}
+                        isDraft={isDraft}
+                        overridePending={overrideMutation.isPending}
+                        pageLabelMap={uploadDetailQuery.data?.page_label_map ?? {}}
+                        onGoToPage={goToPage}
+                        onOverrideStatus={s => handleOverride(res, s)}
+                        onSaveEdit={(finding, pages, reason) => handleSaveEdit(res, finding, pages, reason)}
+                      />
                     ))}
                     {filteredResults.length === 0 && (
                       <div className="p-10 text-center text-sm text-slate-500">No rules match this filter.</div>

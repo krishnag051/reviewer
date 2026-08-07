@@ -4,3 +4,9 @@ __pycache__/
 .pytest_cache/
 agent/sample_tps/*
 !agent/sample_tps/.gitkeep
+
+# Round 59: session-note extraction cache -- local-only by design (see
+# pipeline/session_note_extraction.py's own docstring), and will contain
+# real extracted patient facts (session dates/locations) the moment a real
+# session-note file is processed. Never committed.
+agent/.cache/

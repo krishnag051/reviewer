@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     # headroom for escalation/integrity retries.
     rule_engine_max_calls: int = 50
 
+    # Round 67: separate, smaller ceiling for the session-notes extraction
+    # call site (app.agent_client.review_session_notes) -- distinct cap
+    # from rule_engine_max_calls above since this is a different, much
+    # smaller real-call surface (one real call per uploaded session-note
+    # file, typically 1-3 files, not a ~120-rule judgment batch). Still a
+    # real, enforced number, never uncapped, same discipline as the TP
+    # pipeline's own cap.
+    session_notes_max_calls: int = 10
+
     # Dev-only simulated-completion path (Round 49) -- lets a `developer`-role
     # user test the U1/U2/V1/V2/finalize lifecycle mechanics without waiting
     # on or paying for the real agent. Off by default; the route itself is

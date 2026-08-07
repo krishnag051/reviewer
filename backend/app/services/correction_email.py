@@ -8,7 +8,15 @@ from sqlalchemy.orm import Session
 from app.audit import record
 from app.db.models import AppConfig, GeneratedEmail, Patient, Rule, RuleResult, Upload, User, Version
 
-FAILING_STATUSES = {"fail", "uncertain"}
+# Round 71: broadened from {"fail", "uncertain"} -- Krishna's own ask was
+# explicit that "problems" for escalation purposes means every non-Pass
+# result (fail, uncertain, na, AND not_checkable), not just the two
+# statuses this constant used to cover. This is the ONE set that drives
+# both the real, persisted email body below AND the frontend escalation
+# modal's on-screen list (plans.$refId.index.tsx) -- widening it here keeps
+# both in sync rather than letting the modal show a broader set than the
+# actual generated/persisted draft.
+FAILING_STATUSES = {"fail", "uncertain", "na", "not_checkable"}
 
 
 def _build_body(patient: Patient, version: Version, failing: list[RuleResult], rules_by_id: dict, group_by: str) -> str:

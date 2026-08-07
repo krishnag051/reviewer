@@ -192,6 +192,19 @@ export type RuleResultOut = {
   final_pages: number[];
   is_overridden: boolean;
   updated_at: string;
+  // Round 70: real, human-readable content for the results panel --
+  // question_text/category/rule_code, version-pinned to rule_version_used
+  // (see backend app/db/models.py::RuleResult's own docstring). Never a
+  // bare rule_id UUID shown to a user again.
+  question_text: string;
+  category: string;
+  rule_code: string;
+  // The model layer's own original answer -- shown alongside final_* so a
+  // reviewer can see what the AI actually said, distinct from any human
+  // override. Never itself writable from this API.
+  model_status: "pass" | "fail" | "na" | "uncertain" | "not_checkable";
+  model_finding: string;
+  model_pages: number[];
 };
 
 export type UploadDetailOut = UploadOut & {
@@ -201,6 +214,11 @@ export type UploadDetailOut = UploadOut & {
   // is exactly the per-upload signal the review page uses to decide
   // "Intake Q&A" vs. "Helping Document" button behavior.
   intake_answers: IntakeAnswers | null;
+  // Round 70, Item 2: {"physical_page_number": "printed_label"} for pages
+  // where the document's OWN printed label was found -- see backend
+  // app/services/page_labels.py. Display/cross-check only; page-jump
+  // navigation itself always targets the physical page number.
+  page_label_map: Record<string, string>;
 };
 
 export async function getUpload(uploadId: string): Promise<UploadDetailOut> {
@@ -238,6 +256,12 @@ export type RuleResultPatchOut = {
   last_edited_by: string | null;
   last_edited_at: string | null;
   updated_at: string;
+  question_text: string;
+  category: string;
+  rule_code: string;
+  model_status: "pass" | "fail" | "na" | "uncertain" | "not_checkable";
+  model_finding: string;
+  model_pages: number[];
 };
 
 export async function overrideRuleResult(
@@ -252,6 +276,51 @@ export async function overrideRuleResult(
 ): Promise<RuleResultPatchOut> {
   return request(`/rule_results/${ruleResultId}`, {
     method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// --- Escalation / correction email (Round 70, Item 5) --------------------
+
+/** Real, existing backend mechanism (built earlier, never wired to a real
+ * frontend caller until now) -- POST /versions/:id/correction-email.
+ * Generates AND PERSISTS a real GeneratedEmail row (subject/body built
+ * from this upload's own real failed/uncertain rule_results, with real
+ * question_text/evidence/page references), but never sends anything --
+ * there is no SMTP/mail transport anywhere in this codebase. "Escalate to
+ * BCBA" shows this draft in a dialog; actually sending it is a separate,
+ * explicitly-deferred decision (see CLAUDE.md-style standing rule on
+ * side-effectful actions needing per-instance approval). */
+export type GeneratedEmailOut = {
+  id: string;
+  version_id: string;
+  upload_id: string;
+  generated_by: string | null;
+  to_addr: string | null;
+  cc: string | null;
+  bcc: string | null;
+  subject: string;
+  body: string;
+  routed_to: "bcba" | "qa" | "clinical_director" | "coordinator";
+  routed_by: string | null;
+  routed_at: string;
+  created_at: string;
+};
+
+export async function generateCorrectionEmail(
+  versionId: string,
+  body: {
+    upload_id?: string;
+    routed_to: "bcba" | "qa" | "clinical_director" | "coordinator";
+    group_by?: "category" | "page";
+    to_addr?: string | null;
+    cc?: string | null;
+    bcc?: string | null;
+  },
+): Promise<GeneratedEmailOut> {
+  return request(`/versions/${versionId}/correction-email`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

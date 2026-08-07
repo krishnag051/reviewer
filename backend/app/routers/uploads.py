@@ -28,6 +28,24 @@ class RuleResultOut(BaseModel):
     final_pages: list[int]
     is_overridden: bool
     updated_at: datetime
+    # Round 70: real, human-readable content the results panel needs to
+    # match the Brellium reference pattern -- a plain-English question,
+    # its category, and the stable rule code (never a bare rule_id UUID).
+    # Sourced from RuleResult.question_text/category/rule_code (see that
+    # model's own docstring) -- version-pinned to rule_version_used, not
+    # whatever the rule's text has since been edited to.
+    question_text: str
+    category: str
+    rule_code: str
+    # The model layer's own original finding/pages, alongside final_* --
+    # lets the UI show "the AI's original answer" distinctly from a
+    # human's override, instead of only ever showing whichever one won.
+    # Never written to from this API; PATCH /rule_results/:id still only
+    # ever touches final_status/final_finding/final_pages (see CLAUDE.md's
+    # model-layer-immutable invariant).
+    model_status: str
+    model_finding: str
+    model_pages: list[int]
 
 
 class IntakeAnswersOut(BaseModel):
@@ -52,6 +70,12 @@ class UploadDetailOut(BaseModel):
     error_detail: str | None
     rules_snapshot_id: uuid.UUID | None
     created_at: datetime
+    # Round 70, Item 2: {"physical_page_number": "printed_label"} for pages
+    # where a printed label was actually found -- see
+    # app/services/page_labels.py. Frontend cross-checks/displays with
+    # this; page-jump navigation itself still targets the physical page
+    # number already in final_pages/model_pages, not a translated value.
+    page_label_map: dict[str, str]
     rule_results: list[RuleResultOut]
     # Round 57: reuses the SAME upload.intake_answers relationship Round
     # 56's prefill endpoint (GET /patients/:id/latest-intake-answers)

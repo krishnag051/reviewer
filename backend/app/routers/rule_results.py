@@ -38,6 +38,16 @@ class RuleResultOut(BaseModel):
     last_edited_by: uuid.UUID | None
     last_edited_at: datetime | None
     updated_at: datetime
+    # Round 70 -- same additive fields as GET /uploads/:id's RuleResultOut
+    # (app/routers/uploads.py), so the PATCH response can refresh the same
+    # display content the results panel already shows without a second
+    # GET round-trip. See app.db.models.RuleResult's own docstring.
+    question_text: str
+    category: str
+    rule_code: str
+    model_status: str
+    model_finding: str
+    model_pages: list[int]
 
 
 @router.patch("/{rule_result_id}", response_model=RuleResultOut)

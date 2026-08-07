@@ -14,9 +14,12 @@ import base64
 import json
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import anthropic
 from dotenv import load_dotenv
+
+from .model_provider import _call_openrouter, resolve_provider_and_model
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
@@ -225,6 +228,28 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
 
 MAX_TOKENS = 32000
 
+# Round 62: the OpenRouter free-tier path gets its own, much smaller
+# max_tokens -- 32000 is sized for Anthropic's actual observed output on
+# the FULL ~120-rule batch; the free model doesn't need that headroom for
+# the small, ad-hoc test documents this path is actually exercised with,
+# and asking a free/rate-limited model for up to 32000 tokens made a real
+# click-through test against a 2-page synthetic document take 20+ minutes
+# with no error (the model was simply given room to ramble) before this
+# was caught and fixed. If a real judgment batch on this path ever
+# legitimately needs more room, judge.py's own max_tokens truncation
+# check below will say so explicitly rather than silently hanging.
+OPENROUTER_MAX_TOKENS = 8000
+
+
+def _flatten_prompt_text(content: list[dict]) -> str:
+    """Collapses this module's multi-block prompt (text + rendered page
+    images) into plain text for a provider that can't accept images —
+    Round 61's OpenRouter free-tier default model is text-only. Only used
+    on that path; the Anthropic path below keeps sending the full
+    multi-block content (including images) exactly as it always has.
+    """
+    return "\n\n".join(b["text"] for b in content if b.get("type") == "text")
+
 
 def _run_judgment_checks_once(
     judgment_rules: list[dict],
@@ -232,6 +257,7 @@ def _run_judgment_checks_once(
     rendered_images: dict[int, bytes],
     tracker=None,
     call_reason: str = "call",
+    model_override: str | None = None,
 ) -> dict[str, dict]:
     """A single real judgment-layer call. Returns {rule_id: {"result",
     "evidence", "page", "confidence"}} — one entry per rule_id the model
@@ -241,6 +267,18 @@ def _run_judgment_checks_once(
     production paths — it's the only thing standing between "run this" and
     silently making an unbounded number of real, billed API calls. See
     pipeline/call_tracker.py for why this exists.
+
+    Round 61: `model_override` is a new, OPTIONAL parameter, defaulting to
+    None. When None (every existing caller — backend/client.py's real
+    integration, this module's own pre-existing test suite, and any script
+    that doesn't pass it explicitly), this function's behavior is
+    BYTE-IDENTICAL to before this round: same anthropic.Anthropic() client,
+    same MODEL constant, same streaming call. The ONLY caller that passes a
+    non-None override this round is the Streamlit POC (app.py), which
+    defaults its own UI toggle to "openrouter" (Round 59's free model) and
+    only reaches "anthropic" when a developer explicitly flips a toggle and
+    confirms — see app.py and pipeline/model_provider.py's own docstring
+    for the standing-rule reasoning behind that default.
     """
     if not judgment_rules:
         return {}
@@ -250,8 +288,44 @@ def _run_judgment_checks_once(
     if tracker is not None:
         tracker.check_before_call()
 
-    client = anthropic.Anthropic()
     content = _build_prompt(judgment_rules, fields, rendered_images)
+
+    provider, model = ("anthropic", MODEL) if model_override is None else resolve_provider_and_model(model_override)
+
+    if provider == "openrouter":
+        # OpenRouter's free-tier default model is text-only (no vision) —
+        # rendered page images (used for image-only/low-text pages) can't
+        # be sent on this path. Disclosed, not silent: printed here, and
+        # app.py's UI shows the same caveat next to the provider toggle.
+        if rendered_images:
+            print(
+                f"[judge] NOTE: {len(rendered_images)} rendered page image(s) present for this batch, but "
+                f"the OpenRouter free-tier path is text-only — images are dropped for this call; judgment "
+                f"for any image-only pages relies on their extracted text alone under this provider. Flip "
+                f"'Use real Anthropic API' to include rendered images."
+            )
+        or_result = _call_openrouter(
+            model=model,
+            prompt_text=_flatten_prompt_text(content),
+            tool_name="record_findings",
+            tool_description=FINDINGS_TOOL["description"],
+            input_schema=FINDINGS_TOOL["input_schema"],
+            max_tokens=OPENROUTER_MAX_TOKENS,
+        )
+        if tracker is not None:
+            tracker.record(reason=call_reason, rule_ids=rule_ids, usage=SimpleNamespace(**or_result["usage"]))
+        tool_input = or_result["arguments"]
+        if "findings" not in tool_input:
+            raise RuntimeError(
+                f"Judgment call (openrouter:{model}) returned without a 'findings' key; "
+                f"got keys: {list(tool_input.keys())}."
+            )
+        return _findings_dict_from_list(tool_input["findings"])
+
+    # provider == "anthropic" — unchanged code path (same seam
+    # test_call_tracker_wiring.py / test_supporting_doc_extraction.py mock
+    # via judge.anthropic.Anthropic).
+    client = anthropic.Anthropic()
 
     # thinking disabled: this is a bounded classification/extraction task, not
     # open-ended reasoning, and Sonnet 5 runs adaptive thinking by default —
@@ -259,7 +333,7 @@ def _run_judgment_checks_once(
     # itself, and previously starved the JSON output before it could complete.
     # max_tokens > ~16000 needs streaming (SDK HTTP timeout guard).
     with client.messages.stream(
-        model=MODEL,
+        model=model,
         max_tokens=MAX_TOKENS,
         thinking={"type": "disabled"},
         tools=[FINDINGS_TOOL],
@@ -357,6 +431,7 @@ def run_judgment_checks(
     rendered_images: dict[int, bytes],
     tracker=None,
     call_reason: str = "call",
+    model_override: str | None = None,
 ) -> dict[str, dict]:
     """Self-consistency wrapper (2026-07-28 round): calls
     _run_judgment_checks_once TWICE with identical inputs and reconciles.
@@ -386,11 +461,11 @@ def run_judgment_checks(
         return {}
     first = _run_judgment_checks_once(
         judgment_rules, fields, rendered_images, tracker=tracker,
-        call_reason=f"{call_reason} (consistency check 1/2)",
+        call_reason=f"{call_reason} (consistency check 1/2)", model_override=model_override,
     )
     second = _run_judgment_checks_once(
         judgment_rules, fields, rendered_images, tracker=tracker,
-        call_reason=f"{call_reason} (consistency check 2/2)",
+        call_reason=f"{call_reason} (consistency check 2/2)", model_override=model_override,
     )
     return _reconcile_consistency_check(first, second)
 
@@ -499,7 +574,24 @@ def _findings_dict_from_list(findings_list: list[dict]) -> dict[str, dict]:
     rule_id retry logic (built for exactly that case) picks it back up and
     re-asks automatically, then raises IntegrityError if it's still
     inconsistent after max_retries — no separate error path needed.
+
+    Confirmed live: despite the tool schema requiring each `findings` array
+    item to be an object, a real model response has come back with a bare
+    string in that array position instead (tool-call formatting slip, not
+    reproduced deterministically). Treating every non-dict entry as
+    malformed-and-dropped (same "retried as if missing" path as a rejected
+    evidence_supports_result) turns that into an honest retry instead of an
+    AttributeError crash — the model gets asked again for whichever
+    rule_id(s) it garbled, same as any other dropped finding.
     """
+    malformed = [f for f in findings_list if not isinstance(f, dict)]
+    if malformed:
+        print(
+            f"[judge] Dropping {len(malformed)} malformed (non-dict) findings-array entr"
+            f"{'y' if len(malformed) == 1 else 'ies'} (will be retried as if missing): {malformed!r}"
+        )
+    findings_list = [f for f in findings_list if isinstance(f, dict)]
+
     rejected = [f for f in findings_list if not f.get("evidence_supports_result", False)]
     if rejected:
         # Log the actual result/evidence text for each rejected finding, not

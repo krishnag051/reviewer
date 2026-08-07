@@ -53,7 +53,7 @@ def test_empty_results_list_returns_empty_dict():
 def test_run_judgment_checks_majority_vote_makes_exactly_n_calls(monkeypatch):
     call_log = []
 
-    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call"):
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
         call_log.append(call_reason)
         return {"A-1": _finding("fail")}
 
@@ -80,7 +80,7 @@ def test_majority_vote_is_not_wired_into_production_run_judgment_checks(monkeypa
     exactly 2 calls, not 3."""
     call_log = []
 
-    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call"):
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
         call_log.append(call_reason)
         return {"A-1": _finding("pass")}
 

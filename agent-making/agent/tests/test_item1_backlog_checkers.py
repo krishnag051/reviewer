@@ -397,3 +397,101 @@ def test_acf07_pass_when_two_tools_both_dated():
 def test_acf07_not_checkable_with_no_section():
     result, evidence, page, confidence = fields._check_ACF07({}, _fields("unrelated text"))
     assert result == "not_checkable"
+
+
+def test_acf07_pass_when_same_tool_administered_twice_on_different_dates():
+    """Round 63, item 4 (SYNTHETIC test fixture, not any real patient's data):
+    'old and new testing tool' is satisfied by the SAME instrument re-
+    administered on two different dates -- this must pass, not come back
+    uncertain just because only one distinct tool NAME is mentioned."""
+    text = (
+        "Assessment of Current Functioning:\nAssessment Date: 03/01/2025\n"
+        "The ABLLS-R was administered at the prior authorization.\n"
+        "Assessment Date: 09/15/2025\n"
+        "The ABLLS-R was re-administered for this authorization period.\n"
+        "Goal Progress:\n"
+    )
+    result, evidence, page, confidence = fields._check_ACF07({}, _fields(text))
+    assert result == "pass"
+    assert "ABLLS-R" in evidence
+
+
+def test_acf07_uncertain_when_only_one_tool_with_only_one_date():
+    """SYNTHETIC fixture: exactly one tool, exactly one confirmed date --
+    genuinely can't confirm a second (old or new) administration exists,
+    so this must be uncertain, not a guessed pass or fail."""
+    text = (
+        "Assessment of Current Functioning:\nAssessment Date: 03/01/2025\n"
+        "The VB-MAPP was administered.\n"
+        "Goal Progress:\n"
+    )
+    result, evidence, page, confidence = fields._check_ACF07({}, _fields(text))
+    assert result == "uncertain"
+    assert "VB-MAPP" in evidence
+
+
+def test_acf07_still_passes_for_two_different_tools_each_dated_once():
+    """SYNTHETIC fixture, different dates/tools than Yisroel's real case or
+    the pre-existing two-tools test above -- confirms the fix didn't narrow
+    the original two-different-tools shape while broadening for same-tool
+    reassessment."""
+    text = (
+        "Assessment of Current Functioning:\nAssessment Date: 01/10/2025\n"
+        "The PEAK was administered.\n"
+        "Assessment Date: 07/22/2025\n"
+        "The AFLS was also administered.\n"
+        "Goal Progress:\n"
+    )
+    result, evidence, page, confidence = fields._check_ACF07({}, _fields(text))
+    assert result == "pass"
+
+
+def test_acf07_pass_when_single_tool_named_repeatedly_in_prose_with_dates_far_away():
+    """Round 64, item 1 (SYNTHETIC fixture, NOT Yisroel's tool/dates/wording):
+    reproduces the real confirmed bug shape -- a single tool named several
+    times across generic descriptive prose (none of those mentions sits
+    next to its own 'Assessment Date:' field), with its actual two
+    administration dates appearing much later under a completely different
+    label ('Total Score on <date>:'), not positionally tied to any one
+    mention. Must pass -- gap-based per-occurrence attribution structurally
+    can't find these dates; only tool-key-first attribution can.
+    """
+    text = (
+        "Assessment of Current Functioning:\n"
+        "Provider Location During Assessment: Office\nPatient Location during Assessment: Office\n"
+        "Assessment Methods/Measures: The PEAK Assessment was administered by a BCBA.\n"
+        "The PEAK is a comprehensive skill-tracking system designed for learners with developmental "
+        "delays, covering multiple domains of communication and social behavior. The PEAK curriculum "
+        "is grounded in relational frame theory and provides a structured framework for intervention "
+        "planning across direct training and generalization modules.\n"
+        "Assessment Summary Statement:\n"
+        "Total Score on 08/02/2025: 62\n"
+        "Total Score on 02/11/2025: 31\n"
+        "Client has made steady progress across domains.\n"
+        "Goal Progress:\n"
+    )
+    result, evidence, page, confidence = fields._check_ACF07({}, _fields(text))
+    assert result == "pass"
+    assert "PEAK" in evidence
+
+
+def test_acf07_fail_when_single_tool_named_repeatedly_but_genuinely_no_date_anywhere():
+    """SYNTHETIC negative case: same repeated-prose-mention shape, but this
+    time NO administration date appears anywhere in the section, under
+    either recognized label. Must fail (or come back a clear negative),
+    never a guessed pass -- proving the broadened date search doesn't
+    invent dates that aren't there."""
+    text = (
+        "Assessment of Current Functioning:\n"
+        "Provider Location During Assessment: Office\nPatient Location during Assessment: Office\n"
+        "Assessment Methods/Measures: The PEAK Assessment was administered by a BCBA.\n"
+        "The PEAK is a comprehensive skill-tracking system designed for learners with developmental "
+        "delays, covering multiple domains of communication and social behavior. The PEAK curriculum "
+        "is grounded in relational frame theory.\n"
+        "Assessment Summary Statement:\n"
+        "Client has made steady progress across domains, though no scoring date is recorded here.\n"
+        "Goal Progress:\n"
+    )
+    result, evidence, page, confidence = fields._check_ACF07({}, _fields(text))
+    assert result == "fail"
+    assert "PEAK" in evidence

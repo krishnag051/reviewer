@@ -61,11 +61,11 @@ conflicts with this section, THIS section wins.
   through them.
 
 **Still mock** (§1-§5 below describe these accurately, EXCEPT §4's Rules
-Studio section, superseded above): Reports, Dashboard's activity feed for
+Studio section, superseded above, AND "Escalate to BCBA," superseded by
+the Round 70-73 note below): Reports, Dashboard's activity feed for
 anything not covered above, Admin Settings' non-user-provisioning tabs
-(Organization/Notifications/Integrations/Billing), correction email send,
-mark-reviewed. "Escalate to BCBA" on the review page stays a toast-only
-placeholder (no backend lane-routing system exists).
+(Organization/Notifications/Integrations/Billing), correction email
+*send* specifically, mark-reviewed.
 
 Not yet exercised for real by this frontend's own automated verification,
 by design: a real upload actually completing its pipeline run (zero
@@ -89,6 +89,42 @@ not fed into `review_treatment_plan` or any part of the rule-checking
 pipeline. Extraction/sub-agent consumption of this document is planned for
 a future round, not yet built — don't describe this document as
 influencing any rule result today.
+
+**Rounds 70-73 — results panel rebuilt, real (draft-only) BCBA escalation,
+🔒 integration structure now LOCKED (2026-08-08).** `plans.$refId.index.tsx`'s
+review panel is no longer the Round 43-era "raw rule_id + status dropdown"
+UI described above:
+- Real, plain-English `question_text`/`category`/`rule_code` per result
+  (Round 70) — never a bare rule_id again.
+- Real, working page-jump (`[View Page N]` links actually navigate the PDF
+  pane) — Round 70 built it, Round 72 found and fixed the real bug (a
+  same-document `src` hash update doesn't re-trigger the browser's PDF
+  viewer; fixed via a forced remount), **confirmed working live by
+  Krishna, not just claimed**.
+- Real editing of a result's evidence/pages (Round 70), extending the same
+  override mechanism, not a second one.
+- Round 73: each result card is now collapsed by default (question +
+  Answer only), independently expandable per card via a chevron — not an
+  accordion — matching the Brellium reference's density.
+- **"Escalate to BCBA" is real, not a toast placeholder** (superseding the
+  "Still mock" line above) — Round 70 wired it to the real, pre-existing
+  `POST /versions/:id/correction-email` endpoint; Round 71 gave it a real
+  modal (same pattern as the Intake Q&A modal) with editable To/Cc/Bcc and
+  every non-Pass item listed. **Still draft-only** — no send capability
+  exists anywhere in this codebase; actually sending is a separate,
+  unapproved decision.
+- Session Notes page (`session-notes.$uploadId.tsx`) now renders each
+  attached file inline via the same `PdfViewer` component the main review
+  page uses (generalized in Round 72 to accept any blob-fetcher), not just
+  a download link.
+
+**Per Round 73's explicit instruction: this integration structure — the
+frontend/backend/agent-wrapper wiring built across Rounds 66-73 — is now
+considered stable and locked.** See the identical lock note in
+`agent-making/AGENT_STATE.md` and `agent-making/INTEGRATION_PLAN.md`.
+Future rounds improving agent-making's own internal judgment/detection
+logic should not need to restructure any of this frontend wiring, as long
+as the existing `RuleResult` contract shape keeps being honored.
 
 ---
 

@@ -27,7 +27,7 @@ def test_run_judgment_checks_still_makes_exactly_two_calls_for_a_listed_rule(mon
     automatically."""
     call_log = []
 
-    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call"):
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
         call_log.append(call_reason)
         return {"QA-GIP-06": {"result": "fail", "evidence": "x", "page": None, "confidence": 0.8}}
 

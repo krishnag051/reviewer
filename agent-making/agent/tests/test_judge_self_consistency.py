@@ -62,7 +62,7 @@ def test_mixed_batch_some_agree_some_disagree_some_missing():
 def test_run_judgment_checks_makes_exactly_two_underlying_calls_and_reconciles(monkeypatch):
     call_log = []
 
-    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call"):
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
         call_log.append(call_reason)
         if len(call_log) == 1:
             return {"A-1": _finding("pass")}

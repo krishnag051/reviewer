@@ -39,6 +39,19 @@ def test_mixed_batch_keeps_consistent_drops_inconsistent():
     assert set(findings.keys()) == {"A-1"}
 
 
+def test_malformed_non_dict_entry_is_dropped_not_a_crash():
+    """Confirmed live: a real model response can put a bare string in the
+    findings array where the tool schema requires an object. This must be
+    dropped (retried as if missing), never raise AttributeError."""
+    findings = judge._findings_dict_from_list(["QA-TEMP-03"])
+    assert findings == {}
+
+
+def test_malformed_entry_mixed_with_a_valid_one_keeps_the_valid_one():
+    findings = judge._findings_dict_from_list(["QA-TEMP-03", _finding("A-1")])
+    assert set(findings.keys()) == {"A-1"}
+
+
 def test_missing_evidence_supports_result_key_treated_as_rejected():
     """Defensive default: if the model somehow omits the field despite it
     being required, treat that the same as an explicit False — never as an

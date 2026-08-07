@@ -20,6 +20,7 @@ import uuid
 from pypdf import PdfWriter
 from sqlalchemy import select
 
+from app.agent_client import ReviewResult, UsageInfo
 from app.db.models import Upload
 from tests.conftest import ROUND56_QA_FORM_DATA, login_headers, make_patient_version_upload
 
@@ -96,25 +97,44 @@ def test_create_upload_route_reaches_real_pipeline_wiring_with_mocked_agent_call
     real _drafts_from_review_result fallback path (every pinned rule comes
     back "not_checkable"), which is exactly the real code path a genuine
     agent response with unmatched rule_codes would also hit.
+
+    Round 67: this upload's fixture attaches a `session_notes` file (a
+    real requirement of the structured-form upload shape, not because this
+    test is ABOUT session notes) -- since Round 67 wired
+    app.rule_engine.client.review_session_notes into run_rule_checks for
+    ANY upload with session-note files attached, that real seam is ALSO
+    mocked here (to `[]`, "no session notes found anything") so this
+    test's own "every pinned rule comes back not_checkable" assertion
+    stays true to what it's actually testing (the general wiring, not
+    session-notes-specific behavior) -- see
+    test_round67_session_notes_wiring.py for the real, dedicated
+    session-notes proof.
     """
     def _fake_review_treatment_plan(
         pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None, max_calls=None,
     ):
         assert pdf_path, "wiring must pass the upload's real file_path through"
-        return {
-            "schema_version": 1,
-            "status": "complete",
-            "detected_payor": None,
-            "detected_plan_type": None,
-            "findings": [],
-            "summary": {},
-            "usage": {"calls": 0},
-            "error": None,
-        }
+        # Round 66: app.rule_engine.client.review_treatment_plan is now
+        # app.agent_client.review_treatment_plan under the hood, returning
+        # the typed ReviewResult contract, not a raw dict.
+        return ReviewResult(
+            schema_version="1.0",
+            status="complete",
+            detected_payor=None,
+            detected_plan_type=None,
+            supporting_doc_extraction=None,
+            results=[],
+            bcba_fix_rule_ids=[],
+            facilitator_assign_rule_ids=[],
+            counts_by_result={},
+            usage=UsageInfo(api_calls=0, input_tokens=0, output_tokens=0, estimated_cost_usd=0.0),
+            error=None,
+        )
 
     monkeypatch.setattr(
         "app.rule_engine.client.review_treatment_plan", _fake_review_treatment_plan,
     )
+    monkeypatch.setattr("app.rule_engine.client.review_session_notes", lambda *a, **k: [])
 
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     patient_resp = client.post(

@@ -110,8 +110,22 @@ export function useOverrideRuleResult() {
       ruleResultId: string;
       uploadId: string;
       updated_at: string;
-      final_status: "pass" | "fail" | "na" | "uncertain" | "not_checkable";
-    }) => overrideRuleResult(args.ruleResultId, { updated_at: args.updated_at, final_status: args.final_status }),
+      final_status?: "pass" | "fail" | "na" | "uncertain" | "not_checkable";
+      // Round 70, Item 3: the backend PATCH contract already accepted
+      // final_finding/final_pages (app/routers/rule_results.py's
+      // RuleResultPatch) -- this hook just never forwarded them. Extends
+      // the SAME mechanism, not a second one: still one PATCH call, one
+      // optimistic-lock token, one override_rule_result() service call.
+      final_finding?: string;
+      final_pages?: number[];
+      reason?: string;
+    }) => overrideRuleResult(args.ruleResultId, {
+      updated_at: args.updated_at,
+      final_status: args.final_status,
+      final_finding: args.final_finding,
+      final_pages: args.final_pages,
+      reason: args.reason,
+    }),
     onSuccess: (_data, args) => {
       queryClient.invalidateQueries({ queryKey: ["upload", args.uploadId] });
     },

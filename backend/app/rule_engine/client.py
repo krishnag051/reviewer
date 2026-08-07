@@ -1,8 +1,12 @@
 """No longer hollow (2026-07-30) — see CLAUDE.md's Boundaries section. This
-calls into agent-making/agent/pipeline/api.py's `review_treatment_plan`
-wrapper. The boundary this backend must never cross still holds: no
-rule-checking LOGIC lives here, only translation between agent-making's
-rule_id/status vocabulary and this backend's `RuleResultDraft` contract.
+calls into `agent-making` exclusively through `app.agent_client`
+(Round 66) — never imports `pipeline.*` directly, and never will again;
+that's the whole point of the new boundary. The boundary this backend must
+never cross still holds: no rule-checking LOGIC lives here, only
+translation between agent-making's rule_id/status vocabulary and this
+backend's `RuleResultDraft` contract — that translation is exactly what
+this file still owns, unchanged, now reading from `app.agent_client`'s
+typed `ReviewResult`/`RuleResult` objects instead of a raw dict.
 
 Rule identity: agent-making identifies rules by a human-readable code
 string (`rule_id` in its own data, e.g. "QA-TEMP-01"). This backend
@@ -24,34 +28,15 @@ agent-making's real rule set (rule_code == agent-making's rule_id) — see
 `scripts/seed.py::seed_rules` and `docs/BACKEND_IMPLEMENTATION_SUMMARY.md`'s
 note on this reseed.
 """
-import os
-import sys
 import uuid
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent_client import ReviewResult, RuleResult, review_session_notes, review_treatment_plan
 from app.config import settings
 from app.db.models import Rule, RuleSnapshot, Upload
 from app.rule_engine.contract import RuleResultDraft
-
-# agent-making isn't an installed package -- make its `pipeline` package
-# importable by path. Resolved once, at import time, not per-call.
-_AGENT_MAKING_PATH = Path(settings.agent_making_agent_path)
-if not _AGENT_MAKING_PATH.is_absolute():
-    _AGENT_MAKING_PATH = (Path(__file__).resolve().parents[2] / _AGENT_MAKING_PATH).resolve()
-if str(_AGENT_MAKING_PATH) not in sys.path:
-    sys.path.insert(0, str(_AGENT_MAKING_PATH))
-
-if settings.anthropic_api_key:
-    # setdefault, not direct assignment -- agent-making's own .env (loaded
-    # the moment pipeline.api is imported below, via judge.py's own
-    # load_dotenv call) wins if it already set this; this is only a
-    # fallback for a deploy that doesn't ship that second .env file.
-    os.environ.setdefault("ANTHROPIC_API_KEY", settings.anthropic_api_key)
-
-from pipeline.api import review_treatment_plan  # noqa: E402  (must follow sys.path setup above)
 
 # agent-making's real result vocabulary -> this backend's rule_result_status
 # enum. "not_applicable" collapses to the pre-existing "na" spelling;
@@ -69,37 +54,16 @@ _RESULT_TO_MODEL_STATUS = {
 }
 
 
-def _parse_pages(page) -> list[int]:
-    """agent-making's `page` field (merge.py::_format_page_display) is an
-    int, None, or a display string like "3" / "3-5" / "3, 5, 9" -- this
-    backend's model_pages is always list[int]. Parses all three shapes.
-    """
-    if page is None:
-        return []
-    if isinstance(page, int):
-        return [page]
-    pages: list[int] = []
-    for token in str(page).split(","):
-        token = token.strip()
-        if not token:
-            continue
-        if "-" in token:
-            start, _, end = token.partition("-")
-            pages.extend(range(int(start), int(end) + 1))
-        else:
-            pages.append(int(token))
-    return pages
-
-
 def _drafts_from_review_result(
-    review_result: dict, snapshot_entries: list[dict], rule_codes_by_id: dict[str, str],
+    review_result: ReviewResult, snapshot_entries: list[dict], rule_codes_by_id: dict[str, str],
 ) -> list[RuleResultDraft]:
-    # agent-making's `findings` list is exploded to one row per {page,
-    # detail} pair for multi-page evidence (merge.py::_explode_to_rows) --
-    # this contract wants ONE draft per rule, so re-group by rule_id first.
-    rows_by_rule_id: dict[str, list[dict]] = {}
-    for row in review_result["findings"]:
-        rows_by_rule_id.setdefault(row["rule_id"], []).append(row)
+    # agent-making's `results` list has one row per {page, detail} pair for
+    # multi-page evidence (merge.py::_explode_to_rows, already applied by
+    # app.agent_client before this ever sees it) -- this contract wants ONE
+    # draft per rule, so re-group by rule_id first.
+    rows_by_rule_id: dict[str, list[RuleResult]] = {}
+    for row in review_result.results:
+        rows_by_rule_id.setdefault(row.rule_id, []).append(row)
 
     drafts = []
     for entry in snapshot_entries:
@@ -127,18 +91,29 @@ def _drafts_from_review_result(
 
         pages: list[int] = []
         for row in rows:
-            pages.extend(_parse_pages(row["page"]))
-        details = list(dict.fromkeys(row["detail"] for row in rows))  # de-dup, preserve order
+            pages.extend(row.page)
+        details = list(dict.fromkeys(row.evidence for row in rows))  # de-dup, preserve order
 
         drafts.append(RuleResultDraft(
             rule_id=backend_rule_id,
             rule_version_used=entry["version"],
-            model_status=_RESULT_TO_MODEL_STATUS[rows[0]["result"]],
+            model_status=_RESULT_TO_MODEL_STATUS[rows[0].status],
             model_finding="; ".join(details),
             model_pages=sorted(set(pages)),
             model_source_quote=None,
         ))
     return drafts
+
+
+def _draft_from_session_notes_result(rule_result: RuleResult, backend_rule_id: str, version: int) -> RuleResultDraft:
+    return RuleResultDraft(
+        rule_id=backend_rule_id,
+        rule_version_used=version,
+        model_status=_RESULT_TO_MODEL_STATUS[rule_result.status],
+        model_finding=rule_result.evidence,
+        model_pages=rule_result.page,
+        model_source_quote=None,
+    )
 
 
 def run_rule_checks(
@@ -158,6 +133,23 @@ def run_rule_checks(
     around this call already rolls back and sets upload.status="error" +
     error_detail for any exception; this reuses that path rather than
     inventing a second one.
+
+    Round 67: when this upload has session-note files attached, ALSO calls
+    `app.agent_client.review_session_notes` and merges its QA-RPT-03/
+    QA-ACF-02/QA-ACF-08 results into this SAME drafts list, overriding
+    whatever the main TP-only `review_treatment_plan` call said for those
+    exact 3 rule_ids -- that main call has no session-note data at all, so
+    its own answer for these specific rules (typically "not_checkable" per
+    their own rules.json notes) is never the real one once a session note
+    is actually attached. Not a separate hidden result set: this is the
+    one and only place these 3 rule_ids' drafts get built, same as every
+    other rule.
+
+    Deliberately still the free OpenRouter tier for this real backend call
+    site, not real Anthropic -- see `review_session_notes`'s own docstring.
+    Whether/when real backend usage should switch to actual billed Haiku
+    calls (the original, pre-Round-56 production design) is a separate
+    decision this round does NOT make -- flagged, not silently decided.
     """
     upload = session.get(Upload, uuid.UUID(upload_id))
     snapshot = session.get(RuleSnapshot, uuid.UUID(snapshot_id))
@@ -167,11 +159,11 @@ def run_rule_checks(
         supporting_doc_path=upload.supporting_document_path,
         max_calls=settings.rule_engine_max_calls,
     )
-    if result["status"] != "complete":
-        error = result["error"] or {}
+    if result.status != "complete":
+        error = result.error
         raise RuntimeError(
-            f"rule-checking agent failed ({error.get('code', 'unknown')}): "
-            f"{error.get('message', 'no message')}"
+            f"rule-checking agent failed ({error.code if error else 'unknown'}): "
+            f"{error.message if error else 'no message'}"
         )
 
     backend_rule_ids = [uuid.UUID(entry["rule_id"]) for entry in snapshot.rule_ids_and_versions]
@@ -180,4 +172,26 @@ def run_rule_checks(
         for r in session.execute(select(Rule).where(Rule.id.in_(backend_rule_ids))).scalars().all()
     }
 
-    return _drafts_from_review_result(result, snapshot.rule_ids_and_versions, rule_codes_by_id)
+    drafts = _drafts_from_review_result(result, snapshot.rule_ids_and_versions, rule_codes_by_id)
+
+    session_note_paths = {note.original_filename: note.file_path for note in upload.session_note_files}
+    if session_note_paths:
+        session_note_results = review_session_notes(
+            upload.file_path,
+            session_note_paths,
+            model_override="openrouter",
+            max_calls=settings.session_notes_max_calls,
+        )
+        rule_id_by_code = {code: backend_id for backend_id, code in rule_codes_by_id.items()}
+        version_by_backend_id = {entry["rule_id"]: entry["version"] for entry in snapshot.rule_ids_and_versions}
+        draft_by_rule_id = {d.rule_id: d for d in drafts}
+        for rr in session_note_results:
+            backend_rule_id = rule_id_by_code.get(rr.rule_id)
+            if backend_rule_id is None or backend_rule_id not in version_by_backend_id:
+                continue  # this rule_code isn't part of the pinned snapshot -- nothing to override
+            draft_by_rule_id[backend_rule_id] = _draft_from_session_notes_result(
+                rr, backend_rule_id, version_by_backend_id[backend_rule_id],
+            )
+        drafts = list(draft_by_rule_id.values())  # dict overwrite preserves original insertion order
+
+    return drafts

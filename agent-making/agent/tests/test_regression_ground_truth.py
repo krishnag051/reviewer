@@ -114,6 +114,19 @@ DET_GROUND_TRUTH = {
     # text) -- see pipeline/fields.py::_check_TEMP04's docstring. Both
     # documents have many confirmed embedded reviewer comments (8 each).
     "QA-TEMP-04": {"reeda_tp_pdf": "fail", "charny_tp_pdf": "fail"},
+    # Round 63, item 3: real deterministic schedule-table arithmetic.
+    # Confirmed live: every scheduled day on both real documents exceeds
+    # the 3 hrs/day threshold (Reeda: Sun/Sat 4.5, Tue-Fri 4.0; Charny:
+    # Mon-Thu 5.0).
+    "QA-SCH-07": {"reeda_tp_pdf": "fail", "charny_tp_pdf": "fail"},
+    # Round 64, item 3: real highlight detection via PyMuPDF. Confirmed
+    # live against both real documents -- both fail via the FLATTENED-fill
+    # fallback specifically (not the real-annotation path): every one of
+    # both documents' embedded reviewer comments/questions (the same ones
+    # QA-TEMP-04 detects) is rendered as a highlighter-colored fill behind
+    # the text in the real PDF, not a true Highlight annotation object.
+    # Genuine finding, not assumed -- see pipeline/fields.py::_check_TEMP03.
+    "QA-TEMP-03": {"reeda_tp_pdf": "fail", "charny_tp_pdf": "fail"},
 }
 
 _DET_GROUND_TRUTH_CASES = [
@@ -148,8 +161,20 @@ def test_det_ground_truth(request, rule_id, fixture_name, expected):
 # rule_id's result twice via two different mechanisms -- and for HRS-06,
 # the live/deterministic answers actually disagree (see the note above),
 # so keeping both would silently assert something no longer believed true.
+#
+# QA-TEMP-03 and QA-SCH-07 REMOVED from here (2026-08-07, Round 64, item 3
+# and an incidental same-file fix): both converted to check_type
+# "deterministic" this round (QA-SCH-07 in Round 63, item 3; QA-TEMP-03 in
+# Round 64, item 3) -- QA-SCH-07's removal was a leftover Round 63 miss
+# caught while touching this same file for QA-TEMP-03, not a new
+# conversion of its own. Both now seeded in DET_GROUND_TRUTH instead, with
+# real values confirmed live against both real documents this round:
+# QA-TEMP-03 fails on both via the flattened-fill fallback (both
+# documents' embedded reviewer comments are rendered as highlighter-
+# colored fills in the real PDF, not true annotations) -- genuine
+# evidence, not assumed. QA-SCH-07 fails on both (every scheduled day
+# exceeds 3 hrs/day of 97153 on both real schedules).
 REEDA_JUDGMENT_GROUND_TRUTH = {
-    "QA-TEMP-03": "fail",
     "QA-BIO-07": "fail",
     "QA-HRS-07": "fail",
     "QA-HRS-09": "fail",
@@ -157,7 +182,6 @@ REEDA_JUDGMENT_GROUND_TRUTH = {
 }
 CHARNY_JUDGMENT_GROUND_TRUTH = {
     "QA-HRS-09": "fail",
-    "QA-SCH-07": "fail",
     "QA-PROB-01": "fail",
     "QA-ACF-02": "fail",
     "QA-GIP-06": "fail",

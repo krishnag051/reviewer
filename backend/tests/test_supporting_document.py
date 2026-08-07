@@ -10,6 +10,7 @@ import uuid
 
 from pypdf import PdfWriter
 
+from app.agent_client import ReviewResult, UsageInfo
 from app.db.models import Upload
 from tests.conftest import login_headers, make_patient_version_upload
 
@@ -136,10 +137,15 @@ def test_run_rule_checks_forwards_supporting_document_path_to_review_treatment_p
     def _fake_review_treatment_plan(pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None, max_calls=None):
         seen_kwargs["pdf_path"] = pdf_path
         seen_kwargs["supporting_doc_path"] = supporting_doc_path
-        return {
-            "schema_version": 1, "status": "complete", "detected_payor": None, "detected_plan_type": None,
-            "findings": [], "summary": {}, "usage": {"calls": 0}, "error": None,
-        }
+        # Round 66: app.rule_engine.client.review_treatment_plan is now
+        # app.agent_client.review_treatment_plan under the hood, returning
+        # the typed ReviewResult contract, not a raw dict.
+        return ReviewResult(
+            schema_version="1.0", status="complete", detected_payor=None, detected_plan_type=None,
+            supporting_doc_extraction=None, results=[], bcba_fix_rule_ids=[], facilitator_assign_rule_ids=[],
+            counts_by_result={}, usage=UsageInfo(api_calls=0, input_tokens=0, output_tokens=0, estimated_cost_usd=0.0),
+            error=None,
+        )
 
     monkeypatch.setattr("app.rule_engine.client.review_treatment_plan", _fake_review_treatment_plan)
 

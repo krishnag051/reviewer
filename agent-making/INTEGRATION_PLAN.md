@@ -14,13 +14,16 @@
 
 Directly relevant here: the `review_treatment_plan` wrapper (§1) and anything that calls it — the backend's `run_upload_pipeline` background task included — makes real, billed calls every time it runs. That is no longer something to just run to confirm "it works." See the identical copy of this rule in the root `CLAUDE.md`, `agent-making/AGENT_STATE.md`, and `frontend/FRONTEND_STATE.md`.
 
+**🔒 Superseded by real, built, LOCKED code (2026-08-08, Round 73) — the "Proposal only" line immediately below is stale and no longer accurate.** Everything this plan proposed has since actually been built: the stable wrapper is `backend/app/agent_client.py` (Round 66, extended Round 67 for session notes), the vocabulary translation is `backend/app/rule_engine/client.py`, and the real upload → real backend → real UI path (Rounds 70-72) has been verified live, including real page-hopping confirmed working by Krishna directly (Round 72→73). Per this round's explicit instruction: this integration structure — this plan's wrapper boundary plus everything built on top of it through Round 73 — is now considered stable and locked. Future rounds improving `agent-making/`'s own internal logic should not need to restructure this wiring, provided the existing contract shapes (rule_id/status/page/evidence semantics on `RuleResult`, the session-notes 3-rule-id contract) keep being honored. A genuine need to change those shapes is a deliberate, flagged decision, not a side effect of an internal fix. The historical proposal below is kept as-is for reference, not because it's still an open question.
+
 ---
 
-Proposal only — no code has been written against this yet. Nothing in
-`agent-making/` is modified by this plan; the hard requirement going in is
-that `agent-making/` stays completely standalone, called into from outside
-via a stable wrapper, never modified or restructured to accommodate the
-front end/back end.
+Proposal only when originally written -- see the LOCKED note immediately
+above for current status. Nothing in `agent-making/` was modified by this
+plan; the hard requirement going in was that `agent-making/` stays
+completely standalone, called into from outside via a stable wrapper,
+never modified or restructured to accommodate the front end/back end --
+that requirement held throughout Rounds 66-73 and remains true today.
 
 ---
 
@@ -365,5 +368,8 @@ semantics. `schema_version` exists specifically so these are never silent.
   ceiling per call, but the actual business policy (who gets how much
   budget) doesn't belong in `agent-making`.
 
-No code changes have been made against this plan — it is a proposal to
-discuss, not something built yet.
+Historical note: this line originally read "no code changes have been
+made against this plan — it is a proposal to discuss, not something built
+yet." That's no longer true — see the 🔒 LOCKED note near the top of this
+document for what's actually been built (Rounds 66-73) and this
+integration structure's current, stable status.

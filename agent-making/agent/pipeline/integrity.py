@@ -21,6 +21,7 @@ def run_judgment_with_integrity_check(
     rendered_images: dict[int, bytes],
     max_retries: int = 2,
     tracker=None,
+    model_override: str | None = None,
 ) -> dict[str, dict]:
     """Calls judge.run_judgment_checks, and on any missing rule_id, retries
     only for the missing subset, up to max_retries times. Raises
@@ -32,9 +33,17 @@ def run_judgment_with_integrity_check(
     without checking the tracker's cap first (judge.py checks too, but the
     reason string here is what makes the resulting log line tell you *why*
     a given call happened, not just that it did).
+
+    `model_override` (Round 61) is forwarded unchanged to every judge.py
+    call this makes — defaults to None, which keeps this function's
+    behavior identical to before this round for every caller that doesn't
+    pass it (see judge.py's own docstring on this same parameter).
     """
     sent_ids = [r["rule_id"] for r in judgment_rules]
-    results = judge.run_judgment_checks(judgment_rules, fields, rendered_images, tracker=tracker, call_reason="initial batch")
+    results = judge.run_judgment_checks(
+        judgment_rules, fields, rendered_images, tracker=tracker, call_reason="initial batch",
+        model_override=model_override,
+    )
 
     attempt = 0
     while True:
@@ -55,5 +64,6 @@ def run_judgment_with_integrity_check(
             rendered_images,
             tracker=tracker,
             call_reason=f"retry {attempt}/{max_retries} (missing or evidence_supports_result=false in previous response)",
+            model_override=model_override,
         )
         results.update(retry_results)

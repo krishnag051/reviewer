@@ -1,0 +1,36 @@
+# Generated from pyproject.toml's [project.dependencies], pinned to the
+# exact versions currently installed in backend/.venv (`pip freeze`).
+# pyproject.toml remains the source of truth for this project (this repo
+# installs via `pip install .`, not `pip install -r requirements.txt`) --
+# this file exists for tooling/deploy paths that specifically expect a
+# requirements.txt. Keep it in sync with pyproject.toml's dependencies list
+# by hand; nothing regenerates it automatically.
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+sqlalchemy==2.0.51
+alembic==1.18.5
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+pydantic-settings==2.14.2
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+pyjwt==2.13.0
+python-multipart==0.0.32
+apscheduler==3.11.3
+pypdf==6.14.2
+
+# --- rule-checking agent wiring (2026-07-30) ---
+# app/agent_client.py imports agent-making/agent/pipeline/api.py by path
+# (not as an installed package), but that module's own import chain needs
+# these at import time, in WHICHEVER process does the importing -- that's
+# this backend process, not just agent-making's own. Versions matched to
+# agent-making/agent/requirements.txt.
+anthropic==0.120.2
+python-dotenv==1.2.2
+pymupdf==1.28.0
+requests==2.34.2
+
+# --- dev/test only (pyproject.toml's [project.optional-dependencies].dev) ---
+# Not needed to run the backend itself; only for running its test suite.
+pytest==9.1.1
+httpx==0.28.1

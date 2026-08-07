@@ -12,11 +12,12 @@ from sqlalchemy import (
     Numeric,
     Text,
     UniqueConstraint,
+    and_,
     func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -147,6 +148,18 @@ class Upload(Base):
     file_purged: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rules_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("rule_snapshots.id", ondelete="RESTRICT"))
+    # Round 70, Item 2: {physical_page_number (as a string key, JSON's own
+    # object-key rule) -> printed page label found in that page's own text},
+    # computed once at upload-processing time by
+    # app/services/page_labels.py::extract_page_labels, from the SAME parsed
+    # text run_upload_pipeline already produces (no second PDF read). A page
+    # with no confidently-detected printed label is simply absent from this
+    # map -- never defaulted to str(physical_index) -- so "not a key here"
+    # always means "couldn't find one," not "found one that matches."
+    # Display/cross-check only: page-jump navigation always targets the
+    # physical index already stored in model_pages/final_pages (see that
+    # module's own docstring for why no translation step is needed there).
+    page_label_map: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     status: Mapped[str] = mapped_column(upload_status_enum, nullable=False, server_default="processing")
     error_detail: Mapped[str | None] = mapped_column(Text)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
@@ -328,6 +341,48 @@ class RuleResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     upload: Mapped["Upload"] = relationship(back_populates="rule_results")
+
+    # Round 70: display-only relationships, viewonly (this file's own
+    # invariant comment above already says model_status/model_finding/
+    # model_pages are written once and never updated -- these two
+    # relationships exist purely so the API layer can attach a real
+    # question_text/category/rule_code to a rule_result without a second
+    # round-trip; they never get assigned to or used for a write).
+    #
+    # `rule` gives the CURRENT/live rule row (for rule_code, which is
+    # immutable and never versioned). `version_history` joins on BOTH
+    # rule_id AND rule_version_used to get the question_text/category as
+    # they read AT THE VERSION actually pinned for this result -- not
+    # whatever the rule's text has since been edited to. This matters: a
+    # rule's question_text can be edited after this result was created
+    # (see app/services/rules.py::edit_rule), and an already-finalized
+    # upload's displayed question must stay the one actually reviewed
+    # against, not silently drift to newer wording.
+    rule: Mapped["Rule"] = relationship(viewonly=True)
+    version_history: Mapped["RuleVersionHistory"] = relationship(
+        "RuleVersionHistory",
+        primaryjoin=(
+            "and_(RuleResult.rule_id == foreign(RuleVersionHistory.rule_id), "
+            "RuleResult.rule_version_used == foreign(RuleVersionHistory.version))"
+        ),
+        viewonly=True,
+        uselist=False,
+    )
+
+    @property
+    def question_text(self) -> str:
+        # Falls back to the live rule's text only if no history row exists
+        # for this exact version (shouldn't happen post gap-A3/create_rule's
+        # own v1-row guarantee, but a fallback beats a 500 on old/odd data).
+        return self.version_history.question_text if self.version_history else self.rule.question_text
+
+    @property
+    def category(self) -> str:
+        return self.version_history.category if self.version_history else self.rule.category
+
+    @property
+    def rule_code(self) -> str:
+        return self.rule.rule_code
 
 
 class RuleResultEdit(Base):

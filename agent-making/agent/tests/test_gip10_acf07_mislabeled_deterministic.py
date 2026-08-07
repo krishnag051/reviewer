@@ -99,7 +99,15 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     "QA-HRS-08",
     "QA-MAST-01", "QA-MAST-02",
     "QA-RPT-04", "QA-RPT-05",
-    "QA-SCH-01", "QA-SCH-03", "QA-SCH-05", "QA-SCH-06", "QA-SCH-07",
+    # QA-SCH-01/QA-SCH-07 REMOVED from this set (2026-08-07, Round 63, item
+    # 3) -- real checkers built (pipeline/schedule_hours.py's deterministic
+    # date/time arithmetic + table extraction), see
+    # test_exactly_thirty_seven_deterministic_labeled_rules_have_real_checkers
+    # below. QA-SCH-03/05/06 remain here -- each needs its own additional
+    # logic beyond the schedule grid itself (overlap detection, a payor
+    # exception flag, a second field to compare against), not built this
+    # round; see their own updated blocked_status notes in rules.json.
+    "QA-SCH-03", "QA-SCH-05", "QA-SCH-06",
     "QA-SIG-06",
     # Added 2026-07-27 (Empire/Emblem/Aetna round): EMP-02 has a confirmed
     # scope ambiguity (see its own notes/blocked_status in rules.json) --
@@ -144,7 +152,7 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_thirty_four_deterministic_labeled_rules_have_real_checkers():
+def test_exactly_thirty_eight_deterministic_labeled_rules_have_real_checkers():
     """QA-TRANS-02/QA-DISC-02 dropped out of this set 2026-07-28 -- their
     shared bullet-marker checker was reclassified to judgment after a
     confirmed false positive (see test_trans02_disc02_relabeled_to_judgment
@@ -168,7 +176,16 @@ def test_exactly_thirty_four_deterministic_labeled_rules_have_real_checkers():
     confirmed regression where its judgment-only behavior had narrowed to
     only recognizing email-header-style text -- see
     pipeline/fields.py::_check_TEMP04's and _find_embedded_reviewer_
-    comments's own docstrings for the full diagnosis."""
+    comments's own docstrings for the full diagnosis.
+
+    Three more joined 2026-08-07 (Round 63, ground-truth fixes): QA-SCH-01
+    and QA-SCH-07 (item 3 -- real deterministic schedule-table date/time
+    arithmetic, replacing the judgment layer's confirmed-wrong eyeballed
+    totals; see pipeline/schedule_hours.py). QA-PROB-02 (item 5 --
+    deterministic pre-check ONLY for a confirmed objective violation, an
+    embedded reviewer comment counted as evidence; still escalates to
+    judgment for the real semantic-alignment question when clean, see
+    _check_PROB02's own docstring)."""
     det_labeled_ids = {r["rule_id"] for r in _rules_labeled_deterministic()}
     matched = det_labeled_ids & set(fields.DET_CHECKS.keys())
     assert matched == {
@@ -195,6 +212,13 @@ def test_exactly_thirty_four_deterministic_labeled_rules_have_real_checkers():
         "QA-HRS-06", "QA-ACF-07",
         # Follow-up round, item 1: regression fix.
         "QA-TEMP-04",
+        # Round 63 (2026-08-07): items 3 and 5.
+        "QA-SCH-01", "QA-SCH-07", "QA-PROB-02",
+        # Round 64 (2026-08-07): item 3 -- real highlight detection via
+        # PyMuPDF (annotation objects + flattened-fill fallback), replacing
+        # the judgment layer's text-only read that structurally can never
+        # see highlight data. See _check_TEMP03's own docstring.
+        "QA-TEMP-03",
     }
 
 

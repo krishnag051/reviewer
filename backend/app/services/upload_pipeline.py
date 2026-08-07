@@ -7,6 +7,7 @@ from app.audit import record
 from app.db.base import SessionLocal
 from app.db.models import RuleResult, RuleSyncState, Upload
 from app.rule_engine.client import run_rule_checks
+from app.services.page_labels import extract_page_labels
 from app.services.pdf_parser import parse_pdf
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,15 @@ def run_upload_pipeline(upload_id: uuid.UUID) -> None:
 
             drafts = run_rule_checks(session, str(upload.id), str(snapshot_id), parsed_pages)
 
+            # Round 70, Item 2: same parsed_pages already in hand, no second
+            # PDF read -- see app/services/page_labels.py's own docstring.
+            # JSONB keys must be strings; physical page numbers come back
+            # from extract_page_labels as ints.
+            page_label_map = {str(k): v for k, v in extract_page_labels(parsed_pages).items()}
+
             # ---- step 5: ONE all-or-nothing transaction (gap C5) ----
             upload.rules_snapshot_id = snapshot_id
+            upload.page_label_map = page_label_map
             for draft in drafts:
                 session.add(RuleResult(
                     upload_id=upload.id,

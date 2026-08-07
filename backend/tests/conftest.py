@@ -169,6 +169,15 @@ def _make_ceiling_enforced_real_call(real_fn):
     (e.g. a `status: "failed"` short-circuit that still made at least the
     one call that failed) -- undercounting by assuming zero is never the
     safe direction here.
+
+    Round 66: `real_fn` (`app.rule_engine.client.review_treatment_plan`,
+    now `app.agent_client.review_treatment_plan` under the hood) returns a
+    `ReviewResult` Pydantic model, not a raw dict, as of this round's
+    refactor -- reads `result.usage.api_calls` (an attribute) accordingly.
+    This check was `isinstance(result, dict)` before the refactor; left as
+    a dict-shape fallback too so this wrapper still degrades safely (to the
+    same "+1" floor, never silently to 0) if some future caller ever hands
+    it a raw dict again instead of the typed contract.
     """
     def _wrapper(*args, **kwargs):
         if _real_api_call_counter.count >= MAX_REAL_API_CALLS_PER_SESSION:
@@ -184,10 +193,10 @@ def _make_ceiling_enforced_real_call(real_fn):
             )
         result = real_fn(*args, **kwargs)
         made = 1
-        if isinstance(result, dict):
-            usage = result.get("usage")
-            if isinstance(usage, dict) and isinstance(usage.get("api_calls"), int):
-                made = max(usage["api_calls"], 1)
+        usage = getattr(result, "usage", None) if not isinstance(result, dict) else result.get("usage")
+        api_calls = getattr(usage, "api_calls", None) if not isinstance(usage, dict) else usage.get("api_calls")
+        if isinstance(api_calls, int):
+            made = max(api_calls, 1)
         _real_api_call_counter.count += made
         print(f"[real-api-ceiling] real API calls this session: {_real_api_call_counter.count}/{MAX_REAL_API_CALLS_PER_SESSION}")
         return result

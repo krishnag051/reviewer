@@ -9,7 +9,7 @@ from .flag_pages import flag_image_only_pages, flagged_page_numbers
 from .render import render_flagged_pages
 
 
-def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None) -> dict:
+def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
     """Runs extract -> flag -> render -> scope filter -> deterministic ->
     (escalate weak det findings into) judgment (with integrity check) ->
     merge, and returns merge.merge_findings's output.
@@ -20,6 +20,14 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None) -> dict:
     what makes every real API call visible and cappable, since a single
     call to this function can itself make 1-3+ real calls internally via
     integrity.py's retry loop.
+
+    `model_override` (Round 61) is forwarded, unchanged, all the way down to
+    judge.py's real judgment call. Defaults to None, which keeps this
+    function's behavior identical to every round before this one — the only
+    caller that passes a non-None value is the Streamlit POC (app.py),
+    whose own UI defaults to Round 59's free OpenRouter model and only
+    reaches the real Anthropic API when a developer explicitly flips and
+    confirms a toggle. See judge.py's docstring on this same parameter.
     """
     pages = extract_pdf_text(pdf_path)
     pages = flag_image_only_pages(pages)
@@ -48,7 +56,7 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None) -> dict:
     full_judgment_batch = judgment_rules + escalated_rules
 
     judgment_results = integrity.run_judgment_with_integrity_check(
-        full_judgment_batch, extracted_fields, rendered_images, tracker=tracker
+        full_judgment_batch, extracted_fields, rendered_images, tracker=tracker, model_override=model_override,
     )
 
     # For escalated rules, the judgment result wins (more context to work
