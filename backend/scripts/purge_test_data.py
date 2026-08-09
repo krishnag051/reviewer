@@ -19,13 +19,25 @@ plausibly be named. Pass --pattern to target something else explicitly.
 Dry-run by default: lists exactly what would be deleted and does nothing
 until --yes is also passed.
 
-Deletes, in FK-safe order: rule_result_edits -> rule_results -> uploads
-(+ their on-disk PDF blobs, via app.storage.delete_blob) -> versions ->
-patients. audit_log rows referencing these ids are intentionally left
-alone, not scrubbed — audit history is meant to be permanent regardless of
-whether the entity it describes still exists; deleting audit rows here
-would just be a second, smaller hard-delete problem layered on top of the
-first.
+Deletes, in FK-safe order: rule_result_edits -> rule_results ->
+session_note_files (+ their on-disk blobs) -> upload_intake_answers ->
+uploads (+ their own file_path/supporting_document_path blobs, via
+app.storage.delete_blob) -> versions -> patients. audit_log rows
+referencing these ids are intentionally left alone, not scrubbed — audit
+history is meant to be permanent regardless of whether the entity it
+describes still exists; deleting audit rows here would just be a second,
+smaller hard-delete problem layered on top of the first.
+
+REAL BUG FOUND AND FIXED (2026-08-08, Round 74): this script predates
+Round 56's `session_note_files`/`upload_intake_answers` tables and never
+accounted for them — deleting an upload that had session-note files
+attached hit a real `NotNullViolation` (session_note_files.upload_id is
+NOT NULL, ondelete="RESTRICT", so the ORM's default "null the FK first"
+behavior on a bare `session.delete(upload)` fails outright). Confirmed
+live against this dev DB's own real R67-YL-* test rows before being
+fixed — the transaction rolled back cleanly (no partial damage), but the
+purge itself could not complete for any patient with session-note files
+until this was fixed.
 
 Run from backend/:
     .venv/Scripts/python.exe scripts/purge_test_data.py                  # dry run, default pattern
@@ -41,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select
 
 from app.db.base import SessionLocal
-from app.db.models import Patient, RuleResult, RuleResultEdit, Upload, Version
+from app.db.models import Patient, RuleResult, RuleResultEdit, SessionNoteFile, Upload, UploadIntakeAnswers, Version
 from app.storage import delete_blob
 
 
@@ -50,7 +62,10 @@ def find_matching_patients(session, pattern: str) -> list[Patient]:
 
 
 def purge(session, patients: list[Patient], *, dry_run: bool) -> dict[str, int]:
-    counts = {"patients": 0, "versions": 0, "uploads": 0, "rule_results": 0, "rule_result_edits": 0, "blobs": 0}
+    counts = {
+        "patients": 0, "versions": 0, "uploads": 0, "rule_results": 0, "rule_result_edits": 0,
+        "session_note_files": 0, "upload_intake_answers": 0, "blobs": 0,
+    }
 
     for patient in patients:
         versions = list(session.execute(select(Version).where(Version.patient_id == patient.id)).scalars().all())
@@ -69,6 +84,30 @@ def purge(session, patients: list[Patient], *, dry_run: bool) -> dict[str, int]:
                     for rr in rule_results:
                         session.delete(rr)
 
+                # Round 74: session_note_files/upload_intake_answers rows
+                # MUST be deleted before the upload itself -- both have a
+                # NOT NULL, ondelete="RESTRICT" FK to uploads.id, so a bare
+                # session.delete(upload) below would otherwise hit the same
+                # real NotNullViolation this round found and fixed.
+                notes = list(session.execute(
+                    select(SessionNoteFile).where(SessionNoteFile.upload_id == upload.id)
+                ).scalars().all())
+                counts["session_note_files"] += len(notes)
+                if not dry_run:
+                    for note in notes:
+                        if note.file_path and not note.file_purged:
+                            counts["blobs"] += 1
+                            delete_blob(note.file_path)
+                        session.delete(note)
+
+                intake = session.execute(
+                    select(UploadIntakeAnswers).where(UploadIntakeAnswers.upload_id == upload.id)
+                ).scalar_one_or_none()
+                if intake is not None:
+                    counts["upload_intake_answers"] += 1
+                    if not dry_run:
+                        session.delete(intake)
+
                 if upload.file_path and not upload.file_purged:
                     counts["blobs"] += 1
                     if not dry_run:
@@ -80,6 +119,8 @@ def purge(session, patients: list[Patient], *, dry_run: bool) -> dict[str, int]:
                     counts["blobs"] += 1
                     if not dry_run:
                         delete_blob(upload.supporting_document_path)
+                if not dry_run:
+                    session.flush()  # session_note_files/intake_answers deletes must land before the upload delete below
             counts["uploads"] += len(uploads)
             if not dry_run:
                 # version.final_upload_id points at one of these uploads --

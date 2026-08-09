@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.base import get_db
 from app.deps import get_current_user
-from app.services.reports import get_overview, get_trends
+from app.services.reports import RECENT_ACTIVITY_DEFAULT_LIMIT, get_overview, get_recent_activity, get_trends
 
 router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
 
@@ -67,3 +67,28 @@ def reports_trends(
     db: Session = Depends(get_db),
 ) -> dict:
     return get_trends(db, group_by)
+
+
+class RecentActivityItem(BaseModel):
+    upload_id: uuid.UUID
+    patient_name: str
+    reference_id: str
+    version_number: int
+    upload_number: int
+    status: str
+    is_final: bool
+    reviewer_name: str | None
+    audit_result: str | None
+    score: float | None
+    created_at: datetime
+
+
+@router.get("/recent-activity", response_model=list[RecentActivityItem])
+def reports_recent_activity(
+    limit: int = RECENT_ACTIVITY_DEFAULT_LIMIT,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Round 74, Item 3 -- real backing for the Dashboard's "Recent
+    activity" table (frontend/src/routes/index.tsx), replacing
+    tp-mock.ts's fabricated patients entirely."""
+    return get_recent_activity(db, limit)

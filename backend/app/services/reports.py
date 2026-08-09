@@ -5,9 +5,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.db.models import Rule, User, Version
+from app.db.models import Patient, Rule, Upload, User, Version
 
 WEEKS_IN_VOLUME_CHART = 4
+RECENT_ACTIVITY_DEFAULT_LIMIT = 10
 
 
 def resolve_date_range(
@@ -145,6 +146,51 @@ def get_overview(
         "weekly_volume": _weekly_volume(session),
         "per_reviewer": per_reviewer,
     }
+
+
+def get_recent_activity(session: Session, limit: int = RECENT_ACTIVITY_DEFAULT_LIMIT) -> list[dict]:
+    """Round 74, Item 3 -- backs the Dashboard's "Recent activity" table
+    with real rows instead of `frontend/src/lib/tp-mock.ts`'s fabricated
+    patients (Aaliyah Washington, Liam O'Sullivan, etc., which don't exist
+    anywhere in this database). Deliberately keyed on the most recent
+    UPLOADS, not only finalized versions -- with zero versions finalized
+    yet in this dev DB (confirmed live this round), an activity feed
+    scoped to `get_overview`'s finalized-only query would always render
+    empty, which is a real, honest state but a much less useful one for
+    "what's actually happening in this system lately" than showing the
+    real uploads that DO exist (any status, draft or final). `audit_result`
+    /`score` are the version's, included when present -- always honestly
+    `None` for a draft, never guessed at.
+    """
+    rows = session.execute(
+        select(Upload, Version, Patient)
+        .join(Version, Upload.version_id == Version.id)
+        .join(Patient, Version.patient_id == Patient.id)
+        .order_by(Upload.created_at.desc())
+        .limit(limit)
+    ).all()
+
+    reviewer_ids = {version.reviewer_id for _, version, _ in rows if version.reviewer_id is not None}
+    users_by_id = {
+        u.id: u for u in session.execute(select(User).where(User.id.in_(reviewer_ids))).scalars().all()
+    }
+
+    return [
+        {
+            "upload_id": upload.id,
+            "patient_name": patient.name,
+            "reference_id": patient.reference_id,
+            "version_number": version.version_number,
+            "upload_number": upload.upload_number,
+            "status": upload.status,
+            "is_final": upload.is_final,
+            "reviewer_name": users_by_id[version.reviewer_id].name if version.reviewer_id in users_by_id else None,
+            "audit_result": version.audit_result,
+            "score": float(version.score) if version.score is not None else None,
+            "created_at": upload.created_at,
+        }
+        for upload, version, patient in rows
+    ]
 
 
 def get_trends(session: Session, group_by: str) -> dict:
