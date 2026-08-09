@@ -32,6 +32,22 @@ export function AppShell() {
   // renders with a null user, but guard here too rather than assume.
   if (!user) return null;
 
+  // Round 74, Item 2: the header used to be a single static literal
+  // ("Insurance Compliance Review") on every single page, regardless of
+  // which one you were on -- oversized in visual weight for how little
+  // information it actually carried, and wrong on every page except this
+  // wasn't even A page's title, it was global chrome. Since this header
+  // is shared across every route (Dashboard, Upload, Plans, Rules,
+  // Reports, Admin, Dev), the real fix is a real per-page title, not a
+  // different static string -- reuses the SAME active-item match the
+  // sidebar nav already computes below, so the header always names
+  // whichever section you're actually in (including a patient's own
+  // detail page under /plans/$refId, which still matches "Treatment
+  // Plans" via the same startsWith check).
+  const currentNavItem = NAV.find(item =>
+    item.exact ? pathname === item.to : pathname.startsWith(item.to) && item.to !== "/",
+  );
+
   return (
     <div className="min-h-screen h-screen flex bg-slate-50 text-slate-900">
       {/* Sidebar */}
@@ -72,10 +88,15 @@ export function AppShell() {
 
       {/* Main */}
       <div className="flex-1 min-w-0 flex flex-col h-screen">
-        <header className="h-14 shrink-0 border-b border-slate-200 bg-white flex items-center justify-between px-6 gap-4">
-          <div className="text-sm text-slate-500">Insurance Compliance Review</div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
+        <header className="h-16 shrink-0 border-b border-slate-200 bg-white flex items-center justify-between px-8 gap-4">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {currentNavItem && <currentNavItem.icon className="h-4 w-4 text-slate-400 shrink-0" />}
+            <h1 className="text-base font-semibold text-slate-900 truncate">
+              {currentNavItem?.label ?? "BrightPath ABA"}
+            </h1>
+          </div>
+          <div className="flex items-center gap-5">
+            <div className="flex items-center gap-2.5">
               <div className="h-8 w-8 rounded-full bg-slate-200 grid place-items-center text-xs font-semibold text-slate-700">
                 {user.name.split(" ").map(n => n[0]).join("")}
               </div>

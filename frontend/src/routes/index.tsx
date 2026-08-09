@@ -1,26 +1,27 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useTP } from "@/lib/tp-context";
-import { reviewers } from "@/lib/tp-mock";
+import { useReportsOverview, useRecentActivity } from "@/lib/real-data";
 import { StatusBadge, PageHeader } from "@/components/tp/ui";
-import { Upload, FileText, BookOpen, BarChart3, ArrowUpRight } from "lucide-react";
+import { Upload, FileText, BookOpen, BarChart3, ArrowUpRight, Loader2 } from "lucide-react";
 
 export const Route = createFileRoute("/")({ component: Dashboard });
 
+// Round 74, Item 3: real GET /reports/overview + GET /reports/recent-activity
+// (both new this round -- app/routers/reports.py -- built specifically to
+// replace this page's entire previous data source, frontend/src/lib/
+// tp-mock.ts's fabricated patients/versions, e.g. "Aaliyah Washington,"
+// "Liam O'Sullivan" -- none of which exist anywhere in the real database).
+// With zero versions finalized in this dev DB as of this round, the
+// overview cards below honestly show 0 -- that's the real, current count,
+// not a placeholder; this page never invents a number to look more
+// populated than the system actually is.
 function Dashboard() {
-  const { patients } = useTP();
-  const versions = patients.flatMap(p => p.versions.map(v => ({ p, v })));
-  const passed = versions.filter(x => x.v.auditResult === "Pass").length;
-  const failed = versions.filter(x => x.v.auditResult === "Fail").length;
-  const reviewed = passed + failed;
-
-  const recent = [...versions]
-    .sort((a, b) => b.v.finalizedAt.localeCompare(a.v.finalizedAt))
-    .slice(0, 8);
+  const overviewQuery = useReportsOverview();
+  const activityQuery = useRecentActivity(8);
 
   const cards = [
-    { label: "TPs Reviewed", value: reviewed, hint: "Automated audit complete" },
-    { label: "Passed TPs", value: passed, hint: "Automated audit ≥ 85%" },
-    { label: "Failed TPs", value: failed, hint: "Automated audit < 85%" },
+    { label: "TPs Reviewed", value: overviewQuery.data?.processed, hint: "Finalized, audit complete" },
+    { label: "Passed TPs", value: overviewQuery.data?.passed, hint: "Finalized with a passing score" },
+    { label: "Failed TPs", value: overviewQuery.data?.failed, hint: "Finalized with a failing score" },
   ];
   const quick = [
     { to: "/upload", label: "Upload New", icon: Upload, desc: "Submit a new treatment plan for audit" },
@@ -32,13 +33,15 @@ function Dashboard() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-7xl mx-auto p-8 space-y-8">
-        <PageHeader title="Dashboard" description="Compliance audit overview for BrightPath ABA — as of July 15, 2026." />
+        <PageHeader title="Dashboard" description="Real compliance audit overview — live from the database, updated as uploads and finalizations happen." />
 
         <div className="grid grid-cols-3 gap-4">
           {cards.map(c => (
-            <div key={c.label} className="rounded-lg border border-slate-200 bg-white p-5">
+            <div key={c.label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="text-sm text-slate-500">{c.label}</div>
-              <div className="mt-2 text-3xl font-semibold">{c.value}</div>
+              <div className="mt-2 text-3xl font-semibold">
+                {overviewQuery.isLoading ? <Loader2 className="h-6 w-6 animate-spin text-slate-300" /> : c.value ?? 0}
+              </div>
               <div className="mt-1 text-xs text-slate-500">{c.hint}</div>
             </div>
           ))}
@@ -48,7 +51,7 @@ function Dashboard() {
           <h2 className="text-sm font-semibold text-slate-700 mb-3">Quick actions</h2>
           <div className="grid grid-cols-4 gap-3">
             {quick.map(q => (
-              <Link key={q.to} to={q.to} className="group rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-900 transition-colors">
+              <Link key={q.to} to={q.to} className="group rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:border-slate-900 hover:shadow transition-all">
                 <div className="flex items-center justify-between">
                   <q.icon className="h-5 w-5 text-slate-700" />
                   <ArrowUpRight className="h-4 w-4 text-slate-400 group-hover:text-slate-900" />
@@ -65,34 +68,55 @@ function Dashboard() {
             <h2 className="text-sm font-semibold text-slate-700">Recent activity</h2>
             <Link to="/plans" className="text-xs text-slate-600 hover:text-slate-900">View all →</Link>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="text-left px-4 py-2.5 font-medium">Patient</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Reference ID</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Version</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Reviewer</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Date</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Result</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {recent.map(({ p, v }) => {
-                  const rev = reviewers.find(r => r.id === v.reviewerId)!;
-                  return (
-                    <tr key={p.refId + v.version} className="hover:bg-slate-50 cursor-pointer" onClick={() => (window.location.href = `/plans/${p.refId}`)}>
-                      <td className="px-4 py-3 font-medium">{p.name}</td>
-                      <td className="px-4 py-3 text-slate-600 font-mono text-xs">{p.refId}</td>
-                      <td className="px-4 py-3 text-slate-600">v{v.version}</td>
-                      <td className="px-4 py-3 text-slate-600">{rev.name}, {rev.credentials}</td>
-                      <td className="px-4 py-3 text-slate-600">{v.finalizedAt}</td>
-                      <td className="px-4 py-3"><StatusBadge status={v.auditResult} /></td>
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+            {activityQuery.isLoading && (
+              <div className="flex items-center gap-2 p-6 text-sm text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin" />Loading…
+              </div>
+            )}
+            {activityQuery.data && activityQuery.data.length === 0 && (
+              <div className="p-6 text-center text-sm text-slate-500">
+                No uploads yet — nothing has been submitted to this system for real review.
+              </div>
+            )}
+            {activityQuery.data && activityQuery.data.length > 0 && (
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="text-left px-4 py-2.5 font-medium">Patient</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Reference ID</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Version</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Reviewer</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Date</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Result</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {activityQuery.data.map(a => (
+                    <tr
+                      key={a.upload_id}
+                      className="hover:bg-slate-50 cursor-pointer"
+                      onClick={() => (window.location.href = `/plans/${a.reference_id}`)}
+                    >
+                      <td className="px-4 py-3 font-medium">{a.patient_name}</td>
+                      <td className="px-4 py-3 text-slate-600 font-mono text-xs">{a.reference_id}</td>
+                      <td className="px-4 py-3 text-slate-600">v{a.version_number}</td>
+                      <td className="px-4 py-3 text-slate-600">{a.reviewer_name ?? "—"}</td>
+                      <td className="px-4 py-3 text-slate-600">{new Date(a.created_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-3">
+                        {a.audit_result === "pass" || a.audit_result === "fail" ? (
+                          <StatusBadge status={a.audit_result === "pass" ? "Pass" : "Fail"} />
+                        ) : (
+                          <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+                            Not finalized
+                          </span>
+                        )}
+                      </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       </div>

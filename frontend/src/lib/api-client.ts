@@ -112,6 +112,39 @@ export async function listPatients(): Promise<PatientListItem[]> {
   return request("/patients");
 }
 
+// --- Reports (Round 74: Dashboard's real data, not tp-mock.ts) --------
+
+export type OverviewOut = {
+  range: string;
+  processed: number;
+  passed: number;
+  failed: number;
+  passed_pct: number;
+  failed_pct: number;
+};
+
+export async function getReportsOverview(range: "week" | "lastweek" | "30d" | "all" = "all"): Promise<OverviewOut> {
+  return request(`/reports/overview?range=${range}`);
+}
+
+export type RecentActivityItem = {
+  upload_id: string;
+  patient_name: string;
+  reference_id: string;
+  version_number: number;
+  upload_number: number;
+  status: string;
+  is_final: boolean;
+  reviewer_name: string | null;
+  audit_result: string | null;
+  score: number | null;
+  created_at: string;
+};
+
+export async function getRecentActivity(limit = 10): Promise<RecentActivityItem[]> {
+  return request(`/reports/recent-activity?limit=${limit}`);
+}
+
 export type PatientOut = {
   id: string;
   reference_id: string;

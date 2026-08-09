@@ -16,7 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Megaphone, FlaskConical, FileText, NotebookText } from "lucide-react";
+import { Loader2, Megaphone, FlaskConical, FileText, NotebookText, Download } from "lucide-react";
+import { downloadResultsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/plans/$refId/")({ component: PlanDetail });
@@ -449,9 +450,13 @@ function PlanDetail() {
                 <div className="text-xs font-medium text-slate-500 mb-2">
                   {nonPassResults.length} item{nonPassResults.length === 1 ? "" : "s"} that didn't pass — fail, uncertain, N/A, and not-checkable all included
                 </div>
-                <div className="divide-y divide-slate-100">
+                <div className="space-y-2">
                   {nonPassResults.map(res => (
-                    <div key={res.id} className="py-3 flex">
+                    // Round 74, Item 1: same rounded-card boundary as the
+                    // main results panel's RuleResultCard -- this list
+                    // shows the same underlying data and should read as
+                    // the same product, not a differently-styled list.
+                    <div key={res.id} className="rounded-lg border border-slate-200 bg-white px-3 py-3 flex shadow-sm">
                       <RuleResultContent
                         res={res}
                         pageLabelMap={uploadDetailQuery.data?.page_label_map ?? {}}
@@ -519,9 +524,26 @@ function PlanDetail() {
                       SIMULATED — this upload's findings are dev-only synthetic placeholders, not a real agent review.
                     </div>
                   )}
-                  <div className="shrink-0 border-b border-slate-200 px-1 py-3 mb-2">
-                    <div className="text-xs text-slate-500 mb-2">
-                      {isSimulated ? "Rule check results (SIMULATED, dev-only" : "Rule check results (real, upload"} {finalUpload.upload_number})
+                  <div className="shrink-0 border-b border-slate-200 px-1 pb-4 mb-3">
+                    <div className="flex items-center justify-between mb-2.5">
+                      <div className="text-xs text-slate-500">
+                        {isSimulated ? "Rule check results (SIMULATED, dev-only" : "Rule check results (real, upload"} {finalUpload.upload_number})
+                      </div>
+                      {/* Round 76, Item 2: real CSV export -- built from
+                          `results`, the SAME array already rendered below
+                          (the full set, not the currently-selected filter
+                          tab), so the download always matches what's on
+                          screen across all tabs, not just the visible one. */}
+                      <button
+                        onClick={() => downloadResultsCsv(
+                          results,
+                          `${patient?.reference_id ?? "upload"}-U${finalUpload.upload_number}-rule-results.csv`,
+                        )}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                        title="Download all rule results for this upload as a CSV file"
+                      >
+                        <Download className="h-3.5 w-3.5" />Download CSV
+                      </button>
                     </div>
                     <div className="flex gap-2 flex-wrap">
                       {([
@@ -543,7 +565,7 @@ function PlanDetail() {
                       ))}
                     </div>
                   </div>
-                  <div className="divide-y divide-slate-100">
+                  <div className="space-y-2">
                     {filteredResults.map(res => (
                       <RuleResultCard
                         key={res.id}

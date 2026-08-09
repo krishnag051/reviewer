@@ -94,7 +94,11 @@ function renderContextWithPageLinks(
             <button
               key={p}
               type="button"
-              onClick={() => onGoToPage(p)}
+              // Round 76, Item 1: this button lives inside RuleResultCard's
+              // now-whole-card-clickable body -- stop the click from
+              // bubbling up and toggling the card's expand/collapse state
+              // at the same time as jumping the PDF viewer.
+              onClick={e => { e.stopPropagation(); onGoToPage(p); }}
               className="text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
               title={
                 printedLabel && printedLabel !== String(p)
@@ -215,13 +219,35 @@ export function RuleResultCard({
   }
 
   return (
-    <div className="px-2 py-4 hover:bg-slate-50">
+    // Round 74, Item 1: real, rounded card boundaries -- border + subtle
+    // shadow + its own background, matching the Brellium reference's boxed
+    // look -- replacing the old flat, border-less row that only had a
+    // hairline divider between items (the parent list below switched from
+    // `divide-y` to `space-y-*` accordingly, so these cards read as
+    // separate boxes, not one continuous strip).
+    //
+    // Round 76, Item 1: the WHOLE card now toggles expand/collapse on
+    // click, not just the chevron -- onClick lives here, on the outer
+    // card, with every inner interactive control (chevron, pencil, status
+    // dropdown trigger, page-jump links) stopping propagation on its own
+    // click so it does its own thing instead of ALSO toggling the card
+    // underneath it. role="button" + tabIndex + onKeyDown mirror the same
+    // toggle for keyboard users, matching what a real <button> gets for
+    // free but a plain <div onClick> does not.
+    <div
+      className="rounded-lg border border-slate-200 bg-white px-3 py-3.5 shadow-sm hover:border-slate-300 transition-colors cursor-pointer"
+      onClick={() => setExpanded(e => !e)}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded(x => !x); } }}
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+    >
       <div className="flex items-start justify-between gap-3">
         <RuleResultContent res={res} pageLabelMap={pageLabelMap} onGoToPage={onGoToPage} expanded={expanded} />
         <div className="shrink-0 flex items-center gap-1.5">
           <button
             className="rounded p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-            onClick={() => setExpanded(e => !e)}
+            onClick={e => { e.stopPropagation(); setExpanded(x => !x); }}
             title={expanded ? "Collapse" : "Expand to see context/evidence"}
             aria-label={`${expanded ? "Collapse" : "Expand"} ${res.rule_code}`}
             aria-expanded={expanded}
@@ -233,7 +259,7 @@ export function RuleResultCard({
             <>
               <button
                 className="rounded p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-                onClick={openEdit}
+                onClick={e => { e.stopPropagation(); openEdit(); }}
                 title="Edit this answer's evidence/page references"
                 aria-label={`Edit finding for ${res.rule_code}`}
               >
@@ -245,6 +271,7 @@ export function RuleResultCard({
                     className="rounded p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-40 text-[10px] font-medium uppercase tracking-wide border border-slate-200 px-1.5"
                     disabled={overridePending}
                     title="Override this result's status"
+                    onClick={e => e.stopPropagation()}
                   >
                     Status
                   </button>

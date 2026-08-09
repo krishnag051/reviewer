@@ -3,21 +3,32 @@
 // plans.$refId.index.tsx, dev.tsx (Round 41, Stage 1 -- read-only), /upload
 // (Round 42, Stage 2 -- real patient/version/upload creation + status
 // polling), plans.$refId.index.tsx's override/finalize actions (Round 43,
-// Stage 3), and now rules.tsx / Rules Studio (Round 50 -- real rule
-// metadata CRUD; see api-client.ts's own comment on what editing here
-// does and doesn't affect). Everything else in the app (Reports, Dashboard,
-// Admin Settings, correction email, mark-reviewed) stays on
-// tp-context.tsx's mock data -- see FRONTEND_STATE.md §0.
+// Stage 3), rules.tsx / Rules Studio (Round 50 -- real rule metadata CRUD;
+// see api-client.ts's own comment on what editing here does and doesn't
+// affect), and now index.tsx / Dashboard (Round 74 -- real
+// GET /reports/overview + GET /reports/recent-activity, replacing
+// tp-mock.ts's fabricated counts/activity feed entirely). Everything ELSE
+// in the app (the Reports page itself, Admin Settings, correction email,
+// mark-reviewed) still stays on tp-context.tsx's mock data -- see
+// FRONTEND_STATE.md §0.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createPatient, createRule, createSimulatedUpload, createUpload, createVersion, finalizeUpload, getAppConfig,
-  getLatestIntakeAnswers, getUpload, getVersion, listPatientVersions, listPatients, listRules, listSessionNotes,
-  overrideRuleResult, setRuleActive, setSupportingDocMode, updateRule,
+  getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getUpload, getVersion, listPatientVersions,
+  listPatients, listRules, listSessionNotes, overrideRuleResult, setRuleActive, setSupportingDocMode, updateRule,
   type IntakeAnswers, type RulePayor, type RuleType, type SupportingDocMode,
 } from "./api-client";
 
 export function usePatients() {
   return useQuery({ queryKey: ["patients"], queryFn: listPatients });
+}
+
+export function useReportsOverview() {
+  return useQuery({ queryKey: ["reports-overview"], queryFn: () => getReportsOverview("all") });
+}
+
+export function useRecentActivity(limit = 8) {
+  return useQuery({ queryKey: ["recent-activity", limit], queryFn: () => getRecentActivity(limit) });
 }
 
 export function usePatientVersions(patientId: string | undefined) {

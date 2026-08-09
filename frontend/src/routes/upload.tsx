@@ -54,14 +54,49 @@ const QA_FIELDS: { key: keyof IntakeAnswers; label: string; placeholder: string 
 
 type StructuredPayload = { intakeAnswers: IntakeAnswers; sessionNotes: File[] };
 
-function SupportingInfoSection({
-  mode, supportingDocument, setSupportingDocument, qaAnswers, setQaAnswers, sessionNotes, setSessionNotes,
+// Round 76, Item 3: split what used to be ONE `SupportingInfoSection`
+// (Q&A fields + session-notes uploader stacked together) into two
+// independent pieces, so the page can put them in separate columns --
+// "Intake Q&A" fields on one side, the file/upload side (including the
+// session-notes uploader) on the other. Same fields, same state, same
+// validation as before -- purely a layout split, no behavior change.
+
+function IntakeQAFields({
+  mode, qaAnswers, setQaAnswers,
+}: {
+  mode: "document" | "structured_form" | undefined;
+  qaAnswers: IntakeAnswers;
+  setQaAnswers: (a: IntakeAnswers) => void;
+}) {
+  if (mode !== "structured_form") return null;
+  return (
+    <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 h-full">
+      <div>
+        <div className="text-sm font-medium text-slate-900">Intake Q&A <span className="text-slate-400 font-normal">(required, 5 fields)</span></div>
+        <div className="text-xs text-slate-500 mt-0.5">Plain text — no document upload needed for these.</div>
+      </div>
+      <div className="grid grid-cols-1 gap-3">
+        {QA_FIELDS.map(f => (
+          <div key={f.key} className="space-y-1">
+            <Label className="text-xs">{f.label}</Label>
+            <Input
+              value={qaAnswers[f.key]}
+              placeholder={f.placeholder}
+              onChange={e => setQaAnswers({ ...qaAnswers, [f.key]: e.target.value })}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SupportingUploads({
+  mode, supportingDocument, setSupportingDocument, sessionNotes, setSessionNotes,
 }: {
   mode: "document" | "structured_form" | undefined;
   supportingDocument: File | null;
   setSupportingDocument: (f: File | null) => void;
-  qaAnswers: IntakeAnswers;
-  setQaAnswers: (a: IntakeAnswers) => void;
   sessionNotes: File[];
   setSessionNotes: (fs: File[]) => void;
 }) {
@@ -82,50 +117,31 @@ function SupportingInfoSection({
   }
 
   return (
-    <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
-      <div>
-        <div className="text-sm font-medium text-slate-900">Intake Q&A <span className="text-slate-400 font-normal">(required, 5 fields)</span></div>
-        <div className="text-xs text-slate-500 mt-0.5">Plain text — no document upload needed for these.</div>
-      </div>
-      <div className="grid grid-cols-1 gap-3">
-        {QA_FIELDS.map(f => (
-          <div key={f.key} className="space-y-1">
-            <Label className="text-xs">{f.label}</Label>
-            <Input
-              value={qaAnswers[f.key]}
-              placeholder={f.placeholder}
-              onChange={e => setQaAnswers({ ...qaAnswers, [f.key]: e.target.value })}
-            />
-          </div>
-        ))}
-      </div>
-
-      <div className="pt-2 border-t border-slate-200 space-y-1.5">
-        <Label>Session Notes <span className="text-slate-400">(required, one or more files)</span></Label>
-        <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-white py-8 cursor-pointer hover:bg-slate-50 transition-colors">
-          <UploadIcon className="h-6 w-6 text-slate-400" />
-          <div className="text-sm text-slate-700">Drop session note files here, or click to browse</div>
-          <div className="text-xs text-slate-500">Any file type · select multiple at once</div>
-          <input
-            type="file"
-            multiple
-            className="hidden"
-            onChange={e => setSessionNotes([...sessionNotes, ...Array.from(e.target.files ?? [])])}
-          />
-        </label>
-        {sessionNotes.length > 0 && (
-          <ul className="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
-            {sessionNotes.map((f, i) => (
-              <li key={`${f.name}-${i}`} className="flex items-center justify-between px-3 py-1.5 text-sm">
-                <span className="truncate">{f.name}</span>
-                <button type="button" onClick={() => setSessionNotes(sessionNotes.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-600 shrink-0 ml-2">
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+    <div className="space-y-1.5">
+      <Label>Session Notes <span className="text-slate-400">(required, one or more files)</span></Label>
+      <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-white py-8 cursor-pointer hover:bg-slate-50 transition-colors">
+        <UploadIcon className="h-6 w-6 text-slate-400" />
+        <div className="text-sm text-slate-700">Drop session note files here, or click to browse</div>
+        <div className="text-xs text-slate-500">Any file type · select multiple at once</div>
+        <input
+          type="file"
+          multiple
+          className="hidden"
+          onChange={e => setSessionNotes([...sessionNotes, ...Array.from(e.target.files ?? [])])}
+        />
+      </label>
+      {sessionNotes.length > 0 && (
+        <ul className="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
+          {sessionNotes.map((f, i) => (
+            <li key={`${f.name}-${i}`} className="flex items-center justify-between px-3 py-1.5 text-sm">
+              <span className="truncate">{f.name}</span>
+              <button type="button" onClick={() => setSessionNotes(sessionNotes.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-600 shrink-0 ml-2">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -274,7 +290,7 @@ function UploadPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto p-8">
+      <div className="max-w-5xl mx-auto p-8">
         <PageHeader title="Upload Treatment Plan" description="Upload a draft against the real backend. Review and finalization happen on the patient's own page." />
 
         <div className="mt-6 inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-sm">
@@ -302,33 +318,47 @@ function UploadPage() {
         <div className="mt-6 rounded-lg border border-slate-200 bg-white p-6 space-y-5">
           {mode === "new" ? (
             <>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5"><Label>Patient Name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Jordan Nakamura" /></div>
-                <div className="space-y-1.5"><Label>Reference ID (permanent)</Label><Input value={refId} onChange={e => setRefId(e.target.value)} placeholder="e.g., TP-2026-0500" /></div>
+              {/* Round 76, Item 3: real two-column layout -- Intake Q&A on
+                  one side, patient data + file uploads (TP PDF, session
+                  notes) on the other, so meaningfully more of the form is
+                  visible at once instead of one long vertical scroll.
+                  Collapses back to a single stacked column below the `lg`
+                  breakpoint (narrow viewports) via grid-cols-1 lg:grid-cols-2. */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="space-y-5">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5"><Label>Patient Name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Jordan Nakamura" /></div>
+                    <div className="space-y-1.5"><Label>Reference ID (permanent)</Label><Input value={refId} onChange={e => setRefId(e.target.value)} placeholder="e.g., TP-2026-0500" /></div>
+                  </div>
+                  <div className="space-y-1.5"><Label>Payor</Label>
+                    <Select value={payor} onValueChange={v => setPayor(v as Payor)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{PAYORS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Treatment Plan PDF</Label>
+                    <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-10 cursor-pointer hover:bg-slate-100 transition-colors">
+                      <UploadIcon className="h-6 w-6 text-slate-400" />
+                      <div className="text-sm text-slate-700">{file ? file.name : "Drop your PDF here, or click to browse"}</div>
+                      <div className="text-xs text-slate-500">PDF only · max 25 MB</div>
+                      <input type="file" accept="application/pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
+                    </label>
+                  </div>
+                  {requiresSupportingInfo && (
+                    <SupportingUploads
+                      mode={supportingDocMode}
+                      supportingDocument={supportingDocument} setSupportingDocument={setSupportingDocument}
+                      sessionNotes={sessionNotes} setSessionNotes={setSessionNotes}
+                    />
+                  )}
+                </div>
+                <div>
+                  {requiresSupportingInfo && (
+                    <IntakeQAFields mode={supportingDocMode} qaAnswers={qaAnswers} setQaAnswers={setQaAnswers} />
+                  )}
+                </div>
               </div>
-              <div className="space-y-1.5"><Label>Payor</Label>
-                <Select value={payor} onValueChange={v => setPayor(v as Payor)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{PAYORS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Treatment Plan PDF</Label>
-                <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-10 cursor-pointer hover:bg-slate-100 transition-colors">
-                  <UploadIcon className="h-6 w-6 text-slate-400" />
-                  <div className="text-sm text-slate-700">{file ? file.name : "Drop your PDF here, or click to browse"}</div>
-                  <div className="text-xs text-slate-500">PDF only · max 25 MB</div>
-                  <input type="file" accept="application/pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
-                </label>
-              </div>
-              {requiresSupportingInfo && (
-                <SupportingInfoSection
-                  mode={supportingDocMode}
-                  supportingDocument={supportingDocument} setSupportingDocument={setSupportingDocument}
-                  qaAnswers={qaAnswers} setQaAnswers={setQaAnswers}
-                  sessionNotes={sessionNotes} setSessionNotes={setSessionNotes}
-                />
-              )}
               <div className="flex justify-end">
                 <Button onClick={handleNew} disabled={newModeSubmitDisabled}>
                   {submitting ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Submitting…</> : `Create Upload 1 (against ${pendingSlotLabel(0)})`}
@@ -375,26 +405,38 @@ function UploadPage() {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Treatment Plan PDF</Label>
-                    <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-10 cursor-pointer hover:bg-slate-100 transition-colors">
-                      <UploadIcon className="h-6 w-6 text-slate-400" />
-                      <div className="text-sm text-slate-700">{file ? file.name : "Drop your PDF here, or click to browse"}</div>
-                      <div className="text-xs text-slate-500">PDF only · max 25 MB</div>
-                      <input type="file" accept="application/pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
-                    </label>
+                  {/* Round 76, Item 3: same two-column convention as the
+                      New Patient form above -- Intake Q&A on one side,
+                      file uploads on the other. Both flows follow the
+                      identical layout, not two diverging designs. */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="space-y-5">
+                      <div className="space-y-1.5">
+                        <Label>Treatment Plan PDF</Label>
+                        <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-10 cursor-pointer hover:bg-slate-100 transition-colors">
+                          <UploadIcon className="h-6 w-6 text-slate-400" />
+                          <div className="text-sm text-slate-700">{file ? file.name : "Drop your PDF here, or click to browse"}</div>
+                          <div className="text-xs text-slate-500">PDF only · max 25 MB</div>
+                          <input type="file" accept="application/pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
+                        </label>
+                      </div>
+                      {requiresSupportingInfo && (
+                        <SupportingUploads
+                          mode={supportingDocMode}
+                          supportingDocument={existingSupportingDocument} setSupportingDocument={setExistingSupportingDocument}
+                          sessionNotes={existingSessionNotes} setSessionNotes={setExistingSessionNotes}
+                        />
+                      )}
+                    </div>
+                    <div>
+                      {requiresSupportingInfo && supportingDocMode === "structured_form" && latestAnswersQuery.data && (
+                        <div className="text-xs text-slate-500 mb-1.5">Prefilled from this patient's most recent submission — edit any field as needed.</div>
+                      )}
+                      {requiresSupportingInfo && (
+                        <IntakeQAFields mode={supportingDocMode} qaAnswers={existingQaAnswers} setQaAnswers={setExistingQaAnswers} />
+                      )}
+                    </div>
                   </div>
-                  {requiresSupportingInfo && supportingDocMode === "structured_form" && latestAnswersQuery.data && (
-                    <div className="text-xs text-slate-500 -mb-1">Prefilled from this patient's most recent submission — edit any field as needed.</div>
-                  )}
-                  {requiresSupportingInfo && (
-                    <SupportingInfoSection
-                      mode={supportingDocMode}
-                      supportingDocument={existingSupportingDocument} setSupportingDocument={setExistingSupportingDocument}
-                      qaAnswers={existingQaAnswers} setQaAnswers={setExistingQaAnswers}
-                      sessionNotes={existingSessionNotes} setSessionNotes={setExistingSessionNotes}
-                    />
-                  )}
                   <div className="flex justify-end">
                     <Button onClick={handleUploadToExisting} disabled={existingModeSubmitDisabled}>
                       {submitting ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Submitting…</> : "Create Upload"}
