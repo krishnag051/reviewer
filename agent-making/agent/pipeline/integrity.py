@@ -1,13 +1,39 @@
 """Step 6 of the pipeline (Section 4): rule-id coverage check. Diffs the
 rule_ids returned by the judgment layer against the rule_ids sent. A gap is
-a hard failure, not a warning — reject and retry, per the design doc.
+a real problem, not a warning — retried, and never silently guessed at.
+
+REAL BUG FOUND AND FIXED (2026-08, live incident): a persistently-missing
+rule_id (confirmed case: QA-GIP-11) used to raise IntegrityError all the
+way up through run_full_pipeline -> pipeline.api.review_treatment_plan,
+which turned the ENTIRE review into `{"status": "failed"}` -- discarding
+every other rule_id's real, already-computed, perfectly good finding along
+with it. A real backend upload lost all 143 other rules' results over ONE
+rule the judgment layer couldn't confidently answer after retrying. That's
+a wildly disproportionate failure mode: the fix is not to give up and
+throw away everything, and it's also not to guess a pass/fail for the
+stubborn rule -- it's to mark ONLY that rule_id "not_checkable" (an honest
+"couldn't determine," the same vocabulary this pipeline already uses for
+every other genuine "no confident answer" case) and let every other rule's
+real result through untouched. See run_judgment_with_integrity_check's own
+docstring below for the mechanics.
 """
 from . import judge
 
+NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE = (
+    "The judgment layer could not produce a confirmed answer for this rule after "
+    "{attempts} attempt(s) (dropped from the self-consistency check each time, or "
+    "internally rejected as evidence_supports_result=false). Flagged not_checkable "
+    "rather than guessed at or silently omitted."
+)
+
 
 class IntegrityError(Exception):
-    """Raised when the judgment layer drops one or more rule_ids, even after
-    retrying. This must never be silently swallowed.
+    """Retained for callers/tests that want to distinguish this failure
+    mode by type, and for genuinely catastrophic cases (e.g. every single
+    rule_id missing, which would mean something is badly broken with the
+    call itself, not just one hard rule) -- see
+    run_judgment_with_integrity_check's own docstring for exactly when
+    this still raises vs. when it degrades gracefully instead.
     """
 
 
@@ -24,8 +50,24 @@ def run_judgment_with_integrity_check(
     model_override: str | None = None,
 ) -> dict[str, dict]:
     """Calls judge.run_judgment_checks, and on any missing rule_id, retries
-    only for the missing subset, up to max_retries times. Raises
-    IntegrityError (hard failure) if gaps remain after retrying.
+    only for the missing subset, up to max_retries times.
+
+    FIXED (live incident, 2026-08): if any rule_id is STILL missing after
+    exhausting retries, this used to raise IntegrityError unconditionally
+    -- which propagated all the way up and discarded every OTHER rule_id's
+    real, already-computed finding along with it (one stubborn rule
+    nuking a real, paid-for review of everything else). Now:
+    - If EVERY sent rule_id is missing (0 real answers came back at all),
+      that's a sign the call mechanism itself is broken, not that one
+      hard rule tripped up the model -- still raises IntegrityError, same
+      as before, since there's nothing real to salvage.
+    - Otherwise, each rule_id still missing after max_retries gets a real,
+      honest "not_checkable" finding (NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE)
+      instead of a raised exception -- never a guessed pass/fail, and
+      never silently dropped either (this print line, plus the finding's
+      own distinctive evidence text, make it visible both in logs and in
+      the final result). Every other rule_id's real answer is returned
+      untouched.
 
     `tracker` (an ApiCallTracker) is forwarded to every real call this makes
     — the initial one and every retry. This is the ONLY place retries are
@@ -52,11 +94,26 @@ def run_judgment_with_integrity_check(
             return results
         attempt += 1
         if attempt > max_retries:
-            raise IntegrityError(
-                f"Judgment layer failed to return {len(missing)} rule_id(s) after "
-                f"{max_retries} retries: {missing}. Rejecting — this is a hard "
-                f"failure, not a warning."
+            if len(missing) >= len(sent_ids):
+                raise IntegrityError(
+                    f"Judgment layer failed to return ANY of the {len(sent_ids)} rule_id(s) sent, "
+                    f"after {max_retries} retries. Rejecting — this looks like the call mechanism "
+                    f"itself is broken, not one hard rule, so there is nothing real to salvage."
+                )
+            print(
+                f"[integrity] {len(missing)} rule_id(s) never returned a confirmed answer after "
+                f"{max_retries} retries: {missing}. Marking not_checkable and returning every OTHER "
+                f"rule_id's real result — NOT raising, so one stubborn rule doesn't discard everything "
+                f"else this review already correctly computed."
             )
+            for rule_id in missing:
+                results[rule_id] = {
+                    "result": "not_checkable",
+                    "evidence": NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE.format(attempts=max_retries + 1),
+                    "page": None,
+                    "confidence": 0.0,
+                }
+            return results
         retry_rules = [r for r in judgment_rules if r["rule_id"] in missing]
         retry_results = judge.run_judgment_checks(
             retry_rules,

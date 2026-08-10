@@ -6,6 +6,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from app.agent_client import SessionNoteExtraction, extract_session_note
+from app.config import settings
 from app.db.base import get_db
 from app.db.models import SessionNoteFile, Upload, User
 from app.deps import get_current_user
@@ -220,6 +222,30 @@ def get_session_note_file(upload_id: uuid.UUID, file_id: uuid.UUID, db: Session 
     if note.file_purged or not resolved.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file no longer available")
     return FileResponse(resolved, filename=note.original_filename)
+
+
+@router.get("/{upload_id}/session-notes/{file_id}/extraction", response_model=SessionNoteExtraction)
+def get_session_note_extraction(upload_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_db)) -> SessionNoteExtraction:
+    """Round 79, Item 2 -- real extracted fields (session_date/session_
+    location/clinician_telehealth_location/patient_telehealth_location/
+    assessment_activity) for one session-note file, straight from
+    agent-making's real Round 59 extraction step via
+    app.agent_client.extract_session_note. Deliberately still the free
+    OpenRouter tier (model_override="openrouter"), matching every other
+    session-notes-related real call site in this backend (see
+    app/rule_engine/client.py's own comment on this) -- never real
+    Anthropic for this display-only feature. Cached by agent-making's own
+    content hash, so re-viewing an already-extracted file costs nothing.
+    """
+    note = db.get(SessionNoteFile, file_id)
+    if note is None or note.upload_id != upload_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session note not found")
+    resolved = resolve_stored_path(note.file_path)
+    if note.file_purged or not resolved.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file no longer available")
+    return extract_session_note(
+        str(resolved), model_override="openrouter", max_calls=settings.session_notes_max_calls,
+    )
 
 
 @router.post("/{upload_id}/finalize", response_model=UploadDetailOut)

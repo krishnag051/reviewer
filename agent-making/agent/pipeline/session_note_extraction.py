@@ -37,7 +37,22 @@ from pathlib import Path
 from typing import Any
 
 from .extract import extract_pdf_text
-from .model_provider import CallTracker, call_tool_json
+from .model_provider import CallTracker, TransientModelCallError, call_tool_json
+
+# Live incident fix (2026-08): a session-note file whose extraction hit a
+# CONFIRMED-TRANSIENT upstream failure (model_provider.py's own retry loop
+# already exhausted its attempts) must not raise past this point -- one
+# file's temporary bad luck previously killed the ENTIRE upload's real
+# review (every other rule's already-computed finding discarded along
+# with it), the exact same class of bug Round 78's integrity.py fix
+# addressed for a persistently-missing judgment rule_id. This sentinel key
+# is how session_note_comparison.py (the only real consumer of this
+# module's output) tells "this file's extraction genuinely failed due to
+# an upstream problem" apart from "this file was extracted fine and
+# simply doesn't mention this field" -- the two must never look the same,
+# or a real infra failure would silently read as "the note states
+# nothing," which is a different, misleading claim.
+EXTRACTION_ERROR_KEY = "_extraction_error"
 
 CONFIDENCE_LEVELS = ("high", "medium", "low", "none")
 
@@ -113,6 +128,22 @@ def _empty_field_result() -> dict[str, Any]:
     return {"value": None, "confidence": "none", "source_quote": None}
 
 
+def _extraction_failed_result(error_message: str) -> dict[str, Any]:
+    """Same shape every caller already expects (all 5 SESSION_NOTE_FIELDS
+    present, each confidence="none") PLUS the EXTRACTION_ERROR_KEY sentinel
+    -- so a caller that doesn't know about this sentinel (e.g. the
+    backend's own Pydantic model, which only knows the 5 named fields)
+    still gets something well-formed and harmless, while
+    session_note_comparison.py (which DOES know about it) can tell this
+    apart from a genuine "the note doesn't mention this" result and
+    produce a real, distinctive not_checkable finding instead of a
+    misleading "field absent" one.
+    """
+    result = {field: _empty_field_result() for field in SESSION_NOTE_FIELDS}
+    result[EXTRACTION_ERROR_KEY] = error_message
+    return result
+
+
 def _build_prompt(full_text: str) -> str:
     field_list = "\n".join(f"- {field}: {_FIELD_DESCRIPTIONS[field]}" for field in SESSION_NOTE_FIELDS)
     return (
@@ -157,17 +188,33 @@ def extract_session_note_text(
     tests can exercise the model-call mechanics without needing a real
     file on disk, and so a future caller that already has text some other
     way (e.g. a pasted-in note) doesn't need a fake file either.
+
+    Live incident fix (2026-08): catches a TransientModelCallError that
+    survived model_provider.py's own retry-with-backoff loop (i.e.
+    genuinely exhausted, not a first-attempt failure) and returns an
+    honest failure marker instead of raising -- see
+    _extraction_failed_result's own docstring for why this must be
+    visibly distinct from "the note doesn't mention this field." A plain
+    (non-transient) ModelCallError is NOT caught here and propagates
+    normally -- a real, permanent problem must still surface loudly.
     """
     prompt = _build_prompt(full_text)
-    raw = call_tool_json(
-        prompt_text=prompt,
-        tool_name=EXTRACTION_TOOL_NAME,
-        tool_description=EXTRACTION_TOOL_DESCRIPTION,
-        input_schema=EXTRACTION_INPUT_SCHEMA,
-        tracker=tracker,
-        model_override=model_override,
-        call_reason="session_note_extraction",
-    )
+    try:
+        raw = call_tool_json(
+            prompt_text=prompt,
+            tool_name=EXTRACTION_TOOL_NAME,
+            tool_description=EXTRACTION_TOOL_DESCRIPTION,
+            input_schema=EXTRACTION_INPUT_SCHEMA,
+            tracker=tracker,
+            model_override=model_override,
+            call_reason="session_note_extraction",
+        )
+    except TransientModelCallError as exc:
+        print(
+            f"[session-note-extraction] upstream extraction failed after retries ({exc}) -- "
+            f"returning an honest extraction-failure marker instead of raising."
+        )
+        return _extraction_failed_result(str(exc))
     return _normalize(raw)
 
 
@@ -245,6 +292,12 @@ def extract_session_note_file(
     full_text = _read_file_text(file_path)
     result = extract_session_note_text(full_text, tracker=tracker, model_override=model_override)
 
-    if use_cache:
+    # Live incident fix (2026-08): a genuine extraction-failure marker
+    # (EXTRACTION_ERROR_KEY present -- see extract_session_note_text's own
+    # docstring) is deliberately NOT cached -- this is this file's bad
+    # luck on THIS run, not a fact about the file's own content. The next
+    # real attempt at this same file (a retried upload, a page refresh)
+    # gets a fresh real try, not a frozen failure baked into the cache.
+    if use_cache and EXTRACTION_ERROR_KEY not in result:
         _save_cache(content_hash, result)
     return result

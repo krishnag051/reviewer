@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -51,11 +52,49 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"  # matches judge.py's MODEL
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_TIMEOUT_SECONDS = 120
 
+# Live incident (2026-08): OpenRouter's free-tier shared worker pool
+# returned "Upstream error from Nvidia: ResourceExhausted: Worker local
+# total request limit reached (32/32)" -- wrapped in a 200-status response
+# with no `choices`, so _call_openrouter correctly raised, but as a PLAIN
+# ModelCallError indistinguishable from a genuinely broken request (bad
+# schema, bad API key). That's the wrong bucket: a shared-pool capacity
+# wall is transient by nature -- the identical request will very likely
+# succeed seconds later once a worker frees up. These substrings are
+# matched case-insensitively against the raw error body/message; keep
+# this list narrow and evidence-based (only patterns actually observed or
+# clearly documented as transient-by-nature) rather than broad enough to
+# accidentally swallow a real, permanent failure.
+_TRANSIENT_ERROR_MARKERS = (
+    "resourceexhausted",
+    "worker local total request limit reached",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "temporarily unavailable",
+    "try again later",
+    "overloaded",
+)
+
 
 class ModelCallError(Exception):
     """Wraps a real failure from either provider's call site (HTTP error,
     missing tool_call in the response, etc.) into one exception type
     callers can catch regardless of which provider actually ran."""
+
+
+class TransientModelCallError(ModelCallError):
+    """A ModelCallError whose underlying cause looks like a temporary,
+    shared-capacity problem on the PROVIDER'S side (worker pool exhausted,
+    rate-limited, "try again"), not a real problem with this specific
+    request. Distinguished from the plain ModelCallError superclass so
+    call_tool_json's retry loop can retry ONLY this kind -- a genuinely
+    malformed request or an auth failure raises the plain
+    ModelCallError instead and is never retried here."""
+
+
+def _is_transient_error_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TRANSIENT_ERROR_MARKERS)
 
 
 def resolve_provider_and_model(model_override: str | None = None) -> tuple[str, str]:
@@ -96,6 +135,9 @@ def call_tool_json(
     model_override: str | None = None,
     max_tokens: int = 4096,
     call_reason: str = "call",
+    max_transient_retries: int = 2,
+    backoff_seconds: float = 1.0,
+    sleep_fn=time.sleep,
 ) -> dict[str, Any]:
     """The one call site both session_note_extraction.py's extraction step
     and any future comparison-adjacent reasoning should use -- dispatches
@@ -107,22 +149,54 @@ def call_tool_json(
     over-ceiling call) and `.record(reason, provider, model, usage)`
     (after a successful call) -- see CallTracker below. Always called,
     regardless of provider, so the SAME ceiling covers both.
+
+    Live incident fix (2026-08): a TransientModelCallError (a provider-
+    side, shared-capacity failure -- see the module docstring's marker
+    list) is now retried up to `max_transient_retries` times (default 2,
+    i.e. 3 total attempts) with short exponential backoff
+    (`backoff_seconds * 2**attempt` -- 1s, then 2s by default) before
+    being allowed to propagate. A plain ModelCallError (a genuinely broken
+    request -- bad schema, bad API key, malformed response shape) is
+    NEVER retried here and raises immediately on the first attempt,
+    unchanged from before this fix -- retrying a permanently-broken
+    request would just waste the same number of calls for the same
+    guaranteed failure, and would risk masking a real problem as if it
+    were transient.
+
+    `sleep_fn` defaults to `time.sleep` but is a real parameter so tests
+    can inject a fake, instant sleep and assert on the backoff schedule
+    without a real test actually waiting seconds.
     """
     provider, model = resolve_provider_and_model(model_override)
-    tracker.check_before_call()
 
-    if provider == "openrouter":
-        result = _call_openrouter(
-            model=model, prompt_text=prompt_text, tool_name=tool_name,
-            tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
-        )
-    elif provider == "anthropic":
-        result = _call_anthropic(
-            model=model, prompt_text=prompt_text, tool_name=tool_name,
-            tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
-        )
-    else:
-        raise ModelCallError(f"Unknown provider {provider!r} (expected 'openrouter' or 'anthropic')")
+    attempt = 0
+    while True:
+        tracker.check_before_call()
+        try:
+            if provider == "openrouter":
+                result = _call_openrouter(
+                    model=model, prompt_text=prompt_text, tool_name=tool_name,
+                    tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
+                )
+            elif provider == "anthropic":
+                result = _call_anthropic(
+                    model=model, prompt_text=prompt_text, tool_name=tool_name,
+                    tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
+                )
+            else:
+                raise ModelCallError(f"Unknown provider {provider!r} (expected 'openrouter' or 'anthropic')")
+        except TransientModelCallError as exc:
+            if attempt >= max_transient_retries:
+                raise
+            wait = backoff_seconds * (2 ** attempt)
+            attempt += 1
+            print(
+                f"[model-provider] transient upstream failure on attempt {attempt}/{max_transient_retries + 1} "
+                f"({provider}:{model}, reason={call_reason!r}): {exc}. Retrying in {wait:.1f}s..."
+            )
+            sleep_fn(wait)
+            continue
+        break
 
     tracker.record(reason=call_reason, provider=provider, model=model, usage=result["usage"])
     return result["arguments"]
@@ -157,7 +231,10 @@ def _call_openrouter(
         timeout=OPENROUTER_TIMEOUT_SECONDS,
     )
     if response.status_code != 200:
-        raise ModelCallError(f"OpenRouter call failed: {response.status_code} {response.text[:500]}")
+        error_cls = TransientModelCallError if (
+            response.status_code in (429, 502, 503) or _is_transient_error_text(response.text)
+        ) else ModelCallError
+        raise error_cls(f"OpenRouter call failed: {response.status_code} {response.text[:500]}")
 
     body = response.json()
     if "choices" not in body or not body["choices"]:
@@ -166,8 +243,15 @@ def _call_openrouter(
         # `choices` under rate-limiting/provider-side issues. Surface the
         # real body rather than a bare KeyError, so this is diagnosable
         # from the first failure instead of needing a live re-run to see
-        # what actually came back.
-        raise ModelCallError(f"OpenRouter response had no usable 'choices' (status 200): {json.dumps(body)[:800]}")
+        # what actually came back. Confirmed live incident (2026-08): this
+        # exact shape -- {"error": {"message": "Upstream error from
+        # Nvidia: ResourceExhausted: Worker local total request limit
+        # reached (32/32)", "code": 502}} -- is a transient shared-pool
+        # capacity wall, not a broken request; raise the retryable
+        # subclass when the body's own text matches that pattern.
+        body_text = json.dumps(body)
+        error_cls = TransientModelCallError if _is_transient_error_text(body_text) else ModelCallError
+        raise error_cls(f"OpenRouter response had no usable 'choices' (status 200): {body_text[:800]}")
     choice = body["choices"][0]
     tool_calls = choice.get("message", {}).get("tool_calls") or []
     if not tool_calls:

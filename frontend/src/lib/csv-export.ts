@@ -24,9 +24,17 @@ function csvEscape(value: string): string {
 }
 
 export function buildResultsCsv(results: RuleResultOut[]): string {
-  const header = ["rule_id", "category", "status", "page", "evidence", "overridden"];
+  // Round 79, Item 1: real "rule_name" column -- res.question_text is
+  // already the real, human-readable rule text (Round 70, version-pinned
+  // to rule_version_used, from the SAME rules.json content this backend
+  // seeds from) already loaded on screen for every result. Adding it here
+  // makes each exported row self-contained: readable and independently
+  // verifiable without cross-referencing rules.json separately for what
+  // e.g. "QA-PAR-01" actually means.
+  const header = ["rule_id", "rule_name", "category", "status", "page", "evidence", "overridden"];
   const rows = results.map(r => [
     r.rule_code,
+    r.question_text,
     r.category,
     STATUS_LABELS[r.final_status],
     r.final_pages.join("; "),

@@ -45,7 +45,25 @@ FINDINGS_TOOL = {
                             "anyOf": [
                                 {
                                     "type": "string",
-                                    "description": "A specific, quoted or closely-paraphrased justification grounded in the document. Never a restatement of the rule. Work out your reasoning here BEFORE choosing a result below — do not decide the result first and write justifying evidence afterward.",
+                                    "description": (
+                                        "A specific, quoted or closely-paraphrased justification grounded in "
+                                        "the document. Never a restatement of the rule. Work out your "
+                                        "reasoning here BEFORE choosing a result below — do not decide the "
+                                        "result first and write justifying evidence afterward. "
+                                        "Round 77: state the finding directly and stop — one or two tight "
+                                        "sentences, the minimum quote/reference needed to support it. No "
+                                        "restating the question, no hedging preamble ('It appears that...', "
+                                        "'Upon review of...'), no throat-clearing before the actual point. "
+                                        "This is about HOW MANY WORDS per point, not how many points: if a "
+                                        "problem genuinely recurs on several pages, still name every one (see "
+                                        "the array form below) — conciseness means cutting filler per finding, "
+                                        "never cutting real coverage. If you need to cite a page number "
+                                        "inside this text (in addition to the structured `page` field below), "
+                                        "use exactly the tag [Page N] — e.g. '[Page 15]' — never 'page 15', "
+                                        "'pages 15-18', a comma list, or any other phrasing; one [Page N] tag "
+                                        "per distinct page, repeated if more than one page applies to the same "
+                                        "sentence."
+                                    ),
                                 },
                                 {
                                     "type": "array",
@@ -55,7 +73,8 @@ FINDINGS_TOOL = {
                                         "page — one entry per page, each naming that page's specific problem. "
                                         "Never collapse multiple pages into one summary sentence like 'pages "
                                         "13, 15, 35, 40-48 are missing X' — a reviewer needs to see each page's "
-                                        "actual issue individually."
+                                        "actual issue individually. Each entry's own `detail` text follows the "
+                                        "same concise style as the string form above."
                                     ),
                                     "items": {
                                         "type": "object",
@@ -63,7 +82,7 @@ FINDINGS_TOOL = {
                                             "page": {"type": "integer", "description": "1-indexed page number."},
                                             "detail": {
                                                 "type": "string",
-                                                "description": "The specific problem found on this exact page — not a shared generic description reused across pages.",
+                                                "description": "The specific problem found on this exact page — not a shared generic description reused across pages. Short and direct, same style as the string evidence form.",
                                             },
                                         },
                                         "required": ["page", "detail"],
@@ -187,6 +206,24 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "'e.g., pages X, Y, Z' while pages you also saw the pattern on go unlisted. A "
                 "reviewer reading this finding needs the complete scope of the problem, not a "
                 "sample of it; under-citing makes a document-wide issue look narrower than it is.\n\n"
+                "WRITING STYLE (Round 77): write every evidence/detail string short and direct — "
+                "state the finding, back it with the minimum quote or reference needed, then stop. "
+                "No restating the rule/question, no hedging preamble ('It appears that...', 'Upon "
+                "review of the document, it seems...'), no multi-sentence throat-clearing before the "
+                "actual point. One or two tight sentences is normally enough. This is entirely "
+                "separate from the REPEATING PATTERN instruction just above — conciseness means "
+                "fewer words per page cited, never fewer pages cited; a document-wide pattern still "
+                "gets every one of its real occurrences listed, just each in a short sentence "
+                "instead of a long one.\n\n"
+                "PAGE CITATIONS INSIDE EVIDENCE TEXT: the structured `page` field (and the "
+                "{page, detail} array form) already carries the real page number(s) for a finding — "
+                "you do not need to repeat that number in prose for the pipeline to know which page "
+                "it is. If you DO want to name a page inside the evidence/detail text itself (e.g. "
+                "'the signature is missing [Page 12]'), use exactly one format, every time: the tag "
+                "[Page N] — e.g. [Page 12]. Never write 'page 12', 'pages 12-14', 'p. 12', or a "
+                "comma/range list. If a sentence touches more than one page, repeat the tag once per "
+                "page (e.g. '...missing on [Page 12] and [Page 14]'), never a single tag covering a "
+                "range or list.\n\n"
                 "Rules to check (JSON):\n" + json.dumps(rules_summary, indent=2)
             ),
         },

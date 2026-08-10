@@ -98,7 +98,16 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     "QA-GIP-13",
     "QA-HRS-08",
     "QA-MAST-01", "QA-MAST-02",
-    "QA-RPT-04", "QA-RPT-05",
+    # QA-RPT-05 REMOVED from this set (2026-08-08, Round 78, item 4) -- a
+    # real checker was built (pipeline/fields.py::_check_RPT05). This
+    # rule's own two comparisons weren't equally blocked: only the
+    # separate "previous auth end" record genuinely needed backend data;
+    # the 6-month DEFAULT window, anchored to the CURRENT document's own
+    # report-end date, needed nothing outside this document -- confirmed
+    # against Ms. Yachnes's real ground-truth review (a real 14-day
+    # discrepancy on Yisroel Leibowitz's real TP). See the rule's own
+    # updated notes in rules.json.
+    "QA-RPT-04",
     # QA-SCH-01/QA-SCH-07 REMOVED from this set (2026-08-07, Round 63, item
     # 3) -- real checkers built (pipeline/schedule_hours.py's deterministic
     # date/time arithmetic + table extraction), see
@@ -152,8 +161,12 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_thirty_eight_deterministic_labeled_rules_have_real_checkers():
-    """QA-TRANS-02/QA-DISC-02 dropped out of this set 2026-07-28 -- their
+def test_exactly_thirty_nine_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...thirty_eight..." (2026-08-08, Round 78, item 4) --
+    QA-RPT-05 joined this set this round, see EXPECTED_MISMATCHED_RULE_IDS's
+    own comment above for why.
+
+    QA-TRANS-02/QA-DISC-02 dropped out of this set 2026-07-28 -- their
     shared bullet-marker checker was reclassified to judgment after a
     confirmed false positive (see test_trans02_disc02_relabeled_to_judgment
     below). QA-ACF-05 was restored from archive the same round as a real
@@ -219,6 +232,9 @@ def test_exactly_thirty_eight_deterministic_labeled_rules_have_real_checkers():
         # the judgment layer's text-only read that structurally can never
         # see highlight data. See _check_TEMP03's own docstring.
         "QA-TEMP-03",
+        # Round 78 (2026-08-08): item 4 -- see EXPECTED_MISMATCHED_RULE_IDS's
+        # own comment above.
+        "QA-RPT-05",
     }
 
 

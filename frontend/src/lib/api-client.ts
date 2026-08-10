@@ -504,6 +504,27 @@ export async function fetchSessionNoteFileBlob(uploadId: string, fileId: string)
   return resp.blob();
 }
 
+// Round 79, Item 2: real extracted fields for a session-note file --
+// straight from agent-making's own Round 59 extraction step
+// (app.agent_client.extract_session_note), not re-derived here.
+export type SessionNoteExtractionField = {
+  value: string | null;
+  confidence: "none" | "low" | "medium" | "high";
+  source_quote: string | null;
+};
+
+export type SessionNoteExtractionOut = {
+  session_date: SessionNoteExtractionField;
+  session_location: SessionNoteExtractionField;
+  clinician_telehealth_location: SessionNoteExtractionField;
+  patient_telehealth_location: SessionNoteExtractionField;
+  assessment_activity: SessionNoteExtractionField;
+};
+
+export async function getSessionNoteExtraction(uploadId: string, fileId: string): Promise<SessionNoteExtractionOut> {
+  return request(`/uploads/${uploadId}/session-notes/${fileId}/extraction`);
+}
+
 // --- App config (Round 56, Item 1's feature flag) --------------------------
 
 export type SupportingDocMode = "document" | "structured_form";

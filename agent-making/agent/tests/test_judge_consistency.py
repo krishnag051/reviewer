@@ -84,6 +84,42 @@ def test_rejected_finding_triggers_retry_then_integrity_error(monkeypatch):
     assert call_count["n"] == 3  # initial attempt + 2 retries
 
 
+def test_one_persistently_missing_rule_id_among_many_degrades_gracefully_not_raise(monkeypatch):
+    """Real live incident (2026-08): a persistently-missing rule_id
+    (confirmed case: QA-GIP-11) used to raise IntegrityError, discarding
+    every OTHER rule_id's real, already-computed finding along with it --
+    a whole real, paid-for review thrown away over one stubborn rule.
+    Reproduces that exact shape (many rule_ids sent, exactly one always
+    missing) and asserts the FIX: no exception, every other rule_id's
+    real answer comes through untouched, and the stubborn one gets an
+    honest not_checkable finding, not a guess and not a silent drop.
+    """
+    rules = [
+        {"rule_id": "A-1", "category": "Test", "description": "d", "notes": None},
+        {"rule_id": "A-2", "category": "Test", "description": "d", "notes": None},
+        {"rule_id": "A-3", "category": "Test", "description": "d", "notes": None},
+    ]
+
+    def fake_run_judgment_checks(judgment_rules, fields, rendered_images, **kwargs):
+        # A-1/A-2 always answer fine; A-3 always comes back rejected/missing,
+        # regardless of whether it's in the initial batch or a solo retry.
+        findings = [_finding(r["rule_id"]) for r in judgment_rules if r["rule_id"] != "A-3"]
+        if any(r["rule_id"] == "A-3" for r in judgment_rules):
+            findings.append(_finding("A-3", evidence_supports_result=False))
+        return judge._findings_dict_from_list(findings)
+
+    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+
+    results = run_judgment_with_integrity_check(rules, fields={}, rendered_images={}, max_retries=2)
+
+    # No exception raised -- the whole point of the fix.
+    assert results["A-1"]["result"] == "pass"
+    assert results["A-2"]["result"] == "pass"
+    assert results["A-3"]["result"] == "not_checkable"
+    assert "not produce a confirmed answer" in results["A-3"]["evidence"]
+    assert results["A-3"]["confidence"] == 0.0
+
+
 def test_finding_that_becomes_consistent_on_retry_is_accepted(monkeypatch):
     """A finding rejected on the first attempt but returned consistently on
     retry must end up in the final result — proving this is a real retry,

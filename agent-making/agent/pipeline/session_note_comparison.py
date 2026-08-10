@@ -87,8 +87,28 @@ def _uncertain(evidence: str) -> dict[str, Any]:
     return {"result": "uncertain", "evidence": evidence, "confidence": 0.0}
 
 
+def _not_checkable(evidence: str) -> dict[str, Any]:
+    """Distinct from _uncertain() above: "uncertain" is this module's
+    existing vocabulary for "the note/TP data is genuinely ambiguous or
+    incomplete" (a data-content problem). This is for a real, different
+    kind of gap -- a real upstream infrastructure failure prevented this
+    file's extraction from running at all, so there's no data here to be
+    ambiguous ABOUT. Live incident fix (2026-08): see
+    session_note_extraction.py's EXTRACTION_ERROR_KEY docstring for why
+    this must never look identical to "this note states nothing"."""
+    return {"result": "not_checkable", "evidence": evidence, "confidence": 0.0}
+
+
 def _finding(result: str, evidence: str, confidence: float) -> dict[str, Any]:
     return {"result": result, "evidence": evidence, "confidence": confidence}
+
+
+def _extraction_error(extraction: dict[str, Any] | None) -> str | None:
+    """Returns the real upstream-failure message if this extraction is
+    the failure-marker shape session_note_extraction.py's
+    _extraction_failed_result() produces, else None (a normal, real
+    extraction, whether or not it happens to be all-empty)."""
+    return (extraction or {}).get("_extraction_error")
 
 
 def check_date_in_current_report_period(
@@ -369,32 +389,77 @@ def compare_session_notes_to_tp(
     duplicating it. If no uploaded note's date matches the TP's stated
     Assessment Date, both come back uncertain, explicitly saying so,
     rather than being run against some unrelated note.
+
+    Live incident fix (2026-08): a file whose extraction genuinely failed
+    (session_note_extraction.py's EXTRACTION_ERROR_KEY sentinel -- a real
+    upstream model-provider failure, retried and still not resolved) is
+    handled separately from a normal extraction, for both rules below --
+    see the inline comments at each point this fix touches.
     """
     def value_or_none(extraction: dict, field: str) -> str | None:
         entry = (extraction or {}).get(field) or {}
         return entry.get("value") if entry.get("confidence") != "none" else None
 
+    ok_extractions = {fn: ext for fn, ext in session_extractions.items() if not _extraction_error(ext)}
+    failed_files = {fn: _extraction_error(ext) for fn, ext in session_extractions.items() if _extraction_error(ext)}
+
+    # QA-RPT-03: a genuinely failed file contributes a real, distinctive
+    # not_checkable entry (never silently skipped, never read as "this
+    # note has no date") into the SAME per-file evidence join every other
+    # file already uses -- so the failure is visible in the final result's
+    # own evidence text, not just in a log line.
     rpt03_by_file = {
         filename: check_date_in_current_report_period(
             value_or_none(extraction, "session_date"), tp_current_report_period,
         )
-        for filename, extraction in session_extractions.items()
+        for filename, extraction in ok_extractions.items()
     }
+    for filename, error in failed_files.items():
+        rpt03_by_file[filename] = _not_checkable(
+            f"Extraction for this file failed due to a real upstream model-provider failure (not a "
+            f"data-absence issue): {error}"
+        )
 
     if not rpt03_by_file:
         rpt03_combined = _uncertain("No session notes were uploaded.")
     else:
         evidence = " | ".join(f"{fn}: {r['evidence']}" for fn, r in rpt03_by_file.items())
-        if all(r["result"] == "pass" for r in rpt03_by_file.values()):
+        failing_confidences = [r["confidence"] for r in rpt03_by_file.values() if r["result"] == "fail"]
+        if failing_confidences:
+            # A real, confirmed problem on another file takes priority
+            # over "we couldn't check one file" -- it's the more
+            # actionable finding.
+            rpt03_combined = _finding("fail", evidence, max(failing_confidences))
+        elif any(r["result"] == "not_checkable" for r in rpt03_by_file.values()):
+            rpt03_combined = _not_checkable(evidence)
+        elif all(r["result"] == "pass" for r in rpt03_by_file.values()):
             rpt03_combined = _finding("pass", evidence, min(r["confidence"] for r in rpt03_by_file.values()))
         else:
-            failing_confidences = [r["confidence"] for r in rpt03_by_file.values() if r["result"] == "fail"]
-            if failing_confidences:
-                rpt03_combined = _finding("fail", evidence, max(failing_confidences))
-            else:
-                rpt03_combined = _uncertain(evidence)
+            rpt03_combined = _uncertain(evidence)
 
-    _, matched_extraction = select_matching_session_note(session_extractions, tp_assessment_date)
+    # QA-ACF-02/QA-ACF-08: only match against successfully-extracted
+    # files -- a failed file's own session_date is unreadable (all fields
+    # are confidence="none"), so it can never spuriously "match" the TP's
+    # stated Assessment Date. If no OK file matches AND at least one file
+    # genuinely failed extraction, that failure might well be exactly why
+    # no match was found (the matching note could be the one that failed)
+    # -- say so plainly instead of the generic "no note's date matches"
+    # message, which would misleadingly suggest every file was read fine
+    # and none happened to match.
+    _, matched_extraction = select_matching_session_note(ok_extractions, tp_assessment_date)
+    if matched_extraction is None and failed_files:
+        failure_note = " | ".join(f"{fn}: {err}" for fn, err in failed_files.items())
+        no_match_due_to_failure = (
+            f"No successfully-extracted session note's date matches the TP's stated Assessment Date "
+            f"({tp_assessment_date!r}), and {len(failed_files)} file(s) could not be extracted at all "
+            f"due to a real upstream failure ({failure_note}) -- the matching note may be one of those. "
+            f"Flagged not_checkable rather than guessed at."
+        )
+        return {
+            "QA-RPT-03": rpt03_combined,
+            "QA-ACF-02": _not_checkable(no_match_due_to_failure),
+            "QA-ACF-08": _not_checkable(no_match_due_to_failure),
+        }
     if matched_extraction is None:
         no_match_evidence = (
             f"No uploaded session note's own date matches the TP's stated Assessment Date "

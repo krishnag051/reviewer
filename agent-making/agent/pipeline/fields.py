@@ -395,14 +395,23 @@ def _check_TEMP03(rule: dict, fields: dict) -> tuple:
     if not real_annotation_hits and not flattened_fill_hits:
         return "pass", "No highlight annotations or highlighter-colored fills found in this PDF.", None, 0.85
 
+    # Round 77, Item 2: rewritten from Python's default list/tuple repr()
+    # (e.g. "[(6, ['hit', 'or', 'grab']), (9, [...])...]") -- concise and
+    # correct, but exactly the kind of ad-hoc, non-standard page-reference
+    # shape the frontend's Round 72 extractPageNumbersFromText() had to
+    # special-case a regex for. Now uses the one standard [Page N] tag
+    # (see judge.py's _build_prompt for the same convention on the
+    # judgment side), one tag per distinct page, and drops the verbose
+    # per-page matched-word lists -- the finding is "a highlight exists on
+    # this page," not a transcript of which words it covers.
     problems = []
     if real_annotation_hits:
-        problems.append(f"Real Highlight annotation(s) found on page(s): {sorted(set(real_annotation_hits))}.")
+        pages_str = " ".join(f"[Page {p}]" for p in sorted(set(real_annotation_hits)))
+        problems.append(f"Highlight annotation(s) found: {pages_str}.")
     if flattened_fill_hits:
-        problems.append(
-            f"Highlighter-colored fill(s) behind text found on page(s): "
-            f"{[(p, words) for p, words in flattened_fill_hits]}."
-        )
+        fill_pages = sorted({p for p, _ in flattened_fill_hits})
+        pages_str = " ".join(f"[Page {p}]" for p in fill_pages)
+        problems.append(f"Highlighter-colored fill(s) found: {pages_str}.")
     page = (sorted(set(real_annotation_hits)) or [flattened_fill_hits[0][0]])[0]
     return "fail", " ".join(problems), page, 0.85
 
@@ -582,7 +591,9 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
         # number every time this rule fails — see the CS TP.pdf QA-RPT-01
         # investigation: the deterministic layer had the right page (20),
         # escalation silently replaced it with the model's wrong guess (19).
-        return "fail", f"Possible unfilled field(s) on page {page}: {labels}.", page, 0.65
+        # Round 77, Item 2: "[Page N]" tag, same standard convention as
+        # every other checker/the judgment prompt -- was "on page {page}:".
+        return "fail", f"Possible unfilled field(s): {labels}. [Page {page}]", page, 0.65
     # More than one page implicated: one {page, detail} entry per page,
     # naming that page's specific labels — never a collapsed page-range
     # summary a reviewer would have to decode.
@@ -1256,6 +1267,68 @@ def _check_BIO13(rule: dict, fields: dict) -> tuple:
         "fail",
         "No 'First day of ABA services with Master Faster' value found on this Reassessment TP.",
         None, 0.6,
+    )
+
+
+def _check_RPT05(rule: dict, fields: dict) -> tuple:
+    """Round 78, Item 4 -- REAL BUG FOUND AND FIXED: this rule was
+    unconditionally marked not_checkable, citing "needs backend prior-TP/
+    auth data" -- but Ms. Yachnes's own real ground-truth review proved
+    that's the wrong blocker: she computed the 6-month default window
+    herself directly from THIS document's own two dates (current report
+    end + 6 months, vs. the requested auth end), catching a real 14-day
+    discrepancy on Yisroel Leibowitz's real TP with zero external data.
+
+    This rule's own description covers TWO distinct comparisons ("based on
+    previous auth end OR new insurance start") -- only ONE of them is
+    actually computable from the current document alone, and this checker
+    deliberately implements only that one:
+      - "previous auth end" as a genuinely separate, stored prior
+        authorization record -- still not available in this standalone
+        pipeline, still correctly not_checkable if that's what a specific
+        payor's rule wording requires (see SM-01's own start-adjacency
+        half, which stays payor-specific and untouched by this rule).
+      - The 6-month DEFAULT window itself, anchored to THIS document's own
+        "Date of Current Report" end date -- exactly what Ms. Yachnes did
+        by hand, and exactly what SM-01 already computes for Straight
+        Medicaid specifically. Generalizing that one comparison to every
+        payor (not just Straight Medicaid) needs no data this pipeline
+        doesn't already have on page 1.
+
+    This checker does NOT enforce SM-01's stricter "auth start must be
+    exactly the day after report end" requirement -- that's Straight
+    Medicaid's own specific wording (SM-01 keeps it, payor-scoped); making
+    it universal here would risk a false fail for a payor that genuinely
+    allows a gap between the old auth's end and the new auth's start.
+    """
+    max_months = rule.get("params", {}).get("max_months_after_report_end", 6)
+    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
+    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
+    if not report_range or not auth_range:
+        return (
+            "not_checkable",
+            "Could not find both 'Date of Current Report' and 'Authorization Dates Requested' to compute the 6-month window.",
+            None, 0.0,
+        )
+
+    report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
+    auth_end = datetime.strptime(auth_range[1], "%m/%d/%Y")
+    max_allowed_end = _add_months(report_end, max_months)
+
+    if auth_end > max_allowed_end:
+        overage_days = (auth_end - max_allowed_end).days
+        return (
+            "fail",
+            f"Requested auth end ({auth_range[1]}) is {overage_days} day(s) beyond the {max_months}-month "
+            f"default window from the current report's end ({report_range[1]}); latest allowed under the "
+            f"default is {max_allowed_end.strftime('%m/%d/%Y')}.",
+            None, 0.75,
+        )
+    return (
+        "pass",
+        f"Requested auth end ({auth_range[1]}) is within the {max_months}-month default window from the "
+        f"current report's end ({report_range[1]}); latest allowed is {max_allowed_end.strftime('%m/%d/%Y')}.",
+        None, 0.75,
     )
 
 
@@ -2176,6 +2249,7 @@ DET_CHECKS = {
     # was silently doing all the work.
     "HF-01": _check_HF01,
     "QA-RPT-02": _check_RPT02,
+    "QA-RPT-05": _check_RPT05,
     "QA-RPT-06": _check_RPT06,
     "QA-SIG-02": _check_SIG02,
     "QA-SIG-03": _check_SIG03,

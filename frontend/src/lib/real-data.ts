@@ -14,8 +14,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createPatient, createRule, createSimulatedUpload, createUpload, createVersion, finalizeUpload, getAppConfig,
-  getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getUpload, getVersion, listPatientVersions,
-  listPatients, listRules, listSessionNotes, overrideRuleResult, setRuleActive, setSupportingDocMode, updateRule,
+  getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getSessionNoteExtraction, getUpload, getVersion,
+  listPatientVersions, listPatients, listRules, listSessionNotes, overrideRuleResult, setRuleActive,
+  setSupportingDocMode, updateRule,
   type IntakeAnswers, type RulePayor, type RuleType, type SupportingDocMode,
 } from "./api-client";
 
@@ -223,5 +224,19 @@ export function useSessionNotes(uploadId: string | undefined) {
     queryKey: ["session-notes", uploadId],
     queryFn: () => listSessionNotes(uploadId!),
     enabled: !!uploadId,
+  });
+}
+
+// Round 79, Item 2: real extracted fields per session-note file, from
+// agent-making's own Round 59 extraction step. Cached client-side by
+// react-query the same way every other real hook here is; the backend's
+// own content-hash cache (agent-making-side) means re-fetching an
+// already-extracted file costs no real model call either.
+export function useSessionNoteExtraction(uploadId: string | undefined, fileId: string | undefined) {
+  return useQuery({
+    queryKey: ["session-note-extraction", uploadId, fileId],
+    queryFn: () => getSessionNoteExtraction(uploadId!, fileId!),
+    enabled: !!uploadId && !!fileId,
+    staleTime: Infinity, // this file's extraction never changes once computed
   });
 }

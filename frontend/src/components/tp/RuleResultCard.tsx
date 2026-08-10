@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Pencil } from "lucide-react";
 import type { RuleResultOut } from "@/lib/api-client";
 import { StatusBadge, CategoryTag } from "@/components/tp/ui";
@@ -34,9 +34,28 @@ const BADGE_STATUS: Record<RuleResultOut["final_status"], "Pass" | "Fail" | "N/A
  * Scans the evidence/context text itself for every distinct page number
  * actually mentioned, unions it with `final_pages`, and renders a real,
  * working link for each -- not just the first one found. */
-function extractPageNumbersFromText(text: string): number[] {
+// Round 79, Item 3: the ONE standard, exact format Round 77 got
+// agent-making to emit consistently -- "[Page N]", one tag per page,
+// never a range/list. Matched as its OWN explicit, dedicated pattern
+// (not left to accidentally fall out of the looser bare-"page N" pattern
+// #4 below, which happens to also match it today only incidentally) so
+// this stays correct-by-design even if #4 ever changes shape. Exported so
+// the inline-link renderer below can find and replace each exact tag's
+// own literal position in the text, instead of only appending trailing
+// badges for it.
+const EXACT_PAGE_TAG_RE = /\[Page (\d{1,4})\]/gi;
+
+// Exported for a real, direct unit test (test/page-link-extraction.test.ts)
+// -- not used by any other component, this is purely so the round's own
+// "no missed or double-counted pages" requirement has a real, automated
+// check instead of only a manual click-through.
+export function extractPageNumbersFromText(text: string): number[] {
   const found = new Set<number>();
 
+  // 0. The standard "[Page N]" tag itself (see EXACT_PAGE_TAG_RE above).
+  for (const m of text.matchAll(EXACT_PAGE_TAG_RE)) {
+    found.add(Number(m[1]));
+  }
   // 1. "(N, [...])" tuples -- the exact QA-TEMP-03-style evidence shape
   //    above: a page number immediately followed by ", [".
   for (const m of text.matchAll(/\((\d{1,4})\s*,\s*\[/g)) {
@@ -66,6 +85,68 @@ function extractPageNumbersFromText(text: string): number[] {
   return Array.from(found);
 }
 
+function _pageLinkButton(
+  p: number,
+  pageLabelMap: Record<string, string>,
+  onGoToPage: (page: number) => void,
+  label: string,
+  key?: string | number,
+) {
+  const printedLabel = pageLabelMap[String(p)];
+  return (
+    <button
+      key={key ?? p}
+      type="button"
+      // Round 76, Item 1: this button lives inside RuleResultCard's
+      // now-whole-card-clickable body -- stop the click from bubbling up
+      // and toggling the card's expand/collapse state at the same time as
+      // jumping the PDF viewer.
+      onClick={e => { e.stopPropagation(); onGoToPage(p); }}
+      className="text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
+      title={
+        printedLabel && printedLabel !== String(p)
+          ? `Jumps to the PDF's actual page ${p} (printed on that page as "${printedLabel}")`
+          : `Jumps to page ${p} in the PDF`
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Round 79, Item 3: every literal "[Page N]" tag inside the text itself
+ * (Round 77's standard citation format) becomes a real clickable link IN
+ * PLACE -- replacing the bracketed text with a button, not leaving the
+ * plain-text tag sitting next to a separate, redundant "[View Page N]"
+ * badge that just repeats the same number a second time. Returns the
+ * rendered nodes plus the set of page numbers it already linked inline,
+ * so the trailing-badges pass below only covers pages that had no inline
+ * mention (still-relevant DET-checker legacy phrasings, or a page that's
+ * only in the structured final_pages column with no textual mention at
+ * all). */
+function renderTextWithInlinePageLinks(
+  text: string,
+  pageLabelMap: Record<string, string>,
+  onGoToPage: (page: number) => void,
+): { nodes: ReactNode[]; inlinedPages: Set<number> } {
+  const inlinedPages = new Set<number>();
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  let matchIndex = 0;
+
+  for (const m of text.matchAll(EXACT_PAGE_TAG_RE)) {
+    const page = Number(m[1]);
+    const start = m.index ?? 0;
+    if (start > lastIndex) nodes.push(text.slice(lastIndex, start));
+    inlinedPages.add(page);
+    nodes.push(_pageLinkButton(page, pageLabelMap, onGoToPage, m[0], `inline-${matchIndex++}`));
+    lastIndex = start + m[0].length;
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+
+  return { nodes, inlinedPages };
+}
+
 /** Round 70, Item 4 -- rebuilt to match the Brellium reference pattern for
  * EVERY result regardless of status: a bold, plain-English question; a
  * clear bold answer; a lighter/smaller context block underneath with real
@@ -79,37 +160,24 @@ function renderContextWithPageLinks(
   pageLabelMap: Record<string, string>,
   onGoToPage: (page: number) => void,
 ) {
+  // Round 79, Item 3: literal "[Page N]" mentions become inline links
+  // first; everything else (final_pages entries with no textual mention,
+  // or a legacy/heuristic-pattern page from an older DET checker string)
+  // still gets a trailing "[View Page N]" badge, same as before.
+  const { nodes, inlinedPages } = renderTextWithInlinePageLinks(text, pageLabelMap, onGoToPage);
+
   // Round 72, Item 2: union of the structured column AND every page
   // number actually mentioned in the text itself -- see
   // extractPageNumbersFromText's own docstring above.
-  const pages = Array.from(new Set([...structuredPages, ...extractPageNumbersFromText(text)])).sort((a, b) => a - b);
-  if (pages.length === 0) return <span>{text}</span>;
+  const allPages = new Set([...structuredPages, ...extractPageNumbersFromText(text)]);
+  const remainingPages = Array.from(allPages).filter(p => !inlinedPages.has(p)).sort((a, b) => a - b);
+
+  if (remainingPages.length === 0) return <>{nodes}</>;
   return (
     <>
-      <span>{text}</span>
+      <span>{nodes}</span>
       <span className="ml-1.5 inline-flex items-center gap-1 flex-wrap">
-        {pages.map(p => {
-          const printedLabel = pageLabelMap[String(p)];
-          return (
-            <button
-              key={p}
-              type="button"
-              // Round 76, Item 1: this button lives inside RuleResultCard's
-              // now-whole-card-clickable body -- stop the click from
-              // bubbling up and toggling the card's expand/collapse state
-              // at the same time as jumping the PDF viewer.
-              onClick={e => { e.stopPropagation(); onGoToPage(p); }}
-              className="text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
-              title={
-                printedLabel && printedLabel !== String(p)
-                  ? `Jumps to the PDF's actual page ${p} (printed on that page as "${printedLabel}")`
-                  : `Jumps to page ${p} in the PDF`
-              }
-            >
-              [View Page {printedLabel ?? p}]
-            </button>
-          );
-        })}
+        {remainingPages.map(p => _pageLinkButton(p, pageLabelMap, onGoToPage, `[View Page ${pageLabelMap[String(p)] ?? p}]`))}
       </span>
     </>
   );

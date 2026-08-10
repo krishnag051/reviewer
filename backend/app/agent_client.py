@@ -318,3 +318,56 @@ def review_session_notes(
             action_tag=rule_meta.get("action_tag"),
         ))
     return results
+
+
+class SessionNoteExtractionField(BaseModel):
+    """One field's real extracted value, straight from agent-making's own
+    Round 59 extraction step (pipeline/session_note_extraction.py) --
+    never re-derived or guessed at here."""
+
+    value: str | None
+    confidence: Literal["none", "low", "medium", "high"]
+    source_quote: str | None
+
+
+class SessionNoteExtraction(BaseModel):
+    """Round 79, Item 2 -- the exact 5-field shape
+    `pipeline.session_note_extraction.SESSION_NOTE_FIELDS` defines, kept
+    as its own real fields (not a generic dict) so a shape drift on
+    agent-making's side is a visible type error here, not a silent typo
+    in a dict key somewhere downstream."""
+
+    session_date: SessionNoteExtractionField
+    session_location: SessionNoteExtractionField
+    clinician_telehealth_location: SessionNoteExtractionField
+    patient_telehealth_location: SessionNoteExtractionField
+    assessment_activity: SessionNoteExtractionField
+
+
+def extract_session_note(
+    file_path: str,
+    *,
+    model_override: str | None = None,
+    max_calls: int | None = None,
+) -> SessionNoteExtraction:
+    """Round 79, Item 2 -- the one missing wrapper the Round 78 audit's
+    deferred items flagged: `review_session_notes` above already calls
+    agent-making's real `extract_session_note_file` internally, but only
+    to feed `compare_session_notes_to_tp` -- the raw per-file extraction
+    itself (session_date/session_location/clinician_telehealth_location/
+    patient_telehealth_location/assessment_activity, each with its own
+    confidence + source_quote) was never exposed anywhere a human could
+    see it directly. This is that real connection, for real display, not
+    a rebuild of the extraction logic here -- same discipline as every
+    other function in this module.
+
+    Same content-hash cache as `review_session_notes` uses internally
+    (`pipeline/session_note_extraction.py`'s own local cache) -- viewing
+    this panel for a file that's already been extracted (e.g. because the
+    upload's session-notes rule check already ran) costs zero real model
+    calls; only a genuinely new file triggers one real (free-tier
+    OpenRouter, per this round's own call site) extraction call.
+    """
+    tracker = _CallTracker(max_calls=max_calls)
+    raw = _extract_session_note_file(file_path, tracker=tracker, model_override=model_override)
+    return SessionNoteExtraction(**raw)
