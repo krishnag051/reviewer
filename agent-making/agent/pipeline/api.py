@@ -84,6 +84,7 @@ def _run_pipeline_with_extras(
     payor_override: str | None,
     plan_type_override: str | None,
     supporting_doc_path: str | None,
+    source_filename: str | None = None,
 ) -> dict:
     """Duplicates run_full_pipeline's orchestration (pipeline/__init__.py)
     so a manual payor/plan_type override, and/or the Round 52 supporting-
@@ -127,6 +128,24 @@ def _run_pipeline_with_extras(
         extracted_fields["plan_type"] = plan_type_override
     if supporting_doc_path is not None:
         extracted_fields["supporting_doc"] = extract_supporting_document(supporting_doc_path, tracker=tracker)
+    if source_filename is not None:
+        # Round 82, item 1: the reviewer/facilitator's ORIGINAL uploaded
+        # filename (not `pdf_path`, which today is a caller-generated
+        # storage-key path with the real filename already discarded --
+        # confirmed by reading backend/app/storage.py::save_blob's own
+        # docstring: "by upload_id, not the client-supplied filename, to
+        # avoid collisions"). Same additive-key convention as payor/
+        # plan_type/supporting_doc above -- `extracted_fields` has no fixed
+        # positional shape, so a new key here flows into
+        # fields.py::_check_PPI03 (the only reader) with zero change to
+        # fields.py's own function signature, per this file's module
+        # docstring. `None` (the default, and every pre-Round-82 caller)
+        # means _check_PPI03 falls back to `Path(pdf_path).name` instead --
+        # see that function's own docstring for why that fallback is
+        # deliberately inert against today's real backend traffic (a
+        # storage-key filename carries no name-like tokens to compare) until
+        # a future backend round wires the real original filename through.
+        extracted_fields["source_filename"] = source_filename
 
     applicable_rules, excluded_findings = fields_module.partition_rules_by_scope(rules, extracted_fields)
     det_results = fields_module.run_deterministic_checks(applicable_rules, extracted_fields)
@@ -266,6 +285,7 @@ def review_treatment_plan(
     supporting_doc_path: str | None = None,
     payor_override: str | None = None,
     plan_type_override: str | None = None,
+    source_filename: str | None = None,
     max_calls: int | None = None,
 ) -> dict[str, Any]:
     """The one public entry point. Runs the full pipeline against `pdf_path`
@@ -288,6 +308,22 @@ def review_treatment_plan(
     when auto-detection would otherwise be trusted blindly, or is expected
     to fail (e.g. a payor name spelled unusually on page 1). `None` (the
     default) means "trust auto-detection", not "use some default payor".
+
+    `source_filename` (Round 82, item 1): the reviewer/facilitator's
+    ORIGINAL uploaded filename, e.g. "Zohran Hossain TP.pdf" — deliberately
+    separate from `pdf_path`, which is typically a caller-generated
+    storage-key path with the real filename already discarded (confirmed:
+    this backend's own `save_blob` does exactly that, "to avoid
+    collisions"). When given, makes `_check_PPI03` (patient-name
+    consistency) additionally compare the document's own extracted patient
+    name against this filename, flagging a near-typo mismatch as
+    `uncertain` rather than a confident `fail` (a filename can legitimately
+    differ for innocuous reasons — a date, "_v2", staff-added label — see
+    `fields.py::_name_token_mismatch_detail`'s own docstring). `None` (the
+    default) falls back to `Path(pdf_path).name`, which is inert against
+    today's real backend traffic (a storage-key filename has no name-like
+    tokens to compare against) until a future round threads the true
+    original filename through from the backend's Upload record.
 
     `max_calls`: forwarded to this call's own ApiCallTracker — pass a real
     cap in any context where a runaway retry loop making unbounded billed
@@ -317,11 +353,14 @@ def review_treatment_plan(
         return _error_result("rules_load_failed", f"{type(exc).__name__}: {exc}", tracker)
 
     try:
-        if payor_override is not None or plan_type_override is not None or supporting_doc_path is not None:
+        if (
+            payor_override is not None or plan_type_override is not None
+            or supporting_doc_path is not None or source_filename is not None
+        ):
             raw = _run_pipeline_with_extras(
                 pdf_path, rules, tracker,
                 payor_override=payor_override, plan_type_override=plan_type_override,
-                supporting_doc_path=supporting_doc_path,
+                supporting_doc_path=supporting_doc_path, source_filename=source_filename,
             )
         else:
             raw = run_full_pipeline(pdf_path, rules, tracker=tracker)

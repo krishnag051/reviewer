@@ -196,6 +196,11 @@ def _enforce_openrouter_ceiling(monkeypatch):
 REAL_TP_PDF_PATH = Path(__file__).parent.parent / "sample_tps" / "Ullah_Zyaan_Redacted.pdf"
 REEDA_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\Re_ Examples of the TP's required\Reeda B S Review.pdf")
 CHARNY_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\charmy\Charny Gluck TP Feedback.pdf")
+# Round 83: same convention as Reeda/Charny above -- referenced by name in
+# several prior rounds' scratch scripts (e.g. Yisroel Leibowitz's TP, first
+# named in _check_ACF07's own Round 64 docstring) but never given its own
+# pytest fixture until this round's real-document regression tests needed one.
+YISROEL_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\yl\YL.pdf")
 
 
 @pytest.fixture
@@ -217,6 +222,13 @@ def charny_tp_pdf() -> str:
     if not CHARNY_TP_PDF_PATH.exists():
         pytest.skip(f"Charny's TP not present at {CHARNY_TP_PDF_PATH} on this machine.")
     return str(CHARNY_TP_PDF_PATH)
+
+
+@pytest.fixture
+def yisroel_tp_pdf() -> str:
+    if not YISROEL_TP_PDF_PATH.exists():
+        pytest.skip(f"Yisroel's TP not present at {YISROEL_TP_PDF_PATH} on this machine.")
+    return str(YISROEL_TP_PDF_PATH)
 
 
 @pytest.fixture

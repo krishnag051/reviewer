@@ -134,6 +134,20 @@ class Upload(Base):
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     voided_reason: Mapped[str | None] = mapped_column(Text)
     file_path: Mapped[str | None] = mapped_column(Text)
+    # Round 86: the client-supplied filename the TP was actually uploaded
+    # under, e.g. "Zohran Hossain TP.pdf" -- captured BEFORE save_blob
+    # renames the file to its internal storage key (file_path above),
+    # which deliberately discards the original name to avoid collisions.
+    # Same purpose as SessionNoteFile.original_filename below, just never
+    # had an equivalent field on the TP's own upload row until now.
+    # Nullable for the same reason file_path is: the row is inserted first
+    # to get an id, this is set right after within the same transaction --
+    # by the time any client sees the row it's already populated for a
+    # real upload; nullable only so an upload created before this
+    # migration (with no original filename on record) doesn't need a
+    # backfill to stay valid. Purely additive -- doesn't change how the
+    # file itself is stored or how collisions are avoided.
+    original_filename: Mapped[str | None] = mapped_column(Text)
     # Round 51: the mandatory "supporting document" -- a second, required
     # file at every upload creation point (app/services/uploads.py::
     # create_upload enforces "required" at the application layer, same

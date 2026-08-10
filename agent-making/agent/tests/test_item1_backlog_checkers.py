@@ -140,10 +140,14 @@ def test_ppi03_fail_on_misspelled_name():
 
 # --- QA-PPI-05: NPI/License consistency ---
 
-def test_ppi05_pass_with_single_consistent_npi_and_license():
+def test_ppi05_uncertain_with_single_consistent_npi_and_license_and_no_ground_truth():
+    """Round 84, item 2: internal consistency alone (no supporting-doc
+    ground truth) is 'uncertain', not a confident 'pass' -- this rule is
+    named '...correct,' and consistency alone doesn't verify correctness.
+    Renamed from '...pass_with_...' to reflect the corrected expectation."""
     text = "NPI: 1578293197\nLicense #: 12477453/004132\n"
     result, evidence, page, confidence = fields._check_PPI05({}, _fields(text))
-    assert result == "pass"
+    assert result == "uncertain"
 
 
 def test_ppi05_fail_on_inconsistent_npi():
@@ -162,13 +166,16 @@ def test_ppi05_fail_on_inconsistent_license():
     assert "12477453/004132" in evidence and "99999999/999999" in evidence
 
 
-def test_ppi05_same_npi_repeated_with_whitespace_differences_still_passes():
+def test_ppi05_same_npi_repeated_with_whitespace_differences_still_reads_as_one_value():
     """No false positive from incidental whitespace formatting -- the same
     NPI value appearing twice with different surrounding spaces must still
-    read as one consistent value, not two conflicting ones."""
+    read as one consistent value, not two conflicting ones. Round 84,
+    item 2: with no ground truth available, "one consistent value" is
+    'uncertain' (not a contradiction, but not confirmed correct either),
+    not a confident 'pass' -- renamed from '...still_passes' accordingly."""
     text = "NPI:  1578293197 \nNPI: 1578293197\n"
     result, evidence, page, confidence = fields._check_PPI05({}, _fields(text))
-    assert result == "pass"
+    assert result == "uncertain"
 
 
 def test_ppi05_not_checkable_with_no_fields():
@@ -208,11 +215,13 @@ def test_ppi05_passes_and_upgrades_confidence_when_tp_npi_matches_supporting_doc
 def test_ppi05_ignores_supporting_doc_when_confidence_is_none():
     """confidence='none' means the supporting document didn't actually
     state this field -- must be treated as no ground truth available, not
-    silently compared as if it disagreed."""
+    silently compared as if it disagreed. Round 84, item 2: with no real
+    ground truth to fall back on, this is 'uncertain' (internal
+    consistency only), not a confident 'pass'."""
     text = "NPI: 1578293197\n"
     f = _fields_with_supporting_npi(text, None, confidence="none")
     result, evidence, page, confidence = fields._check_PPI05({}, f)
-    assert result == "pass"
+    assert result == "uncertain"
     assert "supporting document" not in evidence.lower()
 
 

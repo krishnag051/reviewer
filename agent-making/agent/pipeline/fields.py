@@ -14,9 +14,12 @@ doing its job, not a gap in the implementation.
 Implemented checkers cover every deterministic rule answerable from the
 PDF's extracted text alone.
 """
+import colorsys
+import difflib
 import re
 from collections import Counter
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import fitz  # PyMuPDF -- already a pipeline dependency (see render.py)
 from pypdf import PdfReader
@@ -306,26 +309,47 @@ def _add_months(d: datetime, months: int) -> datetime:
 # literal "Invalid Date" string search) stays in code — it's how the rule
 # is implemented, not a business fact that varies.
 
-# Word/Adobe's standard highlighter palette (yellow/green/pink/cyan,
-# roughly full-saturation, at typical highlighter opacity) -- used only to
-# scope the FLATTENED-fill fallback below (a colored rectangle baked into
-# page content, not a real annotation) so an unrelated colored design
-# element (a table row stripe, a header banner) isn't misread as a
-# removed-but-still-visible highlight. Real annotation detection (the
-# primary path) doesn't need this at all -- it only ever matches an actual
-# Highlight-type annotation object, regardless of its color.
-_HIGHLIGHTER_COLORS = {
-    (1.0, 1.0, 0.0),  # yellow
-    (0.0, 1.0, 0.0),  # green
-    (1.0, 0.0, 1.0),  # pink/magenta
-    (0.0, 1.0, 1.0),  # cyan
-}
+# Round 81, Item 1 -- REAL BUG FOUND AND FIXED: confirmed directly against
+# a real PDF's content stream, a genuine highlighter-style fill at RGB
+# (1.0, 0.8, 0.0) -- an orange-yellow -- sat behind highlighted text, and
+# the old narrow-tolerance-band-around-4-fixed-RGB-triples check
+# (tolerance=0.15 around exactly yellow/green/pink/cyan) missed it: (0.8)
+# green-channel distance from pure yellow's 1.0 is 0.2, outside the 0.15
+# band. That old approach was fundamentally the wrong shape -- highlighter
+# colors aren't a small set of fixed points, they're a real COLOR FAMILY
+# (any vivid, bright yellow/orange/green/pink), and different highlighter
+# tools/export pipelines land anywhere in that family, not just at 4 exact
+# RGB triples.
+#
+# Reclassified via HSV (hue/saturation/value) instead: a fill is
+# highlighter-like when it's VIVID (saturation high enough to be a real
+# color, not a pale tint) AND BRIGHT (value high enough, not a dark ink
+# color) AND its HUE falls in the yellow-through-green range (~15°-160°:
+# covers yellow, orange, lime, green) OR the pink/magenta range
+# (~300°-345°). Deliberately EXCLUDES cyan (~180°) and blue/purple
+# (~190°-300°) -- this pipeline's own real TPs use cyan fills for
+# table-header/section-header backgrounds throughout (an intentional,
+# non-highlight design element), and real highlighter pens are never
+# actually cyan/blue/purple in practice. The old fixed-cyan-triple entry
+# is removed for exactly this reason -- keeping it would have made this
+# broadening MORE likely to false-positive on those real header fills, not
+# less.
+_HIGHLIGHTER_HUE_RANGES_DEGREES = ((15, 160), (300, 345))
+_HIGHLIGHTER_MIN_SATURATION = 0.35
+_HIGHLIGHTER_MIN_VALUE = 0.55
 
 
-def _color_is_highlighter_like(color: tuple | None, tolerance: float = 0.15) -> bool:
+def _color_is_highlighter_like(color: tuple | None) -> bool:
     if color is None or len(color) != 3:
         return False
-    return any(all(abs(c - ref) <= tolerance for c, ref in zip(color, ref_color)) for ref_color in _HIGHLIGHTER_COLORS)
+    r, g, b = color
+    if not all(isinstance(c, (int, float)) and 0.0 <= c <= 1.0 for c in (r, g, b)):
+        return False
+    hue, saturation, value = colorsys.rgb_to_hsv(r, g, b)
+    if saturation < _HIGHLIGHTER_MIN_SATURATION or value < _HIGHLIGHTER_MIN_VALUE:
+        return False  # near-white/near-gray (low saturation) or near-black (low value) -- not a highlighter
+    hue_degrees = hue * 360
+    return any(lo <= hue_degrees <= hi for lo, hi in _HIGHLIGHTER_HUE_RANGES_DEGREES)
 
 
 def _check_TEMP03(rule: dict, fields: dict) -> tuple:
@@ -454,15 +478,82 @@ def _find_embedded_reviewer_comments(text: str) -> list[str]:
     template language in both real documents' Transition Plan section
     ("Please note, it is not the only criteria..."), not reviewer
     commentary specific to either patient.
+
+    Round 81, Item 2 -- REAL BUG FOUND AND FIXED: confirmed directly
+    against a real document, a genuine embedded internal note --
+    "(Confirm before signing. The BT is unresponsive.)" -- sits as plain
+    DECLARATIVE inline text, no question mark anywhere in it, and every
+    detector above (question-mark-based, or the narrow "please X" list)
+    missed it entirely. Every prior confirmed real example of this pattern
+    happened to be phrased as a question -- the detection had quietly
+    overfit to that one shape rather than the underlying, broader pattern
+    (an aside directed AT the reviewer/preparer, not part of the clinical
+    narrative itself).
+
+    Added: a PARENTHETICAL-aside scan, deliberately scoped to text inside
+    parentheses (not every declarative sentence in the document -- that
+    would be far too broad and risk flagging ordinary clinical prose).
+    Flagged only when the parenthetical's own text starts with a
+    reviewer-directed imperative/directive word ('confirm', 'note:',
+    'check', 'verify', 'review', 'flag', 'make sure', 'ensure',
+    'double check'). Ordinary clinical parenthetical content (a
+    definition, an example, a citation, a measurement) never starts with
+    one of these words -- confirmed against real examples like
+    '(e.g., missing item)', '(80% across 3 sessions)', '(ASD, F84.0)',
+    none of which match.
+
+    A bare second-person ("you"/"your") signal was tried and DROPPED
+    after real-document testing found it, confirmed: real TPs' goal
+    descriptions routinely quote SD/mand example PROMPTS a clinician
+    would say TO the client -- e.g. '(e.g., "Are you hungry?", "Do you
+    need to use the bathroom?")' -- which are genuine clinical content,
+    not reviewer commentary, and would have been false-flagged by a bare
+    "you" match every time. The directive-word-starts-the-parenthetical
+    signal alone already catches the real confirmed case
+    ("Confirm before signing...") with zero false positives against three
+    real documents checked directly -- second-person address on its own
+    is not a safe enough signal in this domain, where clinical prompts
+    are themselves routinely addressed to the patient in the second
+    person.
     """
     comments = []
     for m in re.finditer(r"[^\n]{0,150}\?", text):
         next_char = text[m.end():m.end() + 1]
+        matched = m.group(0)
         if next_char in ('"', "”"):
             continue  # closes a quoted clinical example, not a reviewer question
-        comments.append(m.group(0).strip())
+        if next_char == ")" and re.search(r'(?:e\.?g\.?|ex\.?|["“”])', matched, re.IGNORECASE):
+            # Round 81, item 2: confirmed via real-document testing --
+            # a real clinical SD-prompt example quoted parenthetically
+            # (e.g. "(...did you play bubbles in the gym before?)" or
+            # "(e.g., \"Are you hungry?\"...)") has its own "?" immediately
+            # followed by ")", the same "closing a quoted/labeled-example
+            # clinical span, not trailing into more reviewer prose" shape
+            # the quote-mark exclusion above already covers -- just with a
+            # different closing character. Scoped to spans that also show
+            # an example lead-in ("e.g."/"ex.") or a quote character, so a
+            # genuine reviewer question that happens to be parenthesized on
+            # its own (e.g. "(Is this correct?)") is NOT excluded -- that
+            # shape has neither signal and still gets caught.
+            continue
+        comments.append(matched.strip())
     for m in re.finditer(r"[Pp]lease (?!note\b)(?:reword|clarify|specify|update|add)[^\n]{0,80}", text):
         comments.append(m.group(0).strip())
+    for m in re.finditer(r"\(([^()]{1,200})\)", text):
+        inner = m.group(1).strip()
+        if not inner:
+            continue
+        starts_with_directive = re.match(
+            # "note\s*:" ends in a colon, not a word character -- \b would
+            # never match right after it (no boundary between two
+            # non-word characters), so it's deliberately kept out of the
+            # \b-anchored alternation below and checked as its own
+            # branch instead.
+            r"(?:(?:please\s+)?(?:confirm|check|verify|review|flag|make sure|ensure|double[\s-]?check)\b|note\s*:)",
+            inner, re.IGNORECASE,
+        )
+        if starts_with_directive:
+            comments.append(f"({inner})")
     return comments
 
 
@@ -511,6 +602,100 @@ def _check_TEMP04(rule: dict, fields: dict) -> tuple:
             f"{comments[:3]}."
         )
     return "fail", " ".join(problems), None, 0.75
+
+
+# A whole line that's essentially just "Label: short value" -- the real,
+# specific shape of a matrix/checklist form field, e.g. "Eye contact: poor".
+# Anchored to the FULL line (^...$) so this doesn't fire on a real sentence
+# that merely CONTAINS a colon somewhere (a citation, a time, a ratio).
+_MATRIX_LABEL_VALUE_LINE_RE = re.compile(r"(?m)^[ \t]*[A-Za-z][A-Za-z /'\-]{1,30}:[ \t]*[A-Za-z0-9][\w /'\-]{0,30}[ \t]*$")
+
+
+def _looks_like_structured_matrix(text: str) -> bool:
+    """Round 84, item 3: a conservative heuristic distinguishing narrative
+    prose from a matrix/checklist-style layout, for the "As evidenced by:"
+    narrative-format requirement QA-PROB-01's rubric never checked before.
+
+    Round 84 -- FIRST ATTEMPT CAUGHT AND FIXED: an earlier version split on
+    every raw newline and flagged short/unpunctuated fragments -- but real
+    PDF text extraction wraps long sentences across MANY lines purely by
+    page width, not by sentence/entry boundary (confirmed: this produced
+    false positives on Charny's and Yisroel's real "As evidenced by"
+    narrative, which just happens to word-wrap into many short lines).
+    Raw line length/newline count is not a safe signal here at all.
+
+    Replaced with a much more specific, positive signal instead of a
+    negative one: does this block contain multiple whole LINES that are
+    themselves just "Label: short value" (e.g. "Eye contact: poor",
+    "Turn taking: absent")? That exact shape is specific to a tabular/
+    form-style layout and essentially never appears as a genuine sentence
+    line in flowing clinical narrative, even when line-wrapped oddly --
+    confirmed zero false positives against all three of this project's
+    real documents (none of their real "As evidenced by" content has any
+    colon-delimited whole-line label:value shape at all).
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return False
+    label_value_lines = sum(1 for l in lines if _MATRIX_LABEL_VALUE_LINE_RE.match(l))
+    return label_value_lines >= 2 and (label_value_lines / len(lines)) >= 0.5
+
+
+_EVIDENCED_BY_BLOCK_RE = re.compile(
+    r"As evidenced by:[ \t]*([\s\S]{1,3000}?)"
+    r"(?=\n\s*(?:Problem Area:|Problem Areas:|As evidenced by:|Areas of Focus|Goal Progress:)|\Z)",
+)
+
+
+def _check_PROB01(rule: dict, fields: dict) -> tuple:
+    """Round 84, item 3 -- adds the one signal this rule's rubric never
+    had: an actual narrative-vs-structured-format check on "As evidenced
+    by:" content, via _looks_like_structured_matrix's conservative
+    heuristic. Confirmed real gap (flagged early in this project, never
+    separately fixed): a checklist/matrix-formatted "As evidenced by"
+    section passed this rule despite the checklist explicitly requiring
+    narrative format -- the rule's own rubric only ever counted entries
+    and checked for a non-blank "As evidenced by:" value, never the
+    FORMAT of that value.
+
+    Hybrid DET pre-check, same shape as QA-PROB-02/QA-GIP-05: ONLY
+    attempts this one narrow, objectively-checkable sub-question (does
+    the evidenced content read as a matrix/checklist rather than
+    narrative prose). Does NOT attempt this rule's own per-bucket
+    2-entries-minimum count -- that stays exactly the judgment-layer task
+    this rule's own notes already describe (bucket/heading attribution
+    from this section's free-form layout isn't reliably regex-extractable
+    the way a "Target Name:"-style block marker is). Fails outright only
+    when the matrix heuristic confidently fires on at least one "As
+    evidenced by:" block; returns not_checkable otherwise (even on a
+    clean read) so the full count+format judgment still runs unchanged.
+    """
+    text = fields["full_text"]
+    blocks = [m.group(1).strip() for m in _EVIDENCED_BY_BLOCK_RE.finditer(text)]
+    blocks = [b for b in blocks if b]
+    if not blocks:
+        return "not_checkable", "No 'As evidenced by:' content found to check for narrative format.", None, 0.0
+
+    matrix_like = [b for b in blocks if _looks_like_structured_matrix(b)]
+    if matrix_like:
+        return (
+            "fail",
+            (
+                f"{len(matrix_like)} of {len(blocks)} 'As evidenced by:' block(s) read as a "
+                f"matrix/checklist-style layout (short, fragment-like entries with no sentence "
+                f"structure), not the narrative format this checklist item requires."
+            ),
+            None, 0.7,
+        )
+    return (
+        "not_checkable",
+        (
+            f"Checked {len(blocks)} 'As evidenced by:' block(s) -- all read as narrative prose, no "
+            f"matrix/checklist-format violation found, but the per-bucket 2-entries-minimum count "
+            f"still needs judgment."
+        ),
+        None, 0.3,
+    )
 
 
 def _check_PROB02(rule: dict, fields: dict) -> tuple:
@@ -1454,18 +1639,117 @@ _ACF07_KNOWN_TOOLS = ["ABLLS-R", "ABLLS", "VB-MAPP", "AFLS", "Vineland-3", "Vine
 _ACF07_TOOL_PATTERN = re.compile("|".join(re.escape(t) for t in _ACF07_KNOWN_TOOLS), re.IGNORECASE)
 
 
+# Round 83, item 1: the specific field labels this section's checkers key
+# off of -- used both to pick the best of several header occurrences
+# (below) and as the whole-document fallback signal in extract_acf_fields/
+# _check_ACF07. Each is specific to this one section by this template's
+# own convention (never reused as a generic label elsewhere in a real TP).
+_ACF_CORE_FIELD_LABELS = (
+    "Assessment Date:", "Assessment Methods/Measures:", "Assessment Summary Statement:",
+    "Provider Location During Assessment:", "Patient Location during Assessment:",
+)
+
+
+def _labeled_value_maybe_next_line(label: str, haystack: str) -> str | None:
+    """Round 85, item 1 -- REAL BUG FOUND AND FIXED (root cause distinct
+    from, and previously misdiagnosed in, Round 83): confirmed directly
+    against the real document that originally exposed this bug (Blythe
+    Diaz's TP, 73 pages, "Assessment of Current Functioning" occurs
+    exactly ONCE -- Round 83's "multiple occurrences, wrong one picked"
+    theory was never the actual mechanism on this document, which is
+    exactly why that real, correctly-implemented fix didn't touch the
+    real bug here).
+
+    Traced the actual divergence directly, per this round's own
+    instruction, rather than re-theorizing: QA-ACF-01 (escalated to
+    judgment, reads the raw text unscoped) and QA-ACF-05
+    (_check_ACF05, which ALREADY has its own "is the next non-blank line
+    itself another label" multi-line check, built for a different real
+    case in an earlier round) both succeed on this document. Every other
+    ACF checker built on this section's field-value regexes required the
+    value to appear on the SAME LINE as its label
+    ("Label:[ \\t]*(\\S[^\\n]*)") -- but on THIS document's real template,
+    "Assessment Methods/Measures:" and "Assessment Summary Statement:"
+    both put their real, substantial content on the FOLLOWING line, with
+    nothing after the colon on the label's own line at all. That same-
+    line-only assumption is the actual, confirmed root cause: it's why
+    _check_ACF07 saw neither field as "having content" and declared the
+    whole section "entirely blank" even though roughly 2700 characters of
+    real VB-MAPP methods description and a real summary statement were
+    sitting right there, one line down.
+
+    This generalizes _check_ACF05's own already-correct pattern (see its
+    docstring) into a shared helper instead of leaving it as a one-off:
+    tries the same-line value first; if that's empty, checks whether the
+    label appears alone on its own line, and if so, takes the next non-
+    blank line as the value -- UNLESS that next line is itself another
+    field label (ends in ":"), which still correctly means "blank."
+    """
+    same_line_m = re.search(re.escape(label) + r"[ \t]*(\S[^\n]*)", haystack)
+    if same_line_m:
+        return same_line_m.group(1).strip()
+    target = label.rstrip(":").strip().lower()
+    lines = haystack.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().rstrip(":").strip().lower() == target:
+            next_nonblank = next((lines[j].strip() for j in range(i + 1, len(lines)) if lines[j].strip()), "")
+            if next_nonblank and not next_nonblank.endswith(":"):
+                return next_nonblank
+            return None
+    return None
+
+
 def _find_acf_section(text: str) -> str | None:
     """Shared section-boundary finder for every "Assessment of Current
     Functioning:" checker (_check_ACF07, extract_acf_fields below) --
     factored out of what was previously duplicated inline in _check_ACF07,
     so both use the exact same section boundaries. Returns None if the
     section header itself isn't found anywhere in this TP's text.
+
+    Round 83, item 1 -- ROOT CAUSE INVESTIGATED: confirmed real symptom
+    (not locally reproducible against this project's own real documents --
+    none of the three has an image-only page anywhere, per a direct
+    fitz/pypdf scan done before writing this fix, so the exact original
+    document isn't available here) was QA-ACF-02/QA-ACF-08 reporting the
+    TP's stated Assessment Date as None, and QA-ACF-07 declaring the whole
+    section "entirely blank," BOTH on a document where that exact date and
+    summary text were plainly present and found correctly by QA-ACF-01/
+    QA-ACF-05's own separate, unscoped searches. That combination --
+    section FOUND (not None) but empty of the fields QA-ACF-01/05 found
+    fine elsewhere -- rules out "the header never matched" and points at
+    this function returning the WRONG occurrence's slice, not a broken
+    regex. The prior version used a bare re.search, which always commits
+    to the FIRST occurrence of "Assessment of Current Functioning:" in the
+    document; a document whose real section is preceded by ANY earlier
+    occurrence of that same heading text (most plausibly a Table of
+    Contents / outline page naming this section, and possibly also naming
+    one of the three boundary phrases nearby, which would make the
+    non-greedy capture settle on the empty/near-empty TOC span) would
+    silently mis-scope every checker built on this function, while
+    QA-ACF-01 (escalated to judgment, reads the raw document unscoped) and
+    QA-ACF-05 (its own unscoped full-document line scan) are structurally
+    immune to this exact failure mode -- exactly the asymmetry confirmed
+    in the real run.
+
+    Fix: consider EVERY occurrence of the header (not just the first),
+    using the identical per-occurrence regex/boundary logic as before (so
+    a document with exactly one occurrence -- confirmed true for all three
+    of this project's own real documents -- behaves byte-for-byte
+    unchanged), and prefer the LAST occurrence whose captured slice
+    contains at least one recognized ACF field label. Falls back to the
+    first occurrence when NONE of them contain any recognized label --
+    preserving the ability to report a genuinely blank section as blank,
+    not None, which callers rely on to distinguish "section found but
+    blank" from "section header never appears in this document at all."
     """
-    m = re.search(
+    pattern = re.compile(
         r"Assessment of Current Functioning:([\s\S]{0,30000}?)(?:Goal Progress:|Clinical Interpretation|Areas of Focus)",
-        text,
     )
-    return m.group(1) if m else None
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    content_bearing = [m for m in matches if any(label in m.group(1) for label in _ACF_CORE_FIELD_LABELS)]
+    return (content_bearing[-1] if content_bearing else matches[0]).group(1)
 
 
 def _check_ACF07(rule: dict, fields: dict) -> tuple:
@@ -1508,10 +1792,39 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
         return "not_checkable", "No 'Assessment of Current Functioning:' section found.", None, 0.0
 
     core_fields = ["Assessment Date:", "Assessment Methods/Measures:", "Assessment Summary Statement:"]
-    section_has_content = any(
-        re.search(re.escape(label) + r"[ \t]*(\S[^\n]*)", section) for label in core_fields
-    )
+    # Round 85, item 1: uses _labeled_value_maybe_next_line, not a bare
+    # same-line regex -- see that function's own docstring for the
+    # confirmed real bug (Blythe Diaz's TP) this closes: two of these three
+    # labels put their real content on the line AFTER the label on this
+    # document's real template, which a same-line-only check reads as
+    # "no content," falsely declaring a substantially-filled-in section
+    # "entirely blank."
+    section_has_content = any(_labeled_value_maybe_next_line(label, section) for label in core_fields)
     if not section_has_content:
+        # Round 83, item 1: belt-and-suspenders safety net alongside
+        # _find_acf_section's own multi-occurrence fix above -- covers the
+        # case where the real field content sits further from EVERY
+        # occurrence of the header than the 30000-char boundary window
+        # (e.g. a genuinely large image-only grid gap widening the
+        # distance), so no candidate slice ever captures it at all. Before
+        # confidently declaring the section blank, check whether any of
+        # these same labels exist ANYWHERE ELSE in the document -- if so,
+        # this is a section-boundary miss, not a real blank section, and a
+        # confident "fail" here would be repeating exactly the false
+        # symptom this round exists to fix.
+        fallback_has_content = any(
+            _labeled_value_maybe_next_line(label, fields["full_text"]) for label in core_fields
+        )
+        if fallback_has_content:
+            return (
+                "uncertain",
+                "The located 'Assessment of Current Functioning:' section appears empty of core fields, "
+                "but at least one of Assessment Date/Methods/Summary Statement is present elsewhere in "
+                "the document -- likely a section-boundary extraction issue (e.g. a duplicate heading, "
+                "such as a Table of Contents entry, or an unusually large gap) rather than a genuinely "
+                "blank section. Needs a human/judgment read rather than a confident fail.",
+                None, 0.3,
+            )
         return (
             "fail",
             "The Assessment of Current Functioning section is entirely blank -- no testing "
@@ -1573,6 +1886,14 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
     _DATE_PATTERNS = (
         re.compile(r"Assessment Date:[ \t]*(\d{1,2}/\d{1,2}/\d{4})"),
         re.compile(r"Total Score on[ \t]*(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE),
+        # Round 85, item 1: confirmed real template variant (Blythe Diaz's
+        # TP) uses a bare "Date:" label instead of "Assessment Date:" for
+        # this exact field -- checked last (lowest priority), after the
+        # two more specific labels above, since a bare "Date:" is more
+        # generic and this is scoped to a small tool-proximity window
+        # already (single-tool: the whole section; multi-tool: the gap
+        # around one specific mention), keeping ambiguity risk low.
+        re.compile(r"\bDate:[ \t]*(\d{1,2}/\d{1,2}/\d{4})"),
     )
 
     def _dates_in(window: str) -> list[str]:
@@ -1691,27 +2012,128 @@ def extract_acf_fields(fields: dict) -> dict[str, str | None]:
     guesses: a field this function can't confidently find comes back None,
     which session_note_comparison.py's own check_field_match already
     treats as "the TP doesn't state this" (uncertain), not a false match.
+
+    Round 83, item 1: added a whole-document fallback for every field below
+    -- kept, still useful as a second safety net, but Round 83's own
+    "multiple header occurrences" root-cause theory was later DISPROVEN
+    (Round 85): confirmed against the real document, "Assessment of
+    Current Functioning" occurs exactly ONCE in it, so a wrong-occurrence
+    mechanism was never actually in play here.
+
+    Round 85, item 1 -- REAL BUG FOUND AND FIXED (the actual root cause):
+    confirmed real symptom, QA-ACF-02/QA-ACF-08 reported the TP's stated
+    Assessment Date as None even though that exact date was plainly
+    present, found correctly by QA-ACF-01/QA-ACF-05's own reads of the
+    same document. Traced directly (per this round's own instruction) by
+    comparing what QA-ACF-05 does differently from this function -- see
+    _labeled_value_maybe_next_line's own docstring for the confirmed
+    mechanism: this document's real template puts "Assessment Methods/
+    Measures:"/"Assessment Summary Statement:" content on the line AFTER
+    the label, which the old same-line-only `_labeled_value` read as
+    empty. Now uses the shared multi-line-aware helper.
+
+    Separately, ALSO confirmed on this same document: the Assessment Date
+    and Provider Location fields use this template's own different label
+    text entirely -- bare "Date:" and "Location:" instead of "Assessment
+    Date:"/"Provider Location During Assessment:". Added as a LAST-RESORT
+    fallback, scoped to the section only (not whole-document, unlike the
+    other fallbacks above) -- "Date:"/"Location:" alone are too generic to
+    safely search the whole document without risking picking up an
+    unrelated date/location mentioned elsewhere; confirmed only one
+    occurrence of each exists within this document's own ACF section.
     """
-    section = _find_acf_section(fields["full_text"])
+    text = fields["full_text"]
+    section = _find_acf_section(text)
     if section is None:
         return {"assessment_date": None, "pos": None, "patient_location": None, "assessment_tool": None}
 
-    def _labeled_value(label: str) -> str | None:
-        m = re.search(re.escape(label) + r"[ \t]*(\S[^\n]*)", section)
-        if not m:
-            return None
-        value = m.group(1).strip()
-        return value or None
-
     assessment_date_m = re.search(r"Assessment Date:[ \t]*(\d{1,2}/\d{1,2}/\d{4})", section)
+    assessment_date = assessment_date_m.group(1) if assessment_date_m else None
+    if assessment_date is None:
+        fallback_date_m = re.search(r"Assessment Date:[ \t]*(\d{1,2}/\d{1,2}/\d{4})", text)
+        assessment_date = fallback_date_m.group(1) if fallback_date_m else None
+    if assessment_date is None:
+        bare_date_m = re.search(r"\bDate:[ \t]*(\d{1,2}/\d{1,2}/\d{4})", section)
+        assessment_date = bare_date_m.group(1) if bare_date_m else None
+
     tool_m = _ACF07_TOOL_PATTERN.search(section)
+    assessment_tool = tool_m.group(0) if tool_m else None
+    if assessment_tool is None:
+        fallback_tool_m = _ACF07_TOOL_PATTERN.search(text)
+        assessment_tool = fallback_tool_m.group(0) if fallback_tool_m else None
+
+    pos = (
+        _labeled_value_maybe_next_line("Provider Location During Assessment:", section)
+        or _labeled_value_maybe_next_line("Provider Location During Assessment:", text)
+    )
+    if pos is None:
+        bare_location_m = re.search(r"\bLocation:[ \t]*(\S[^\n]*)", section)
+        pos = bare_location_m.group(1).strip() if bare_location_m else None
 
     return {
-        "assessment_date": assessment_date_m.group(1) if assessment_date_m else None,
-        "pos": _labeled_value("Provider Location During Assessment:"),
-        "patient_location": _labeled_value("Patient Location during Assessment:"),
-        "assessment_tool": tool_m.group(0) if tool_m else None,
+        "assessment_date": assessment_date,
+        "pos": pos,
+        "patient_location": _labeled_value_maybe_next_line("Patient Location during Assessment:", section)
+            or _labeled_value_maybe_next_line("Patient Location during Assessment:", text),
+        "assessment_tool": assessment_tool,
     }
+
+
+_ACF06_ADMIN_BY_RE = re.compile(
+    r"\b(?:administered|completed|conducted)\s+by\s+([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+){0,3}(?:,\s*[A-Za-z.]+)?)",
+)
+_ACF06_ADMIN_VERB_RE = re.compile(r"\b(?:administered|completed|conducted)\b", re.IGNORECASE)
+
+
+def _check_ACF06(rule: dict, fields: dict) -> tuple:
+    """Round 83, item 1 follow-up: converted from judgment to deterministic.
+    Investigated whether the confirmed real miss (ground-truth reviewer
+    found an assessor name -- "Administered by [name]" -- that this rule
+    reported as not found) shared _find_acf_section's root cause above, or
+    was a separate, narrower gap: SEPARATE. QA-ACF-06 was judgment-only,
+    reading the raw document text/images directly, not through
+    _find_acf_section/extract_acf_fields at all -- so it was never
+    affected by the section-boundary bug. The real gap here is narrower:
+    the confirmed real PASS phrasing ("The ABLLS-R was administered by
+    Karen Kain, BCBA.") is a plain, regexable "administered by NAME"
+    pattern this rule never had a deterministic checker for at all.
+
+    Uses the same section-then-whole-document-fallback shape as this
+    round's other ACF fixes anyway, so an image-page gap or a decoy
+    heading occurrence can't reintroduce a similar miss here later.
+
+    PASS: an "administered by"/"completed by"/"conducted by" phrase with a
+    name captured. FAIL: a testing tool (_ACF07_TOOL_PATTERN) is named
+    AND one of these same admin verbs appears somewhere in the section/
+    document, but never with "by NAME" attached -- the confirmed real
+    FAIL shape from this rule's own notes ("The ABLLS-R was
+    administered." with no name). not_checkable: no testing-tool
+    administration statement found to check at all.
+    """
+    text = fields["full_text"]
+    section = _find_acf_section(text)
+    haystacks = [h for h in (section, text) if h]
+
+    for haystack in haystacks:
+        m = _ACF06_ADMIN_BY_RE.search(haystack)
+        if m:
+            name = m.group(1).strip().rstrip(".")
+            return "pass", f"Assessor named: {name!r}.", None, 0.75
+
+    for haystack in haystacks:
+        if _ACF06_ADMIN_VERB_RE.search(haystack) and _ACF07_TOOL_PATTERN.search(haystack):
+            return (
+                "fail",
+                "A testing tool's administration is mentioned, but no assessor name is given "
+                "('administered by [name]' or equivalent phrasing not found).",
+                None, 0.6,
+            )
+
+    return (
+        "not_checkable",
+        "No testing-tool administration statement found in this document to check for an assessor name.",
+        None, 0.0,
+    )
 
 
 def _check_ACF05(rule: dict, fields: dict) -> tuple:
@@ -1884,7 +2306,28 @@ def _check_GIP10(rule: dict, fields: dict) -> tuple:
     return "fail", evidence, None, 0.85
 
 
-_ZERO_MASTERY_PATTERN = re.compile(r"(?:\b0\s*%|\b0\s*occurrences?\b|\b0\s*x\b|near\s*0)", re.IGNORECASE)
+# Round 83, item 2a -- REAL BUG FOUND AND FIXED: confirmed real miss,
+# "0 times a week" is the same absolute-zero mastery-criteria problem as
+# "0%"/"0 occurrences", just phrased with "times" instead -- the prior
+# pattern only recognized "%"/"occurrences"/"x"/"near 0", not "times" or
+# the word forms "zero"/"none". Broadened to a general zero-instance-
+# phrasing family: "0"/"zero" paired with occurrences/times/instances/x,
+# "near 0"/"near-zero", or the field's ENTIRE value being just "0"/"zero"/
+# "none" on its own (anchored to the whole value, not a bare substring
+# match, so this doesn't fire on "none" appearing incidentally inside a
+# longer, unrelated sentence elsewhere -- mc_val is always this one
+# field's own short value, never a full paragraph). Deliberately does NOT
+# match "fewer than N"/"less than N" phrasing for any N -- that's this
+# rule's OWN recommended, non-absolute-zero rewording (see this
+# function's docstring), and matching it here would fail the very
+# phrasing this rule wants people to use instead.
+_ZERO_MASTERY_PATTERN = re.compile(
+    r"(?:\b0\s*%"
+    r"|\b(?:0|zero)\s*(?:occurrences?|times?|instances?|x)\b"
+    r"|\bnear[\s-]*0\b"
+    r"|^\s*(?:0|zero|none)\s*\.?\s*$)",
+    re.IGNORECASE,
+)
 
 
 def _check_GIP16(rule: dict, fields: dict) -> tuple:
@@ -1904,6 +2347,12 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     occurrences over three consecutive days', which does NOT match the
     banned pattern -- a genuine minimum-occurrence range, not a zero
     endpoint, and the regex is careful not to flag it).
+
+    Round 83, item 2a: broadened _ZERO_MASTERY_PATTERN to also catch "0
+    times"/"zero times"/"zero occurrences"/"zero instances" and a bare
+    "0"/"zero"/"none" as the field's entire value -- see that pattern's
+    own comment for the confirmed real miss ("0 times a week") and why
+    "fewer than N" is deliberately still excluded.
 
     EXPLICIT DIVISION OF LABOR WITH QA-GIP-10 (2026-08-07, Round 63, item
     7 -- documented, not just implemented, so results don't look
@@ -1964,6 +2413,417 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
         return "fail", detail, page, 0.85
     evidence = [{"page": page, "detail": detail} for page, detail in problems]
     return "fail", evidence, None, 0.85
+
+
+def _normalize_goal_text(text: str) -> str:
+    """Round 83, item 2b: collapses whitespace/case/trailing-punctuation
+    differences so the SAME goal wording, appearing in two different
+    sections of the document with different line-wrapping/surrounding
+    formatting, compares equal. This is NOT fuzzy typo-tolerance (compare
+    Round 82's _name_token_mismatch_detail, which IS) -- it only
+    normalizes FORMATTING, matching the confirmed real case (identical
+    wording, different section, different surrounding formatting), not
+    genuinely different phrasing of the same underlying goal.
+    """
+    return re.sub(r"\s+", " ", text.strip().lower()).rstrip(".,;: ")
+
+
+_MASTERED_SKILL_RE = re.compile(r"Name of Skill:[ \t]*([\s\S]{1,400}?)(?=\s*Date Mastered:)")
+_GOAL_NAME_TAIL_RE = re.compile(r"[\s\S]{1,400}?(?=\s*(?:Goal Status:|Date Initiated:|Status:))")
+
+
+def _extract_mastered_goal_names(text: str) -> list[tuple[str, int]]:
+    """Round 83, item 2b: every 'Name of Skill: X' entry from the
+    document's own 'Mastered Goals:' section, paired with its own text
+    offset (for page-mapping). Bounded to end at the first 'Goals in
+    Progress:'/'Target Goal:'/'Target Name:'/'Goal Progress:' marker after
+    it, whichever comes first -- confirmed live (Reeda/Charny/Yisroel) this
+    section is immediately followed by 'Goals in Progress:' and then the
+    active per-goal blocks, so this boundary never accidentally swallows
+    an active goal block into the mastered-goals scan, regardless of
+    which of these header conventions a given document actually uses.
+    """
+    m = re.search(
+        r"Mastered Goals:([\s\S]{0,20000}?)(?:Goals in Progress:|Target Goal:|Target Name:|Goal Progress:|"
+        r"Areas of Focus|Clinical Interpretation)",
+        text,
+    )
+    if not m:
+        return []
+    section = m.group(1)
+    base_offset = m.start(1)
+    return [(sm.group(1).strip(), base_offset + sm.start(1)) for sm in _MASTERED_SKILL_RE.finditer(section)]
+
+
+def _check_GIP05(rule: dict, fields: dict) -> tuple:
+    """Round 83, item 2b -- REAL BUG FOUND AND FIXED: confirmed directly
+    against a real document, a goal was listed BOTH in the document's own
+    'Mastered Goals:' section (with a Date Mastered) AND still listed as
+    an active goal in 'Goals in Progress:' (with a 0% baseline) --
+    identical wording, just in two different sections with different
+    surrounding formatting -- and the prior judgment-only version
+    reported no duplication found, even though this rule's own notes
+    ('LLM needed to match goal descriptions worded differently') assumed
+    the harder, differently-worded case was the real challenge; an
+    IDENTICALLY-worded duplicate slipping through anyway means the model
+    wasn't reliably even doing that literal comparison across two
+    far-apart sections of a long document.
+
+    Hybrid DET pre-check (same shape as QA-PROB-02/QA-BIP-05): ONLY
+    catches the one narrow, objectively-checkable shape -- the SAME goal
+    wording (formatting-normalized via _normalize_goal_text, not typo-
+    fuzzy) appearing in BOTH the Mastered Goals section and an active
+    'Target Goal:'/'Target Name:' block. Genuinely differently-worded
+    duplicates of the same underlying goal are NOT attempted here -- that
+    stays exactly the judgment-layer task this rule's own notes describe;
+    returns not_checkable when no exact-wording duplicate is found so the
+    judgment layer still gets a chance to catch a paraphrased one.
+
+    Verified against all three of this project's real documents: zero
+    false positives (none has this duplication) -- the exact real
+    document that exposed this bug isn't among them.
+    """
+    text = fields["full_text"]
+    mastered = _extract_mastered_goal_names(text)
+    if not mastered:
+        return "not_checkable", "No 'Mastered Goals:' section with any 'Name of Skill:' entries found.", None, 0.0
+
+    goal_starts = _goal_block_starts(text)
+    if not goal_starts:
+        return (
+            "not_checkable",
+            "No active 'Target Goal:'/'Target Name:' entries found to cross-check against mastered goals.",
+            None, 0.0,
+        )
+    goal_starts = goal_starts + [len(text)]
+
+    mastered_by_norm: dict[str, tuple[str, int]] = {}
+    for name, offset in mastered:
+        mastered_by_norm.setdefault(_normalize_goal_text(name), (name, offset))
+
+    problems = []
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+        rest = block[marker_len:]
+        tail_m = _GOAL_NAME_TAIL_RE.search(rest)
+        active_name = (tail_m.group(0) if tail_m else rest.split("\n", 1)[0]).strip()
+        norm = _normalize_goal_text(active_name)
+        if norm and norm in mastered_by_norm:
+            _mastered_name, mastered_offset = mastered_by_norm[norm]
+            active_page = _page_for_offset(fields, goal_starts[i])
+            mastered_page = _page_for_offset(fields, mastered_offset)
+            problems.append({
+                "page": active_page,
+                "detail": (
+                    f"Goal '{active_name[:150]}' is listed as an active/in-progress goal here, but the "
+                    f"SAME goal (identical wording) is also listed in the Mastered Goals section "
+                    f"(page {mastered_page}) -- a same-document contradiction/duplication."
+                ),
+            })
+
+    if not problems:
+        return (
+            "not_checkable",
+            (
+                f"Checked {len(mastered)} mastered-goal entry(ies) against {len(goal_starts) - 1} active "
+                f"goal block(s) for identical wording -- no exact duplication found, but a differently-"
+                f"worded duplicate of the same goal still needs judgment."
+            ),
+            None, 0.3,
+        )
+    if len(problems) == 1:
+        return "fail", problems[0]["detail"], problems[0]["page"], 0.85
+    return "fail", problems, None, 0.85
+
+
+# Round 84, item 1: this project's real documents use "occurrence(s)",
+# "instance(s)", and "times" interchangeably for the SAME concept in
+# Mastery Criteria phrasing -- confirmed real case: the same goal's two
+# mentions read "1 instance or less per day" (page 15) and "0 times a
+# week" (page 64). The original pattern only recognized "occurrence(s)".
+_OCCURRENCE_UNIT = r"(?:occurrences?|instances?|times?)"
+
+
+def _parse_occurrence_ceiling(text: str) -> float | None:
+    """Round 81, Item 3: parses the MAXIMUM occurrence count a piece of
+    text implies, as a plain float, so two differently-WORDED thresholds
+    for the SAME goal can be compared numerically rather than by string
+    equality (which would false-positive on every real paraphrase, e.g.
+    "fewer than 1" vs "0 occurrences" mean the same real threshold but
+    never read as equal strings).
+
+    "fewer than N"/"less than N" -> N - 0.5 (a real, strict ceiling BELOW
+    N -- N itself is NOT allowed). "N or less"/"N or fewer" -> N (N itself
+    IS allowed -- this is an upper bound, not a strict "below N" ceiling,
+    unlike "fewer than N"). "near 0"/"near-zero" -> 0.5 (same shape,
+    phrased differently). A range "N-M" -> M (the range's own upper bound
+    IS an allowed value). A bare "N occurrence(s)"/"N instance(s)"/"N
+    times" -> N.
+
+    Round 84, item 1 -- REAL BUG FOUND AND FIXED: confirmed real case, a
+    goal's two Mastery Criteria mentions -- "1 instance or less per day"
+    and "0 times a week" -- both went unparsed (None) because the unit
+    word wasn't "occurrence(s)" and there was no "or less" pattern at
+    all, which silently made pipeline/fields.py::_check_BIP05's cross-
+    block comparison skip the pair entirely (not_checkable, not a missed
+    fail) -- NOT a Target Name:/Target Goal: label mismatch, which
+    _check_BIP05/_check_GIP05 both already treat as equivalent via
+    _goal_block_starts covering both marker forms (confirmed directly: a
+    same-label control test with this same identical phrasing pair
+    reproduced the identical miss, proving the label wasn't the cause).
+    Broadened the unit word to _OCCURRENCE_UNIT (occurrence(s)/
+    instance(s)/times) and added the "N or less"/"N or fewer" shape.
+
+    Returns None (never a guessed number) when the text doesn't contain
+    one of these recognized shapes -- a caller seeing None must treat
+    this goal as not comparable, never assume 0 or any other default.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    m = re.search(rf"(?:fewer|less)\s+than\s+(\d+(?:\.\d+)?)\s*{_OCCURRENCE_UNIT}", t)
+    if m:
+        return float(m.group(1)) - 0.5
+    if re.search(r"near[\s-]*0\b", t):
+        return 0.5
+    m = re.search(rf"(\d+(?:\.\d+)?)\s*{_OCCURRENCE_UNIT}?\s*or\s+(?:less|fewer)\b", t)
+    if m:
+        return float(m.group(1))
+    m = re.search(rf"(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*{_OCCURRENCE_UNIT}", t)
+    if m:
+        return float(m.group(2))
+    m = re.search(rf"\b(\d+(?:\.\d+)?)\s*{_OCCURRENCE_UNIT}", t)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def _check_BIP05(rule: dict, fields: dict) -> tuple:
+    """Round 81, Item 3 -- REAL BUG FOUND AND FIXED: confirmed directly
+    against a real document, a goal's own Target Name states "fewer than
+    1 occurrence" while that SAME goal's own Mastery Criteria field states
+    "1-2 occurrences" -- a direct, literal, same-goal-block contradiction
+    (the mastery bar is looser than the goal's own stated target). Neither
+    QA-GIP-16 (only matches literal 0%/zero-occurrence phrasing, not a
+    cross-field comparison) nor this rule's own prior judgment-only
+    behavior (which noticed the goal's duration was unusual but never
+    compared the two fields' actual numbers) caught this -- it needs zero
+    clinical judgment, just comparing two fields that belong to the same
+    record.
+
+    Deliberately narrow, same "hybrid" shape as QA-PROB-02
+    (pipeline/fields.py::_check_PROB02, see its own docstring for the
+    precedent): this checker ONLY attempts the same-goal numeric-
+    contradiction cross-check, extracted from _goal_block_starts's own
+    per-goal blocks (shared with GIP-10/GIP-16). It does NOT attempt this
+    rule's full "age-appropriate mastery criteria" judgment call, which
+    stays genuinely subjective and is not attempted deterministically --
+    when a goal's Target Name and Mastery Criteria don't BOTH state a
+    recognized numeric occurrence threshold, or when they do and don't
+    contradict, this returns not_checkable (even on a clean read) so the
+    judgment layer still gets a chance to make the broader
+    age-appropriateness call unchanged. A confirmed, real numeric
+    contradiction is the one case objective enough to fail outright,
+    with no judgment needed.
+
+    Round 83, item 2c -- INVESTIGATED, NOT FORCED: a new real case
+    surfaced where a goal's Mastery Criteria was stated two different
+    ways in two different SECTIONS of the document (not the same-block
+    Target-Name-vs-own-Mastery-Criteria shape above), and self-consistency
+    landed on "uncertain" rather than a confident fail. Investigated
+    honestly: this checker's per-block scope structurally cannot see a
+    second mention that lives OUTSIDE a 'Target Goal:'/'Target Name:'
+    block entirely -- e.g. restated in unstructured BIP narrative prose
+    elsewhere -- and finding that would require knowing the real
+    document's actual second-location structure, which isn't available
+    here (this confirmed case isn't in any of the three real documents
+    this project has local access to). Forcing a regex against an
+    unconfirmed structural guess risks either dead code that never fires,
+    or false positives matching unrelated prose -- exactly the "LLM
+    needed to match goal descriptions worded differently" shape this
+    project's own QA-GIP-05 notes describe for cross-section, differently-
+    worded comparisons (see _check_GIP05 above). NOT extending the DET
+    layer for that general shape -- "uncertain" (an honest non-answer
+    under genuine self-consistency disagreement) is the right outcome
+    here, not a confident wrong one manufactured to look more resolved
+    than the evidence supports.
+
+    One safe, narrow generalization IS added below: the numeric-ceiling
+    comparison now ALSO cross-checks Mastery Criteria across every block
+    sharing the same (formatting-normalized) goal name, not just within
+    one block -- covers the one sub-case that's still genuinely
+    structural (the goal duplicated as a second full 'Target Goal:'/
+    'Target Name:' block elsewhere, not prose), at zero added false-
+    positive risk, reusing the same numeric-ceiling parser already built.
+    Verified this doesn't fire on any of the three real documents (none
+    has a goal repeated as two separate blocks) -- added coverage for a
+    real possible shape without manufacturing evidence that isn't there.
+    """
+    text = fields["full_text"]
+    goal_starts = _goal_block_starts(text)
+    if not goal_starts:
+        return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
+
+    goal_starts = goal_starts + [len(text)]
+    problems = []
+    checked = 0
+    mastery_by_goal: dict[str, list[tuple[int | None, str, float]]] = {}
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+        goal_name = block[marker_len:].split("\n", 1)[0].strip()
+        mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
+        if not mc_m:
+            continue
+        mc_val = mc_m.group(1).strip()
+        target_ceiling = _parse_occurrence_ceiling(goal_name)
+        mastery_ceiling = _parse_occurrence_ceiling(mc_val)
+
+        if mastery_ceiling is not None:
+            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+            mastery_by_goal.setdefault(_normalize_goal_text(goal_name), []).append((page, mc_val, mastery_ceiling))
+
+        if target_ceiling is None or mastery_ceiling is None:
+            continue  # this goal doesn't state a numeric threshold on both sides -- not comparable
+        checked += 1
+        if mastery_ceiling > target_ceiling + 0.01:
+            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+            problems.append((page, (
+                f"Goal '{goal_name[:120]}' states a target threshold in its own name, but its "
+                f"Mastery Criteria ({mc_val!r}) allows MORE occurrences than that same target "
+                f"implies -- these contradict each other for the same goal."
+            )))
+
+    # Round 83, item 2c: cross-block generalization -- the same goal
+    # repeated as two separate blocks with two DIFFERENT Mastery Criteria
+    # ceilings is its own real contradiction, independent of whether
+    # either block's own Target Name states a numeric threshold at all.
+    for norm_name, entries in mastery_by_goal.items():
+        distinct_ceilings = {ceiling for _, _, ceiling in entries}
+        if len(distinct_ceilings) > 1:
+            pages = [page for page, _, _ in entries]
+            values = [mc_val for _, mc_val, _ in entries]
+            checked += 1
+            problems.append((pages[0], (
+                f"Goal (normalized: {norm_name[:120]!r}) has DIFFERENT Mastery Criteria values in two "
+                f"separate blocks of this document: {values} (pages {pages}) -- these contradict each "
+                f"other for the same goal."
+            )))
+
+    if checked == 0 or not problems:
+        return (
+            "not_checkable",
+            (
+                f"Checked {checked} goal(s)/comparison(s) for a numeric same-goal contradiction "
+                f"(same-block Target-Name-vs-Mastery-Criteria, and repeated-block Mastery Criteria "
+                f"values) -- no contradiction found, but this rule's broader age-appropriateness "
+                f"question, and any cross-section narrative restatement, still need judgment."
+            ) if checked else (
+                "No goal names an explicit numeric occurrence threshold in both its own Target Name "
+                "and Mastery Criteria that could be cross-checked -- age-appropriateness itself still "
+                "needs judgment."
+            ),
+            None, 0.3 if checked else 0.0,
+        )
+    if len(problems) == 1:
+        page, detail = problems[0]
+        return "fail", detail, page, 0.85
+    evidence = [{"page": page, "detail": detail} for page, detail in problems]
+    return "fail", evidence, None, 0.85
+
+
+def _check_BIP06(rule: dict, fields: dict) -> tuple:
+    """Round 82, item 2 -- REAL BUG FOUND AND FIXED: confirmed directly
+    against a real document, a behavior target's Current Level field read
+    literally "N/A" accompanied by a real explanatory note ("There were no
+    direct sessions due to issues with staffing"), and this rule (then
+    judgment-only) failed it as "not filled in." The checklist's own
+    standard credits an anecdotal/explained N/A as satisfying the
+    requirement -- the real question is "is a current level indicated at
+    all, even informally," not "is there a non-N/A value." Converted to a
+    full deterministic checker (same shape as QA-PPI-02/03/05, GIP-10/16):
+    unlike QA-BIP-05, this rule's own rubric ("Current level always
+    indicated") has no separate subjective question left over once
+    presence is resolved, so this returns a real pass/fail, not a hybrid
+    not_checkable escalation.
+
+    Scoped to 'Target Name:' blocks only (Behavior Reduction Goals) --
+    _goal_block_starts also matches 'Target Goal:' (skill-acquisition)
+    blocks, which don't carry a Current Level field at all (per this
+    project's own confirmed real-document field layout).
+
+    For each Behavior Reduction Goal block: FAIL if neither the
+    'Current Level:' nor 'Current Data:' label is present, OR the one
+    that's present has a blank value (both are "not filled in," matching
+    this rule's own confirmed real FAIL example: "a behavior target block
+    with Baseline stated but no 'Current Level:' value filled in anywhere
+    for that behavior"). FAIL if the value is a BARE, unexplained "N/A"
+    (fewer than 3 real words following it) -- the point of this fix isn't
+    to make N/A always pass. PASS if the value is a real (non-N/A)
+    reading, OR "N/A" followed by a genuine explanatory reason (3+
+    alphabetic words) -- the confirmed real PASS shape this round exists
+    to fix.
+
+    Round 87, item 1 -- REAL BUG FOUND AND FIXED: confirmed independently
+    on two real documents (Zohan Hossain, Yisroel Leibowitz) that this
+    checker only ever recognized the literal 'Current Level:' label --
+    but these real templates actually write this same field as
+    'Current Data:' just as often, sometimes exclusively (Yisroel's
+    document uses 'Current Data:' on all four of its real Behavior
+    Reduction goals, 'Current Level:' not once). This is the identical
+    naming-inconsistency shape already fixed for 'Target Name:'/
+    'Target Goal:' in earlier rounds -- these treatment plans use both
+    labels for the same real field. On Yisroel's document this was a
+    confirmed real regression against ground truth: the reviewer's own
+    checklist explicitly credits these four goals as Pass ("Current Data
+    is provided for all four behavior targets"), while this rule was
+    failing all four outright. Now treats 'Current Level:'/'Current
+    Data:' as equivalent labels, checked in that order (whichever is
+    actually present in this block).
+    """
+    text = fields["full_text"]
+    goal_starts = _goal_block_starts(text)
+    if not goal_starts:
+        return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
+
+    goal_starts = goal_starts + [len(text)]
+    problems = []
+    checked = 0
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        if not block.startswith("Target Name:"):
+            continue  # skill-acquisition ("Target Goal:") blocks don't carry this field
+        checked += 1
+        goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
+
+        cl_m = re.search(r"(?:Current Level|Current Data):[ \t]*([^\n]*)", block)
+        if not cl_m or not cl_m.group(1).strip():
+            page = _page_for_offset(fields, goal_starts[i])
+            problems.append((page, f"Goal '{goal_name[:120]}' has no 'Current Level:'/'Current Data:' value filled in."))
+            continue
+
+        val = cl_m.group(1).strip()
+        na_m = re.match(r"N/?A\b[\s:.,\-–—]*", val, re.IGNORECASE)
+        if na_m:
+            remainder = val[na_m.end():].strip()
+            if len(re.findall(r"[A-Za-z]{3,}", remainder)) < 3:
+                page = _page_for_offset(fields, goal_starts[i] + cl_m.start())
+                problems.append((page, (
+                    f"Goal '{goal_name[:120]}' Current Level is a bare, unexplained 'N/A' ({val!r}) -- "
+                    f"no real reason given."
+                )))
+        # else: a real, non-N/A value -- satisfies the requirement.
+
+    if checked == 0:
+        return "not_checkable", "No Behavior Reduction Goal ('Target Name:') blocks found in this document.", None, 0.0
+    if problems:
+        if len(problems) == 1:
+            page, detail = problems[0]
+            return "fail", detail, page, 0.85
+        evidence = [{"page": page, "detail": detail} for page, detail in problems]
+        return "fail", evidence, None, 0.85
+    return "pass", f"All {checked} Behavior Reduction Goal(s) have a Current Level indicated (a real value, or an explained N/A).", None, 0.85
 
 
 def _check_SM02(rule: dict, fields: dict) -> tuple:
@@ -2102,6 +2962,92 @@ def _check_PPI02(rule: dict, fields: dict) -> tuple:
     )
 
 
+# Round 82, item 1: junk tokens that legitimately show up in a real
+# uploaded filename but carry no name information -- stripped before
+# comparing filename tokens against the document's own patient name.
+# Deliberately narrow and evidence-based (common upload-hygiene words
+# actually seen in this project's own file-naming habits, e.g. "Charny
+# Gluck TP Feedback.pdf"), not a guess at every possible word a filename
+# might contain.
+_FILENAME_JUNK_TOKENS = {
+    "tp", "treatment", "plan", "review", "reviewed", "feedback", "final",
+    "draft", "redacted", "revised", "updated", "copy", "signed", "pdf",
+}
+
+
+def _filename_name_tokens(filename: str) -> list[str]:
+    """Round 82, item 1: normalizes an uploaded filename down to just its
+    plausibly-name-like tokens, so it can be compared against the
+    document's own extracted patient name without false-flagging on
+    ordinary filename hygiene (extensions, staff labels, version tags,
+    dates).
+
+    Strips the extension, splits on any non-alphanumeric run (handles
+    spaces, underscores, hyphens, periods uniformly), then drops: known
+    junk words (_FILENAME_JUNK_TOKENS), pure version tags ("v2", "ver3"),
+    and pure-numeric tokens (dates split into day/month/year fragments,
+    IDs) -- none of these carry name information, and leaving them in
+    would make an innocuous "Zohran Hossain TP_2026-08-10_v2.pdf" register
+    as a mismatch purely because "2026" or "v2" don't match any name token.
+    """
+    stem = Path(filename).stem
+    tokens = []
+    for raw in re.split(r"[^A-Za-z0-9]+", stem):
+        if not raw:
+            continue
+        low = raw.lower()
+        if low in _FILENAME_JUNK_TOKENS:
+            continue
+        if re.fullmatch(r"v(?:er(?:sion)?)?\d+", low):
+            continue
+        if re.fullmatch(r"\d+", low):
+            continue
+        tokens.append(low)
+    return tokens
+
+
+def _name_token_mismatch_detail(doc_name: str, filename: str) -> str | None:
+    """Round 82, item 1: compares the document's own (already-confirmed-
+    internally-consistent) patient name against the uploaded filename's
+    name-like tokens, and returns a human-readable mismatch description --
+    or `None` when there's nothing to flag.
+
+    `None` covers TWO different "nothing to flag" cases, deliberately not
+    distinguished by the caller: the filename has no name-like tokens at
+    all (e.g. a generated storage-key filename, or an innocuous variation
+    where every real name token was already filtered out as junk/version/
+    date), AND the filename's name-like tokens all match a document name
+    token closely enough to be confident it's the same person. Either way,
+    there's no actionable signal.
+
+    A mismatch is flagged only when a filename token is CLOSE to a document
+    name token but not identical (similarity ratio in [0.6, 1.0) via
+    `difflib.SequenceMatcher`) -- the general shape of a real typo, like
+    the confirmed real case "Zohan Hossain" (document) vs "Zohran Hossain"
+    (filename). A filename token with LOW similarity to every document name
+    token (< 0.6) is deliberately NOT flagged -- more likely an unrelated
+    word that slipped past the junk-token filter than a genuine misspelling
+    of this specific name, and flagging it would risk false positives on
+    filenames this function's junk list doesn't yet anticipate.
+    """
+    doc_tokens = [t.lower() for t in re.split(r"\s+", doc_name.strip()) if t]
+    fname_tokens = _filename_name_tokens(filename)
+    if not fname_tokens or not doc_tokens:
+        return None
+    doc_set = set(doc_tokens)
+    problems = []
+    for ft in fname_tokens:
+        if ft in doc_set:
+            continue
+        best_dt = max(doc_tokens, key=lambda dt: difflib.SequenceMatcher(None, ft, dt).ratio())
+        ratio = difflib.SequenceMatcher(None, ft, best_dt).ratio()
+        if 0.6 <= ratio < 1.0:
+            problems.append(f"filename token {ft!r} vs. document name token {best_dt!r} (similarity {ratio:.2f})")
+    if problems:
+        return "; ".join(problems)
+    return None
+
+
 def _check_PPI03(rule: dict, fields: dict) -> tuple:
     """Converted from judgment to deterministic (2026-07-28 round, item 1):
     the rule's own notes already say "Internal consistency = DET" -- this
@@ -2113,6 +3059,23 @@ def _check_PPI03(rule: dict, fields: dict) -> tuple:
     Verified live against both real documents: Reeda -- 'Reeda Bint
     Shaheen' identical across 66 mentions, pass. Charny -- 'Charny Gluck'
     identical across 52 mentions, pass.
+
+    Round 82, item 1 -- REAL BUG FOUND AND FIXED: this rule only ever
+    checked internal consistency; it had no way to notice a mismatch
+    against something outside the document. Confirmed real case: a
+    document's body consistently read "Zohan Hossain" throughout, while
+    the uploaded file itself was named "Zohran Hossain TP.pdf" -- a
+    one-letter difference risking a real claims/authorization denial.
+    Added a second, additive signal: when internal consistency already
+    passed, also compare the confirmed name against
+    `fields["source_filename"]` (the caller's real uploaded filename, when
+    supplied -- see pipeline/api.py::review_treatment_plan's own docstring
+    for that parameter) or, failing that, `Path(fields["pdf_path"]).name`
+    as a fallback. A close-but-not-exact filename/name mismatch downgrades
+    this from a confident "pass" to "uncertain" -- deliberately NOT "fail",
+    since a filename can legitimately differ for innocuous reasons (a
+    date, a "_v2" suffix, a staff-added label) that a human should
+    confirm, not something this checker should assume is itself an error.
     """
     text = fields["full_text"]
     names = [
@@ -2123,10 +3086,26 @@ def _check_PPI03(rule: dict, fields: dict) -> tuple:
     if not names:
         return "not_checkable", "No 'Patient Name:' field found.", None, 0.0
     normalized = {n.lower() for n in names}
-    if len(normalized) == 1:
-        return "pass", f"Patient name spelled consistently as {names[0]!r} across all {len(names)} mention(s).", None, 0.85
-    counts = Counter(names)
-    return "fail", f"Inconsistent patient name spelling found: {dict(counts)}.", None, 0.85
+    if len(normalized) > 1:
+        counts = Counter(names)
+        return "fail", f"Inconsistent patient name spelling found: {dict(counts)}.", None, 0.85
+
+    name = names[0]
+    source_filename = fields.get("source_filename")
+    if not source_filename and fields.get("pdf_path"):
+        source_filename = Path(fields["pdf_path"]).name
+    mismatch_detail = _name_token_mismatch_detail(name, source_filename) if source_filename else None
+    if mismatch_detail:
+        return (
+            "uncertain",
+            (
+                f"Patient name spelled consistently as {name!r} in the document, but the source filename "
+                f"({source_filename!r}) doesn't match: {mismatch_detail}. Could be a real misspelling risking "
+                f"a claims/authorization denial, or an innocuous filename difference -- needs human confirmation."
+            ),
+            None, 0.5,
+        )
+    return "pass", f"Patient name spelled consistently as {name!r} across all {len(names)} mention(s).", None, 0.85
 
 
 def _check_PPI05(rule: dict, fields: dict) -> tuple:
@@ -2191,11 +3170,24 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
             f"({sorted(ground_truth_npi_vals)}).",
             None, 0.9,
         )
+    # Round 84, item 2 -- REAL BUG FOUND AND FIXED: this branch used to
+    # return a confident "pass" here, but all it actually verified is
+    # internal consistency (no contradicting NPI/License value found
+    # within the TP) -- it never checked either value against any real
+    # ground truth (no supporting-doc match available in this branch, by
+    # definition). This rule is named "Provider Credentials/NPI/License
+    # CORRECT," not "...internally consistent" -- a confident pass here
+    # overstated what was actually checked, the same shape flagged across
+    # QA-PPI-04/QA-HRS-08/QA-TRANS-01 this round. "uncertain" says plainly
+    # what WAS verified (consistency) without claiming the harder,
+    # unverifiable claim (correctness against a real provider roster).
     return (
-        "pass",
-        f"NPI ({npi_vals or 'n/a'}) and License ({license_vals or 'n/a'}) are consistent "
-        f"(no contradicting values found).",
-        None, 0.8,
+        "uncertain",
+        f"NPI ({npi_vals or 'n/a'}) and License ({license_vals or 'n/a'}) are internally "
+        f"consistent (no contradicting values found within the TP), but no ground-truth "
+        f"source (e.g. a matching supporting-document field) was available to confirm they "
+        f"are actually CORRECT -- internal consistency alone is not evidence of correctness.",
+        None, 0.5,
     )
 
 
@@ -2267,6 +3259,9 @@ DET_CHECKS = {
     # -- see _check_PROB02's own docstring for why this escalates to
     # judgment for the real semantic alignment question.
     "QA-PROB-02": _check_PROB02,
+    # Round 84, item 3: hybrid DET pre-check, same shape as QA-PROB-02 --
+    # see _check_PROB01's own docstring.
+    "QA-PROB-01": _check_PROB01,
     # Round 64, item 3: real highlight detection via PyMuPDF (annotation
     # objects + a flattened-fill fallback), replacing the judgment layer's
     # text-only read, which structurally can never see highlight data at
@@ -2302,6 +3297,16 @@ DET_CHECKS = {
     # each verified live against both real documents before wiring in. See
     # each checker's own docstring for the specific verification detail.
     "QA-GIP-16": _check_GIP16,
+    # Round 83, item 2b: hybrid DET pre-check, same shape as QA-PROB-02/
+    # QA-BIP-05 -- see _check_GIP05's own docstring.
+    "QA-GIP-05": _check_GIP05,
+    # Round 81, item 3: hybrid DET pre-check, same shape as QA-PROB-02 --
+    # see _check_BIP05's own docstring.
+    "QA-BIP-05": _check_BIP05,
+    # Round 82, item 2: converted from judgment to deterministic -- see
+    # _check_BIP06's own docstring for the confirmed real explained-N/A bug
+    # this closes.
+    "QA-BIP-06": _check_BIP06,
     "QA-TEMP-01": _check_TEMP01,
     "QA-PPI-02": _check_PPI02,
     "QA-PPI-03": _check_PPI03,
@@ -2317,6 +3322,10 @@ DET_CHECKS = {
     # bug, not related to the earlier schema-reorder fix -- see
     # _check_ACF07's own docstring for the full real-evidence diagnosis.
     "QA-ACF-07": _check_ACF07,
+    # Round 83, item 1 follow-up: converted from judgment to deterministic
+    # -- a narrower, separate gap from ACF-07/extract_acf_fields's
+    # section-boundary bug -- see _check_ACF06's own docstring.
+    "QA-ACF-06": _check_ACF06,
     # Follow-up round item 1: fixes a confirmed regression (this rule's
     # judgment-only behavior had narrowed to only recognizing email-header
     # text) -- see _check_TEMP04's and _find_embedded_reviewer_comments's

@@ -205,6 +205,7 @@ def review_treatment_plan(
     supporting_doc_path: str | None = None,
     payor_override: str | None = None,
     plan_type_override: str | None = None,
+    source_filename: str | None = None,
     max_calls: int | None = None,
 ) -> ReviewResult:
     """The one function this backend calls to run a real TP review.
@@ -215,12 +216,24 @@ def review_treatment_plan(
     instead of a raw dict. Never raises (agent-making's own function
     already catches every known pipeline failure mode and returns
     `status="failed"` + `error` instead) -- callers check `.status`.
+
+    `source_filename` (Round 86): the TP's real, client-supplied upload
+    filename (now stored on `Upload.original_filename` -- see
+    app/rule_engine/client.py::run_rule_checks, the one real caller that
+    passes this). Forwarded unchanged to agent-making's own
+    `source_filename` param (added Round 82 of that project, previously
+    always left at its default and therefore always inert in production
+    -- `pdf_path`'s basename is a generated storage key with no name-like
+    tokens to compare against QA-PPI-03's own patient-name check). `None`
+    (the default, matching every pre-Round-86 caller) keeps this
+    parameter's own inert fallback behavior unchanged.
     """
     raw = _raw_review_treatment_plan(
         pdf_path,
         supporting_doc_path=supporting_doc_path,
         payor_override=payor_override,
         plan_type_override=plan_type_override,
+        source_filename=source_filename,
         max_calls=max_calls,
     )
     return _to_review_result(raw)

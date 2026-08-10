@@ -83,7 +83,13 @@ DET_GROUND_TRUTH = {
     "QA-TEMP-01": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},  # 'BCBA, LBA' consistent on both
     "QA-PPI-02": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},   # DOB/Age consistent + age-correct on both
     "QA-PPI-03": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},   # patient name spelled consistently on both
-    "QA-PPI-05": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},   # single NPI/License, trivially consistent
+    # Round 84, item 2: internal-consistency-only (no supporting-doc ground
+    # truth in this test path) is now "uncertain", not a confident "pass" --
+    # this rule is named "...correct," and consistency alone doesn't verify
+    # correctness. Both real documents' single NPI/License are trivially
+    # consistent (nothing to contradict) but were never actually verified
+    # against a ground truth in this bare det-checker test path.
+    "QA-PPI-05": {"reeda_tp_pdf": "uncertain", "charny_tp_pdf": "uncertain"},
     "QA-BIP-01": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},   # at least one Moderate+ rating on both
     "QA-GIP-03": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},   # shares BIP-01's checker
     # RESOLVED (2026-07-28, item 2 then a same-day follow-up round):

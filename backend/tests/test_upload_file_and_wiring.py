@@ -111,7 +111,8 @@ def test_create_upload_route_reaches_real_pipeline_wiring_with_mocked_agent_call
     session-notes proof.
     """
     def _fake_review_treatment_plan(
-        pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None, max_calls=None,
+        pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
+        source_filename=None, max_calls=None,
     ):
         assert pdf_path, "wiring must pass the upload's real file_path through"
         # Round 66: app.rule_engine.client.review_treatment_plan is now

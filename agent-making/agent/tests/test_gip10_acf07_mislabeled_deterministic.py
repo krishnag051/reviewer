@@ -161,9 +161,40 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_thirty_nine_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...thirty_eight..." (2026-08-08, Round 78, item 4) --
-    QA-RPT-05 joined this set this round, see EXPECTED_MISMATCHED_RULE_IDS's
+def test_exactly_forty_four_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...forty_three..." (2026-08, Round 84, item 3) --
+    QA-PROB-01 joined this set: a hybrid DET pre-check, same shape as
+    QA-PROB-02, adding the narrative-vs-matrix/checklist format signal
+    this rule's rubric never checked before -- see _check_PROB01's own
+    docstring.
+
+    Renamed from "...forty_one..." (2026-08, Round 83) -- two rules
+    joined this set this round: QA-ACF-06 (converted outright, a plain
+    "administered by NAME" presence check -- a separate, narrower gap
+    from QA-ACF-07/extract_acf_fields's section-boundary bug, see
+    _check_ACF06's own docstring) and QA-GIP-05 (a hybrid DET pre-check,
+    same shape as QA-PROB-02/QA-BIP-05, catching only an exact-wording
+    duplicate between the Mastered Goals section and an active goal block
+    -- see _check_GIP05's own docstring).
+
+    Renamed from "...forty..." (2026-08, Round 82, item 2) -- QA-BIP-06
+    joined this set this round: converted from judgment to deterministic
+    outright (not a hybrid pre-check like BIP-05) because this rule's real
+    bar is pure presence detection with no separate subjective question
+    left over once presence is resolved. See pipeline/fields.py::
+    _check_BIP06's own docstring for the confirmed real "explained N/A
+    wrongly failed" bug this closes.
+
+    Renamed from "...thirty_nine..." (2026-08, Round 81, item 3) --
+    QA-BIP-05 joined this set this round: a hybrid DET pre-check (same
+    shape as QA-PROB-02) that catches a same-goal numeric contradiction
+    between a goal's Target Name and its own Mastery Criteria field,
+    deterministically, while still deferring the rule's broader
+    "age-appropriate" judgment call to the judgment layer when clean --
+    see pipeline/fields.py::_check_BIP05's own docstring.
+
+    Renamed from "...thirty_eight..." (2026-08-08, Round 78, item 4) --
+    QA-RPT-05 joined this set that round, see EXPECTED_MISMATCHED_RULE_IDS's
     own comment above for why.
 
     QA-TRANS-02/QA-DISC-02 dropped out of this set 2026-07-28 -- their
@@ -235,6 +266,14 @@ def test_exactly_thirty_nine_deterministic_labeled_rules_have_real_checkers():
         # Round 78 (2026-08-08): item 4 -- see EXPECTED_MISMATCHED_RULE_IDS's
         # own comment above.
         "QA-RPT-05",
+        # Round 81: item 3 -- see this test's own docstring above.
+        "QA-BIP-05",
+        # Round 82: item 2 -- see this test's own docstring above.
+        "QA-BIP-06",
+        # Round 83: see this test's own docstring above.
+        "QA-ACF-06", "QA-GIP-05",
+        # Round 84: item 3 -- see this test's own docstring above.
+        "QA-PROB-01",
     }
 
 

@@ -157,6 +157,13 @@ def run_rule_checks(
     result = review_treatment_plan(
         upload.file_path,
         supporting_doc_path=upload.supporting_document_path,
+        # Round 86: the TP's real, client-supplied filename -- see
+        # app/db/models.py::Upload.original_filename and
+        # app/services/uploads.py::create_upload for where this is
+        # captured. None for any upload row created before that column
+        # existed; agent_client.py's own default keeps that inert/
+        # backward-compatible, same as it's always been.
+        source_filename=upload.original_filename,
         max_calls=settings.rule_engine_max_calls,
     )
     if result.status != "complete":

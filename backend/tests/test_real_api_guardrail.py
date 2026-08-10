@@ -71,7 +71,8 @@ def test_guardrail_active_by_default_with_no_special_setup(client, seeded_baseli
 
 
 def _fake_review_treatment_plan(
-    pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None, max_calls=None,
+    pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
+    source_filename=None, max_calls=None,
 ):
     # Round 66: app.rule_engine.client.review_treatment_plan is now
     # app.agent_client.review_treatment_plan under the hood, which returns

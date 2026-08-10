@@ -47,6 +47,14 @@ def create_upload(
     intake_answers/session_notes instead — the router guarantees exactly
     the pair matching the live mode is populated before this is ever
     called.
+
+    Round 86: `filename` (the TP's own client-supplied name) is now also
+    stored as-is on `upload.original_filename`, captured before save_blob
+    renames the file to its internal storage key — see that column's own
+    comment on app/db/models.py::Upload. This is what makes
+    app/rule_engine/client.py::run_rule_checks able to pass a real
+    `source_filename` through to the rule-checking agent's QA-PPI-03
+    check, instead of that parameter staying permanently unused.
     """
     version = session.execute(
         select(Version).where(Version.id == version_id).with_for_update()
@@ -75,6 +83,10 @@ def create_upload(
     session.flush()  # assigns upload.id
 
     upload.file_path = save_blob(upload.id, filename, content)
+    # Round 86: captured BEFORE the file is renamed to its storage key
+    # above -- this is the one place the client-supplied filename is
+    # still available; save_blob itself never returns it back out.
+    upload.original_filename = filename
 
     if supporting_document_filename is not None:
         upload.supporting_document_path = save_supporting_blob(

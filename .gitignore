@@ -1,5 +1,5 @@
 # --- .env intentionally NOT ignored — kept tracked per project decision ---
-
+document/
 # --- Python (backend) ---
 __pycache__/
 *.py[cod]

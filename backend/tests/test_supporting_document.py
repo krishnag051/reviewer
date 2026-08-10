@@ -134,7 +134,10 @@ def test_run_rule_checks_forwards_supporting_document_path_to_review_treatment_p
     """
     seen_kwargs = {}
 
-    def _fake_review_treatment_plan(pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None, max_calls=None):
+    def _fake_review_treatment_plan(
+        pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
+        source_filename=None, max_calls=None,
+    ):
         seen_kwargs["pdf_path"] = pdf_path
         seen_kwargs["supporting_doc_path"] = supporting_doc_path
         # Round 66: app.rule_engine.client.review_treatment_plan is now
