@@ -10,18 +10,27 @@ export const Route = createFileRoute("/")({ component: Dashboard });
 // replace this page's entire previous data source, frontend/src/lib/
 // tp-mock.ts's fabricated patients/versions, e.g. "Aaliyah Washington,"
 // "Liam O'Sullivan" -- none of which exist anywhere in the real database).
-// With zero versions finalized in this dev DB as of this round, the
-// overview cards below honestly show 0 -- that's the real, current count,
-// not a placeholder; this page never invents a number to look more
-// populated than the system actually is.
+//
+// Round 88: the three cards below used to only count FINALIZED versions --
+// correct reasoning at the time (nothing had been finalized yet, so 0 was
+// the honest answer), but this system's real use pattern since then is
+// repeated real pipeline runs with finalize never actually used, so the
+// cards stayed frozen at 0 forever while real activity (visible right
+// below, in Recent activity) kept happening. app/services/reports.py's
+// get_overview now counts real, completed pipeline runs (any upload with
+// status "ready", pass/fail computed live from its own rule_results) --
+// see that function's own docstring for the full decision, including why
+// the per-reviewer/weekly-volume metrics deliberately stayed finalized-only
+// (a genuinely separate, more formal "what did this reviewer sign off on"
+// question -- neither of those is rendered on this page anyway).
 function Dashboard() {
   const overviewQuery = useReportsOverview();
   const activityQuery = useRecentActivity(8);
 
   const cards = [
-    { label: "TPs Reviewed", value: overviewQuery.data?.processed, hint: "Finalized, audit complete" },
-    { label: "Passed TPs", value: overviewQuery.data?.passed, hint: "Finalized with a passing score" },
-    { label: "Failed TPs", value: overviewQuery.data?.failed, hint: "Finalized with a failing score" },
+    { label: "TPs Reviewed", value: overviewQuery.data?.processed, hint: "Real pipeline runs completed" },
+    { label: "Passed TPs", value: overviewQuery.data?.passed, hint: "Completed with a passing score" },
+    { label: "Failed TPs", value: overviewQuery.data?.failed, hint: "Completed with a failing score" },
   ];
   const quick = [
     { to: "/upload", label: "Upload New", icon: Upload, desc: "Submit a new treatment plan for audit" },

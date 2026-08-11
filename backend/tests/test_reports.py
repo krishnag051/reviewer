@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from pypdf import PdfWriter
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from tests.conftest import ROUND56_QA_FORM_DATA, login_headers
 
@@ -80,16 +80,47 @@ def _finalized_version(client, headers, reviewer_id: str | None = None, statuses
 
 # --------------------------------------------------------------- overview
 
-def test_overview_counts_only_finalized_versions(client, seeded_baseline):
+def _ready_upload_direct(db_session, *, created_at=None, statuses: list[str] | None = None) -> "Upload":
+    """Round 88: a real, completed (status='ready') upload built via DIRECT
+    model inserts (same convention as tests/conftest.py::
+    make_patient_version_upload) -- deliberately NOT finalized, and
+    deliberately NOT routed through the real create_upload/run_upload_
+    pipeline HTTP flow, which would trigger a real (guardrail-blocked,
+    same pre-existing structural issue confirmed in Round 86) pipeline
+    call. This is the same zero-cost pattern already established
+    elsewhere in this suite for testing logic that doesn't need to prove
+    the real pipeline wiring itself -- it only needs a real Upload row in
+    the real shape get_overview's new query reads.
+
+    `statuses`: final_status values for as many real, seeded Rule rows as
+    given (e.g. ["pass", "fail"]) -- each becomes one real RuleResult row
+    on this upload.
+    """
+    from app.db.models import Rule, RuleResult
+    from tests.conftest import make_patient_version_upload
+
+    upload = make_patient_version_upload(db_session, status="ready", created_at=created_at)
+    if statuses:
+        rules = db_session.execute(select(Rule).limit(len(statuses))).scalars().all()
+        for rule, target_status in zip(rules, statuses):
+            db_session.add(RuleResult(
+                upload_id=upload.id, rule_id=rule.id, rule_version_used=rule.current_version,
+                model_status=target_status, model_finding="test fixture", model_pages=[],
+                final_status=target_status, final_finding="test fixture", final_pages=[],
+            ))
+        db_session.commit()
+        db_session.refresh(upload)
+    return upload
+
+
+def test_overview_counts_real_ready_uploads_not_just_finalized(client, db_session, seeded_baseline):
+    """Round 88: the confirmed real problem -- these cards used to require
+    finalization, which this system's real use pattern never actually
+    does. A real, completed (status='ready') upload -- left deliberately
+    UN-finalized -- must now be counted, with pass/fail computed live
+    from its own rule_results."""
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-
-    # A finalized version — 1 pass, 1 fail among overridden rows -> audit_result=fail.
-    _finalized_version(client, headers, statuses=["pass", "fail"])
-
-    # A non-finalized version (never touch it) — must be excluded entirely.
-    ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Untouched"}, headers=headers).json()
-    client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers)
+    _ready_upload_direct(db_session, statuses=["pass", "fail"])
 
     resp = client.get("/reports/overview", params={"range": "all"}, headers=headers)
     assert resp.status_code == 200
@@ -98,61 +129,45 @@ def test_overview_counts_only_finalized_versions(client, seeded_baseline):
     assert body["passed"] + body["failed"] <= body["processed"]
 
 
-def test_overview_before_after_counts_isolated(client, seeded_baseline):
-    """Confirms processed/passed/failed reflect ONLY finalized versions by
-    comparing counts before and after finalizing one more, with a
-    non-finalized version created in between that must not move the numbers.
-    """
+def test_overview_before_after_counts_isolated(client, db_session, seeded_baseline):
+    """Confirms processed grows the moment a real upload completes
+    processing -- no finalize step required -- while a voided upload must
+    not count."""
     headers = login_headers(client, "m.chen@brightpath-aba.com")
 
     before = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
 
-    ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Non-final"}, headers=headers).json()
-    client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers)
+    upload = _ready_upload_direct(db_session, statuses=["pass"])
+    after_ready = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
+    assert after_ready["processed"] == before["processed"] + 1, "a real, completed upload must be counted immediately, with no finalize step"
 
-    after_nonfinal = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
-    assert after_nonfinal["processed"] == before["processed"], "a non-finalized version must not be counted"
-
-    _finalized_version(client, headers, statuses=["pass"])
-
-    after_final = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
-    assert after_final["processed"] == before["processed"] + 1
+    upload.voided = True
+    db_session.commit()
+    after_void = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
+    assert after_void["processed"] == before["processed"], "a voided upload must not be counted"
 
 
 def test_overview_date_range_filtering_excludes_out_of_range(client, db_session, seeded_baseline):
-    from app.db.models import Version
-
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    ctx = _finalized_version(client, headers, statuses=["pass"])
-
-    # Push this version's finalized_at into the far past — outside "week"/"30d" range.
-    version_row = db_session.get(Version, uuid.UUID(ctx["version_id"]))
-    version_row.finalized_at = datetime.now(timezone.utc) - timedelta(days=100)
-    db_session.commit()
+    # Pushed 100 days into the past — outside "week"/"30d" range.
+    _ready_upload_direct(db_session, created_at=datetime.now(timezone.utc) - timedelta(days=100), statuses=["pass"])
 
     resp_all = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
     resp_30d = client.get("/reports/overview", params={"range": "30d"}, headers=headers).json()
     resp_week = client.get("/reports/overview", params={"range": "week"}, headers=headers).json()
 
     assert resp_all["processed"] >= 1
-    # The specific version we pushed 100 days back must not appear in the tighter windows.
-    # We can't isolate a single version's presence directly from aggregate counts across a
+    # The specific upload we pushed 100 days back must not appear in the tighter windows.
+    # We can't isolate a single upload's presence directly from aggregate counts across a
     # shared test DB, so instead confirm the narrower windows are never larger than "all".
     assert resp_30d["processed"] <= resp_all["processed"]
     assert resp_week["processed"] <= resp_30d["processed"]
 
 
 def test_overview_custom_range_actually_filters(client, db_session, seeded_baseline):
-    from app.db.models import Version
-
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    ctx = _finalized_version(client, headers, statuses=["pass"])
-
-    version_row = db_session.get(Version, uuid.UUID(ctx["version_id"]))
-    known_finalized_at = datetime(2020, 6, 15, 12, 0, tzinfo=timezone.utc)
-    version_row.finalized_at = known_finalized_at
-    db_session.commit()
+    known_created_at = datetime(2020, 6, 15, 12, 0, tzinfo=timezone.utc)
+    _ready_upload_direct(db_session, created_at=known_created_at, statuses=["pass"])
 
     resp_hit = client.get(
         "/reports/overview",
@@ -168,9 +183,9 @@ def test_overview_custom_range_actually_filters(client, db_session, seeded_basel
         headers=headers,
     )
     assert resp_miss.status_code == 200
-    # We can't assert ==0 globally (shared DB), but this specific version's
+    # We can't assert ==0 globally (shared DB), but this specific upload's
     # window must not be included, so compare against the hit count context
-    # via a narrower custom range around just this version's date.
+    # via a narrower custom range around just this upload's date.
     resp_narrow = client.get(
         "/reports/overview",
         params={"range": "custom", "start": "2020-06-15", "end": "2020-06-15"},

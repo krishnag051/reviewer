@@ -5,7 +5,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.db.models import Patient, Rule, Upload, User, Version
+from app.db.models import Patient, Rule, RuleResult, Upload, User, Version
+from app.services.scoring import compute_score
 
 WEEKS_IN_VOLUME_CHART = 4
 RECENT_ACTIVITY_DEFAULT_LIMIT = 10
@@ -59,12 +60,80 @@ def resolve_date_range(
 
 
 def _finalized_versions_in_range(session: Session, from_dt: datetime | None, to_dt: datetime | None) -> list[Version]:
+    """Used ONLY by the per-reviewer breakdown below now (Round 88) — see
+    get_overview's own docstring for why the headline processed/passed/
+    failed cards no longer call this. Kept exactly as it was: reviewer
+    accountability is a genuinely separate, more formal question ("what
+    did THIS reviewer sign off on") from "how much real review activity
+    has this system processed," and finalization is the real, deliberate
+    signal for the former — a reviewer isn't accountable for a draft
+    nobody has actually reviewed and signed off on yet.
+    """
     query = select(Version).where(Version.status == "finalized")
     if from_dt is not None:
         query = query.where(Version.finalized_at >= from_dt)
     if to_dt is not None:
         query = query.where(Version.finalized_at <= to_dt)
     return list(session.execute(query).scalars().all())
+
+
+def _processed_uploads_in_range(session: Session, from_dt: datetime | None, to_dt: datetime | None) -> list[Upload]:
+    """Round 88: the headline "TPs Reviewed"/"Passed"/"Failed" cards' real
+    source. Confirmed real problem: those three cards were scoped to
+    finalized versions only (see _finalized_versions_in_range above), on
+    the reasoning that a real, honest zero beats a fake populated number —
+    correct when nothing had been finalized yet, but this system's actual
+    use pattern since then is repeated real pipeline runs on the same few
+    patients, with finalize (a separate, deliberate manual action) never
+    actually used. The result: real, substantial pipeline activity — real
+    uploads, real rule results — permanently invisible on the one screen
+    meant to summarize it.
+
+    Counts every upload that has genuinely completed a real pipeline run
+    (`status == "ready"`) and hasn't been voided (a voided upload is a
+    withdrawn mistake being corrected, not real reviewed activity) in the
+    given window, filtered on `Upload.created_at` (when it was actually
+    processed) rather than a finalization timestamp that most of these
+    rows will never have. Deliberately counts EVERY qualifying upload, not
+    just the latest per version — re-running the same patient's TP for
+    real is itself real, observable activity, and this is meant to grow
+    every time that happens, not stay pinned to "distinct patients
+    reviewed."
+    """
+    query = select(Upload).where(Upload.status == "ready", Upload.voided.is_(False))
+    if from_dt is not None:
+        query = query.where(Upload.created_at >= from_dt)
+    if to_dt is not None:
+        query = query.where(Upload.created_at <= to_dt)
+    return list(session.execute(query).scalars().all())
+
+
+def _upload_audit_results(session: Session, uploads: list[Upload]) -> dict[uuid.UUID, str | None]:
+    """{upload.id: audit_result} for each of `uploads`, computed live via
+    the one locked-in scoring formula (app/services/scoring.py::
+    compute_score — never reimplemented inline, per that module's own
+    docstring) over EACH upload's own rule_results. This is a read-only,
+    ad-hoc computation for reporting purposes only — it never writes to
+    `versions.score`/`audit_result`, which stay exactly what CLAUDE.md's
+    invariants say they are: finalize-only, fixed at finalize time, never
+    recomputed by anything else afterward. An upload with nothing
+    scoreable yet (every result na/uncertain) maps to None — counted in
+    "processed" but deliberately not in "passed" or "failed" (the same
+    honest-not-guessed convention this codebase uses everywhere else).
+    """
+    if not uploads:
+        return {}
+    upload_ids = [u.id for u in uploads]
+    rule_results = session.execute(
+        select(RuleResult).where(RuleResult.upload_id.in_(upload_ids))
+    ).scalars().all()
+    results_by_upload: dict[uuid.UUID, list[RuleResult]] = {}
+    for rr in rule_results:
+        results_by_upload.setdefault(rr.upload_id, []).append(rr)
+    return {
+        upload.id: compute_score(results_by_upload.get(upload.id, []))[1]
+        for upload in uploads
+    }
 
 
 def _weekly_volume(session: Session) -> list[dict]:
@@ -100,17 +169,40 @@ def _weekly_volume(session: Session) -> list[dict]:
 def get_overview(
     session: Session, range_: str, start: date | None, end: date | None
 ) -> dict:
-    """GET /reports/overview. Only FINALIZED versions are counted anywhere
-    in this report — a version with no final upload yet has no audit_result
-    to count, and must not silently show up as anything (not a pass, not a
-    fail, not "processed").
+    """GET /reports/overview.
+
+    Round 88 — DECIDED, deliberately, not just relabeled: "processed"/
+    "passed"/"failed" (the Dashboard's three headline stat cards) now
+    count real, completed pipeline activity — every non-voided upload
+    with `status == "ready"` in range, pass/fail computed live via the
+    same locked-in scoring formula everything else in this app uses (see
+    _upload_audit_results) — regardless of whether anyone has finalized
+    it. Confirmed real problem this fixes: this system's actual use
+    pattern is repeated real pipeline runs with finalize never actually
+    used, so the old finalized-only definition stayed frozen at zero
+    forever while real activity kept happening right next to it (visible
+    in Recent Activity, invisible here).
+
+    The per-reviewer breakdown below is DELIBERATELY NOT changed — it
+    stays scoped to finalized versions via _finalized_versions_in_range,
+    kept as its own genuinely separate, more formal metric (reviewer
+    accountability for what was actually signed off on), not just the old
+    behavior relabeled. Same for `weekly_volume` (still finalized-only,
+    unchanged) — neither of these two is consumed by the real Dashboard
+    today (only `processed`/`passed`/`failed`/`passed_pct`/`failed_pct`
+    are — see frontend/src/routes/index.tsx), so this is a deliberate,
+    scoped decision about which metric needed fixing, not a side effect.
     """
     from_dt, to_dt = resolve_date_range(range_, start, end)
-    versions = _finalized_versions_in_range(session, from_dt, to_dt)
 
-    processed = len(versions)
-    passed = sum(1 for v in versions if v.audit_result == "pass")
-    failed = sum(1 for v in versions if v.audit_result == "fail")
+    processed_uploads = _processed_uploads_in_range(session, from_dt, to_dt)
+    audit_results = _upload_audit_results(session, processed_uploads)
+
+    processed = len(processed_uploads)
+    passed = sum(1 for u in processed_uploads if audit_results[u.id] == "pass")
+    failed = sum(1 for u in processed_uploads if audit_results[u.id] == "fail")
+
+    versions = _finalized_versions_in_range(session, from_dt, to_dt)
 
     reviewer_ids = {v.reviewer_id for v in versions if v.reviewer_id is not None}
     users_by_id = {
