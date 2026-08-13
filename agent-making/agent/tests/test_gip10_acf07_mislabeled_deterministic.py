@@ -274,6 +274,17 @@ def test_exactly_forty_four_deterministic_labeled_rules_have_real_checkers():
         "QA-ACF-06", "QA-GIP-05",
         # Round 84: item 3 -- see this test's own docstring above.
         "QA-PROB-01",
+        # Fix Round (2026-08-12), item 2: a genuinely NEW rule_id, not a
+        # relabeling -- QA-PPI-06 didn't exist before this round. User-
+        # decided rule_id/category ("Patient/Provider Info," slotted right
+        # after PPI-01 through PPI-05). See
+        # fields._check_narrative_name_contamination's own docstring.
+        "QA-PPI-06",
+        # Fix Round (2026-08-12), item 4: converted from judgment to
+        # deterministic after a real-document verification exposed a
+        # blank-field-with-no-adjacent-context gap -- see
+        # fields._check_BIP04's own docstring.
+        "QA-BIP-04",
     }
 
 

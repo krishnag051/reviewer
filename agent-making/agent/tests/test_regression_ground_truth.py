@@ -78,7 +78,19 @@ DET_GROUND_TRUTH = {
     },
     "QA-GIP-16": {
         "reeda_tp_pdf": "fail",   # page 26 Tantrum + page 27 Elopement, both 'Target Name:' blocks
-        "charny_tp_pdf": "pass",  # one goal reads '0-2 occurrences...', a range, not a zero endpoint
+        # Fix Round, item 6 (2026-08-12): was "pass" -- that expectation only
+        # held because GIP-16 used to defer a blank Mastery Criteria to
+        # QA-GIP-10 whenever a Sampling Method field was also present in the
+        # same block (an undocumented, silently-breakable cross-rule
+        # dependency the Fix Round explicitly removed). Charny's page 27 has
+        # exactly that case -- a blank Mastery Criteria on a Frequency-
+        # sampled goal (the same one QA-GIP-10 has always caught, see its own
+        # entry above) -- and GIP-16 now correctly fails it directly too,
+        # independent of GIP-10. The one goal reading '0-2 occurrences...'
+        # (a range, not a zero endpoint) still correctly does not trigger
+        # the separate zero/near-zero pattern -- confirmed this is genuinely
+        # the blank-field path, not that check regressing.
+        "charny_tp_pdf": "fail",
     },
     "QA-TEMP-01": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},  # 'BCBA, LBA' consistent on both
     "QA-PPI-02": {"reeda_tp_pdf": "pass", "charny_tp_pdf": "pass"},   # DOB/Age consistent + age-correct on both

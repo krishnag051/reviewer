@@ -32,10 +32,18 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     pages = extract_pdf_text(pdf_path)
     pages = flag_image_only_pages(pages)
 
-    to_render = flagged_page_numbers(pages)
-    rendered_images = render_flagged_pages(pdf_path, to_render) if to_render else {}
-
     extracted_fields = fields_module.extract_fields(pdf_path, pages)
+
+    # Fix Round, item 5: pages rendered for vision input are no longer
+    # JUST the low-text-flagged ones -- any rule opted into
+    # fields_module.VISION_ELIGIBLE_RULE_SECTIONS also gets its own
+    # section's real page range rendered, regardless of whether those
+    # pages are low-text (the actual gap this closes is an embedded image
+    # on an otherwise text-heavy page, which flagged_page_numbers alone
+    # structurally cannot catch). See fields_module.vision_eligible_pages's
+    # own docstring.
+    to_render = sorted(set(flagged_page_numbers(pages)) | fields_module.vision_eligible_pages(rules, extracted_fields))
+    rendered_images = render_flagged_pages(pdf_path, to_render) if to_render else {}
 
     # Rules whose applies_to_plan_type/applies_to_payor doesn't match this TP
     # never reach either layer — they come back pre-filled as not_applicable.
@@ -107,4 +115,15 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     # payor name anywhere in the UI.
     result["detected_payor"] = extracted_fields.get("payor")
     result["detected_plan_type"] = extracted_fields.get("plan_type")
+    # Fix Round, item 3: a post-processing pass over EVERY rule's result
+    # (det + judgment together, after both layers and the escalation merge
+    # above have all finished) -- catches a pair of rules in the same
+    # rule_id group disagreeing about whether a section/field is blank or
+    # populated (see fields_module.find_cross_rule_contradictions's own
+    # docstring for the confirmed real ACF-01/ACF-05-vs-ACF-07 case this
+    # generalizes from). Never resolves the disagreement itself — both
+    # rules' own results are untouched; this only adds a visible flag.
+    result["cross_rule_contradictions"] = fields_module.find_cross_rule_contradictions(
+        {**det_results, **judgment_results}
+    )
     return result

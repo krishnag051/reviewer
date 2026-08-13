@@ -7,52 +7,76 @@ from sqlalchemy.orm import Session
 
 from app.audit import record
 from app.db.models import AppConfig, GeneratedEmail, Patient, Rule, RuleResult, Upload, User, Version
+from app.services.mailer import Attachment, MailerNotConfigured, MailerSendFailed, send_email
+from app.storage import resolve_stored_path
 
-# Round 71: broadened from {"fail", "uncertain"} -- Krishna's own ask was
-# explicit that "problems" for escalation purposes means every non-Pass
-# result (fail, uncertain, na, AND not_checkable), not just the two
-# statuses this constant used to cover. This is the ONE set that drives
-# both the real, persisted email body below AND the frontend escalation
-# modal's on-screen list (plans.$refId.index.tsx) -- widening it here keeps
-# both in sync rather than letting the modal show a broader set than the
-# actual generated/persisted draft.
-FAILING_STATUSES = {"fail", "uncertain", "na", "not_checkable"}
+# Fix Round, item 3 (2026-08-12): every status a rule_result can carry,
+# in the FIXED order the email body (and the frontend's own checkboxes/
+# results tab bar) always uses -- Pass, Fail, Uncertain, N/A, Not
+# checkable. Kept as one shared tuple so the body-builder below and the
+# `statuses` validation can't silently drift out of the same order.
+# MUST match frontend/src/components/tp/RuleResultCard.tsx's STATUS_LABELS
+# key set exactly -- same 5 values, same meaning.
+STATUS_ORDER = ("pass", "fail", "uncertain", "na", "not_checkable")
+STATUS_LABELS = {"pass": "Pass", "fail": "Fail", "uncertain": "Uncertain", "na": "N/A", "not_checkable": "Not checkable"}
+
+# Round 71's broadened set, kept as the frontend's PRE-SELECTED default
+# when the escalation modal first opens (every non-Pass status) -- not a
+# validation constraint anymore. This round replaces the old "always
+# fail+uncertain+na+not_checkable, no Pass, no user choice" behavior with
+# real category checkboxes; Pass is now a legitimate, selectable category
+# too (e.g. a BCBA forwarding a fully-clean review for sign-off).
+DEFAULT_STATUSES = ("fail", "uncertain", "na", "not_checkable")
 
 
-def _build_body(patient: Patient, version: Version, failing: list[RuleResult], rules_by_id: dict, group_by: str) -> str:
+def _build_body(
+    patient: Patient, version: Version, upload: Upload, results_by_status: dict[str, list[RuleResult]],
+    statuses: list[str], rules_by_id: dict,
+) -> str:
+    """Fix Round, item 3: header (identifies patient/TP/upload) + a short
+    intro line + the categorized results, grouped by STATUS in
+    STATUS_ORDER (never interleaved, and never in whatever order the
+    checkboxes happened to be clicked) + a short closing line. Replaces
+    the old rule-category/page grouping entirely -- that was a different,
+    now-superseded design; every request this round is about the RESULT
+    category (Pass/Fail/Uncertain/N/A/Not checkable), not the rule's own
+    subject-matter category.
+
+    An empty status bucket (checked, but zero matching results on this
+    upload) gets no header at all -- a wall of "Pass (0):" headers reads
+    as noise, not signal, in a real email a human has to read.
+    """
+    included = [s for s in STATUS_ORDER if s in statuses]
+    total = sum(len(results_by_status.get(s, [])) for s in included)
+
     lines = [
-        f"The treatment plan for {patient.name} ({patient.reference_id}), version {version.version_number}, "
-        f"has {len(failing)} item(s) that failed review or need clarification.",
+        f"Treatment Plan Review — {patient.name} ({patient.reference_id})",
+        f"Version {version.version_number}, Upload U{upload.upload_number}",
+        "",
+        (
+            f"This email contains the {', '.join(STATUS_LABELS[s] for s in included)} result(s) from this "
+            f"treatment plan's rule-check review — {total} item(s) total. The treatment plan itself is attached, "
+            f"along with any supporting document, session notes, or intake Q&A on file for this upload."
+        ),
         "",
     ]
 
-    if group_by == "page":
-        by_page: dict[str, list[RuleResult]] = {}
-        for r in failing:
-            key = ", ".join(str(p) for p in r.final_pages) if r.final_pages else "No page reference"
-            by_page.setdefault(key, []).append(r)
-        for page_key in sorted(by_page):
-            lines.append(f"Page {page_key}:")
-            for r in by_page[page_key]:
-                rule = rules_by_id[r.rule_id]
-                lines.append(f"  [{rule.rule_code}] {rule.question_text}")
-                lines.append(f"  Finding: {r.final_finding}")
-            lines.append("")
-    else:  # "category"
-        by_category: dict[str, list[RuleResult]] = {}
-        for r in failing:
-            by_category.setdefault(rules_by_id[r.rule_id].category, []).append(r)
-        for category in sorted(by_category):
-            lines.append(f"{category}:")
-            for r in by_category[category]:
-                rule = rules_by_id[r.rule_id]
-                lines.append(f"  [{rule.rule_code}] {rule.question_text}")
-                lines.append(f"  Finding: {r.final_finding}")
-                if r.final_pages:
-                    lines.append(f"  Reference: p.{', '.join(str(p) for p in r.final_pages)}")
-            lines.append("")
+    for s in included:
+        items = results_by_status.get(s, [])
+        if not items:
+            continue
+        lines.append(f"{STATUS_LABELS[s]} ({len(items)}):")
+        for r in items:
+            rule = rules_by_id[r.rule_id]
+            lines.append(f"  [{rule.rule_code}] {rule.question_text}")
+            lines.append(f"  Finding: {r.final_finding}")
+            if r.final_pages:
+                lines.append(f"  Reference: p.{', '.join(str(p) for p in r.final_pages)}")
+        lines.append("")
 
-    lines.append("Please correct the items above and re-upload an updated treatment plan for review.")
+    lines.append("Please review the items above and reach out with any questions.")
+    lines.append("")
+    lines.append("— Sent from the TP Review system")
     return "\n".join(lines)
 
 
@@ -62,22 +86,39 @@ def generate_correction_email(
     *,
     upload_id: uuid.UUID | None,
     routed_to: str,
-    group_by: str,
+    statuses: list[str],
     to_addr: str | None,
     cc: str | None,
     bcc: str | None,
     actor_user_id: uuid.UUID,
 ) -> GeneratedEmail | None:
-    """POST /versions/:id/correction-email. Generation + persistence only —
-    no SMTP/actual sending exists anywhere in this codebase; "Send Now"
-    stays mock-only on the frontend, by original scope. Returns None if the
-    version doesn't exist.
+    """POST /versions/:id/correction-email. Builds and persists a
+    GeneratedEmail row from this upload's CURRENT (live, as-of-this-call)
+    rule_results -- reads `final_status`/`final_finding`, which already
+    reflect any human override made before this call, never `model_*`.
+    Does not send anything by itself; see send_generated_email below --
+    callers that want "reflects overrides at send time" must call this
+    function again immediately before sending, not reuse an old row.
 
-    Pulls failed/uncertain rule_results from the given upload_id, or the
-    version's latest non-voided upload if upload_id is omitted. Raises 400
-    if an explicit upload_id doesn't belong to this version, 409 if no
-    upload is available to pull from at all.
+    `statuses`: which result categories to include, e.g. ["fail",
+    "uncertain"]. Must be non-empty and every value must be one of
+    STATUS_ORDER -- 400 otherwise. Order in the input list doesn't matter;
+    the body always renders in STATUS_ORDER regardless.
+
+    Returns None if the version doesn't exist.
     """
+    if not statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "no_statuses_selected", "message": "At least one result category must be selected."},
+        )
+    unknown = [s for s in statuses if s not in STATUS_ORDER]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "unknown_status", "message": f"Unknown status value(s): {unknown}"},
+        )
+
     version = session.get(Version, version_id)
     if version is None:
         return None
@@ -108,14 +149,18 @@ def generate_correction_email(
     patient = session.get(Patient, version.patient_id)
 
     all_results = session.execute(select(RuleResult).where(RuleResult.upload_id == upload.id)).scalars().all()
-    failing = [r for r in all_results if r.final_status in FAILING_STATUSES]
+    results_by_status: dict[str, list[RuleResult]] = {}
+    for r in all_results:
+        if r.final_status in statuses:
+            results_by_status.setdefault(r.final_status, []).append(r)
+    included_results = [r for bucket in results_by_status.values() for r in bucket]
     rules_by_id = {
         r.id: r
-        for r in session.execute(select(Rule).where(Rule.id.in_([res.rule_id for res in failing]))).scalars().all()
+        for r in session.execute(select(Rule).where(Rule.id.in_([res.rule_id for res in included_results]))).scalars().all()
     }
 
-    subject = f"Treatment Plan Correction Needed — {patient.name} — {patient.reference_id}"
-    body = _build_body(patient, version, failing, rules_by_id, group_by)
+    subject = f"Treatment Plan Review — {patient.name} ({patient.reference_id}) — v{version.version_number} U{upload.upload_number}"
+    body = _build_body(patient, version, upload, results_by_status, statuses, rules_by_id)
 
     resolved_to = to_addr
     if resolved_to is None and version.reviewer_id is not None:
@@ -140,6 +185,7 @@ def generate_correction_email(
         routed_to=routed_to,
         routed_by=actor_user_id,
         routed_at=now,
+        statuses=list(statuses),
     )
     session.add(email)
     session.flush()  # assigns email.id
@@ -153,6 +199,135 @@ def generate_correction_email(
         details={
             "generated_email_id": {"from": None, "to": str(email.id)},
             "routed_to": {"from": None, "to": routed_to},
+            "statuses": {"from": None, "to": list(statuses)},
+        },
+    )
+    session.commit()
+    return email
+
+
+def _gather_attachments(upload: Upload) -> list[Attachment]:
+    """Fix Round, item 3: always attaches the treatment plan itself; ALSO
+    attaches the supporting document, every session-note file, and a
+    plain-text rendering of the intake Q&A -- each ONLY if that document
+    type actually exists for this upload. Skips silently (no error, no
+    partial-attachment warning) for whichever types weren't uploaded --
+    never blocks sending over a missing optional document. Also skips
+    silently (doesn't raise) if a file's real bytes are no longer on disk
+    (purged past retention, or a genuinely missing blob) -- an attachment
+    that can't be read is exactly like one that was never uploaded, from
+    this function's point of view; the calling send still proceeds.
+    """
+    attachments: list[Attachment] = []
+
+    def _try_add(stored_path: str | None, filename: str) -> None:
+        if not stored_path:
+            return
+        path = resolve_stored_path(stored_path)
+        if not path.exists():
+            return
+        attachments.append(Attachment(filename=filename, content=path.read_bytes(), mime_type="application/pdf"))
+
+    _try_add(upload.file_path, upload.original_filename or f"treatment-plan-U{upload.upload_number}.pdf")
+    _try_add(upload.supporting_document_path, f"supporting-document-U{upload.upload_number}.pdf")
+
+    for note in upload.session_note_files:
+        _try_add(note.file_path, note.original_filename)
+
+    if upload.intake_answers is not None:
+        ia = upload.intake_answers
+        text_lines = [
+            f"Intake Q&A — Upload U{upload.upload_number}",
+            "",
+            f"Client insurance: {ia.client_insurance}",
+            f"BCBA name/credentials/NPI: {ia.bcba_name_credentials_npi}",
+            f"Authorization dates: {ia.authorization_dates}",
+            f"POS/schedule vs. 97153 hours: {ia.pos_schedule_vs_97153_hours}",
+            f"Hours requesting: {ia.hours_requesting}",
+        ]
+        attachments.append(Attachment(
+            filename=f"intake-qa-U{upload.upload_number}.txt",
+            content="\n".join(text_lines).encode("utf-8"),
+            mime_type="text/plain",
+        ))
+
+    return attachments
+
+
+def send_generated_email(session: Session, email_id: uuid.UUID, *, actor_user_id: uuid.UUID) -> GeneratedEmail | None:
+    """POST /versions/:id/correction-email/:email_id/send. Sends the
+    ALREADY-GENERATED row's exact subject/body/recipients -- the freshness
+    guarantee ("reflects overrides at the moment of sending") comes from
+    the caller always calling generate_correction_email again, immediately
+    before this, rather than reusing a stale row from when a modal first
+    opened; this function itself just sends whatever row it's given.
+
+    Attachments are gathered HERE, at send time, not at generate time --
+    always current for this upload (there's no realistic scenario where a
+    document attached to an upload changes between generate and send, but
+    this keeps the two concerns cleanly separated regardless).
+
+    Returns None if the email row doesn't exist. Raises HTTPException(422)
+    if there's no recipient. On a real SMTP failure, persists send_error
+    on the row (so the failure is visible in the audit trail/UI) and
+    re-raises as HTTPException(502) -- never silently marks a failed send
+    as sent.
+    """
+    email = session.get(GeneratedEmail, email_id)
+    if email is None:
+        return None
+
+    if not email.to_addr:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "no_recipient", "message": "No \"To\" address set for this email."},
+        )
+
+    upload = session.get(Upload, email.upload_id)
+    version = session.get(Version, email.version_id)
+    patient = session.get(Patient, version.patient_id)
+    attachments = _gather_attachments(upload)
+
+    app_config = session.execute(select(AppConfig)).scalar_one()
+
+    try:
+        send_email(
+            to_addr=email.to_addr,
+            cc=email.cc,
+            bcc=email.bcc,
+            subject=email.subject,
+            body=email.body,
+            from_addr=app_config.notif_from_address,
+            from_name=app_config.notif_from_name,
+            attachments=attachments,
+        )
+    except (MailerNotConfigured, MailerSendFailed) as exc:
+        email.send_error = str(exc)
+        record(
+            session,
+            user_id=actor_user_id,
+            action=f"Failed to send correction email for {patient.name} ({patient.reference_id})",
+            target_type="generated_email",
+            target_id=email.id,
+            details={"send_error": {"from": None, "to": str(exc)}},
+        )
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"error": "send_failed", "message": str(exc)},
+        ) from exc
+
+    email.sent_at = datetime.now(timezone.utc)
+    email.send_error = None
+    record(
+        session,
+        user_id=actor_user_id,
+        action=f"Sent correction email for {patient.name} ({patient.reference_id}) to {email.to_addr}",
+        target_type="generated_email",
+        target_id=email.id,
+        details={
+            "sent_at": {"from": None, "to": email.sent_at.isoformat()},
+            "attachment_count": {"from": None, "to": len(attachments)},
         },
     )
     session.commit()

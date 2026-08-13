@@ -58,5 +58,24 @@ class Settings(BaseSettings):
     # even if misconfigured.
     allow_simulated_completion: bool = False
 
+    # --- outbound email (Escalate to BCBA real send, 2026-08-12) -------
+    # Plain smtplib over stdlib `email.mime` -- nothing else in this
+    # codebase sends mail, so there's no existing infra to reuse. `None`
+    # host (the default, every environment until someone configures a
+    # real mail server) means app/services/mailer.py raises a clear,
+    # typed error instead of silently pretending to send -- see that
+    # module's own docstring. A real deploy sets these five in its own
+    # .env; nothing here is a secret with a real default value baked in.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    # STARTTLS on a standard submission port (587) by default -- the
+    # common case for real providers (SendGrid, SES SMTP, Gmail relay,
+    # etc). Set False only for a plaintext-local/dev SMTP debug server
+    # that doesn't speak TLS at all (e.g. `python -m smtpd`/`aiosmtp`
+    # on localhost) -- never for a real external host.
+    smtp_use_tls: bool = True
+
 
 settings = Settings()

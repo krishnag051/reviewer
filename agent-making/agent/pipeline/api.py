@@ -118,9 +118,24 @@ def _run_pipeline_with_extras(
     """
     pages = extract_pdf_text(pdf_path)
     pages = flag_image_only_pages(pages)
-    to_render = flagged_page_numbers(pages)
-    rendered_images = render_flagged_pages(pdf_path, to_render) if to_render else {}
     extracted_fields = fields_module.extract_fields(pdf_path, pages)
+
+    # Fix Round, item 5 (2026-08-12) -- REAL BUG FOUND AND FIXED: this
+    # function is a hand-duplicated copy of pipeline/__init__.py::
+    # run_full_pipeline's orchestration (see this function's own docstring
+    # above for why), and it kept computing `to_render` from
+    # flagged_page_numbers(pages) ALONE, never unioning in
+    # fields_module.vision_eligible_pages(...) the way run_full_pipeline
+    # was fixed to do this same round. Since supporting_doc_path is
+    # mandatory on every real backend upload (Round 51), THIS function --
+    # not run_full_pipeline -- is the orchestration path every real upload
+    # actually takes, confirmed live: a real QA-ACF-03 run against Blythe
+    # Diaz's document through the backend's own code path came back
+    # "no visible legend... would need direct visual inspection" even
+    # after the __init__.py fix, because it never touched this duplicate.
+    # Same fix, same reasoning as __init__.py's own comment on this line.
+    to_render = sorted(set(flagged_page_numbers(pages)) | fields_module.vision_eligible_pages(rules, extracted_fields))
+    rendered_images = render_flagged_pages(pdf_path, to_render) if to_render else {}
 
     if payor_override is not None:
         extracted_fields["payor"] = payor_override

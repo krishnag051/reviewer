@@ -4,3 +4,8 @@ PyMuPDF>=1.24.0
 streamlit>=1.38.0
 pytest>=8.0.0
 python-dotenv>=1.0.0
+rapidfuzz>=3.0.0
+spacy>=3.8.0
+# en_core_web_sm isn't installable via this file alone -- run once after
+# `pip install -r requirements.txt`:
+#   python -m spacy download en_core_web_sm

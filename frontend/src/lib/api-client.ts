@@ -314,17 +314,17 @@ export async function overrideRuleResult(
   });
 }
 
-// --- Escalation / correction email (Round 70, Item 5) --------------------
+// --- Escalation / correction email (Round 70, Item 5; real send Fix Round item 3) ---
 
-/** Real, existing backend mechanism (built earlier, never wired to a real
- * frontend caller until now) -- POST /versions/:id/correction-email.
- * Generates AND PERSISTS a real GeneratedEmail row (subject/body built
- * from this upload's own real failed/uncertain rule_results, with real
- * question_text/evidence/page references), but never sends anything --
- * there is no SMTP/mail transport anywhere in this codebase. "Escalate to
- * BCBA" shows this draft in a dialog; actually sending it is a separate,
- * explicitly-deferred decision (see CLAUDE.md-style standing rule on
- * side-effectful actions needing per-instance approval). */
+/** POST /versions/:id/correction-email -- generates AND PERSISTS a real
+ * GeneratedEmail row (subject/body built from this upload's CURRENT
+ * rule_results at the moment this is called, filtered/ordered by
+ * `statuses`). Does not send anything by itself -- see sendGeneratedEmail
+ * below. Calling this again immediately before sending (rather than
+ * reusing an earlier-generated row) is what makes the eventual send
+ * reflect any override made up to that exact moment. */
+export type RuleResultStatus = "pass" | "fail" | "uncertain" | "na" | "not_checkable";
+
 export type GeneratedEmailOut = {
   id: string;
   version_id: string;
@@ -339,6 +339,9 @@ export type GeneratedEmailOut = {
   routed_by: string | null;
   routed_at: string;
   created_at: string;
+  statuses: RuleResultStatus[];
+  sent_at: string | null;
+  send_error: string | null;
 };
 
 export async function generateCorrectionEmail(
@@ -346,7 +349,7 @@ export async function generateCorrectionEmail(
   body: {
     upload_id?: string;
     routed_to: "bcba" | "qa" | "clinical_director" | "coordinator";
-    group_by?: "category" | "page";
+    statuses: RuleResultStatus[];
     to_addr?: string | null;
     cc?: string | null;
     bcc?: string | null;
@@ -357,6 +360,17 @@ export async function generateCorrectionEmail(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+/** POST /versions/:id/correction-email/:email_id/send -- real SMTP send
+ * (see backend/app/services/mailer.py) of the exact draft `email_id`
+ * refers to, with the treatment plan (and, if present on this upload,
+ * the supporting document / session notes / intake Q&A) auto-attached.
+ * Throws (via ApiError) on any real send failure -- callers must not
+ * treat a resolved promise from generateCorrectionEmail as "sent"; only
+ * a resolved promise from THIS function means it actually went out. */
+export async function sendGeneratedEmail(versionId: string, emailId: string): Promise<GeneratedEmailOut> {
+  return request(`/versions/${versionId}/correction-email/${emailId}/send`, { method: "POST" });
 }
 
 // --- Finalize (Stage 3) --------------------------------------------------

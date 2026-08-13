@@ -6,7 +6,7 @@ import {
 } from "@/lib/real-data";
 import {
   apiErrorMessage, fetchUploadFileBlob, fetchUploadSupportingFileBlob, generateCorrectionEmail,
-  type RuleResultOut, type GeneratedEmailOut,
+  sendGeneratedEmail, type RuleResultOut, type GeneratedEmailOut, type RuleResultStatus,
 } from "@/lib/api-client";
 import { StatusBadge, ReviewedBadge } from "@/components/tp/ui";
 import { RuleResultCard, RuleResultContent } from "@/components/tp/RuleResultCard";
@@ -15,8 +15,9 @@ import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrig
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Megaphone, FlaskConical, FileText, NotebookText, Download } from "lucide-react";
+import { Loader2, Megaphone, FlaskConical, FileText, NotebookText, Download, Send } from "lucide-react";
 import { downloadResultsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
 
@@ -25,6 +26,14 @@ export const Route = createFileRoute("/plans/$refId/")({ component: PlanDetail }
 const STATUS_LABELS: Record<RuleResultOut["final_status"], string> = {
   pass: "Pass", fail: "Fail", na: "N/A", uncertain: "Uncertain", not_checkable: "Not checkable",
 };
+
+// Fix Round, item 3 (2026-08-12): the FIXED order every "Escalate to BCBA"
+// surface uses -- the checkbox row, and the email body's own section
+// order -- matches the results tab bar's own order exactly (`counts`/the
+// filter-tab array below), not alphabetical or insertion order. Kept as
+// one shared constant so the checkboxes and the body-preview below can't
+// silently drift apart from each other.
+const ESCALATION_STATUS_ORDER: RuleResultStatus[] = ["pass", "fail", "uncertain", "na", "not_checkable"];
 
 // Round 41, Stage 1: real data, read-only. Round 42 adds the real PDF pane
 // (GET /uploads/:id/file, via PdfViewer.tsx) alongside the real rule
@@ -135,29 +144,52 @@ function PlanDetail() {
     );
   }
 
-  // Round 70, Item 5: "Escalate to BCBA" is no longer a mock toast -- calls
-  // the real, existing POST /versions/:id/correction-email (built earlier
-  // for a different, still-mock frontend surface, never wired to a real
-  // caller until now). Generates AND PERSISTS a real GeneratedEmail row
-  // from this upload's own real failed/uncertain results -- but does NOT
-  // send anything; there is no SMTP/mail transport in this codebase.
-  // Showing the draft is as far as this goes without separate approval.
+  // Fix Round, item 3 (2026-08-12): real send capability -- REPLACES the
+  // old draft-only, never-sent behavior (Round 70/71). Opening the modal
+  // still calls generate_correction_email once, purely to resolve a
+  // starting "To" address and show an initial preview; the ACTUAL send
+  // (handleSendNow below) calls generate_correction_email AGAIN,
+  // immediately before sending, so the email that goes out always
+  // reflects whatever overrides exist at that exact moment -- never the
+  // possibly-stale draft from when the modal first opened.
   const [escalateOpen, setEscalateOpen] = useState(false);
   const [escalating, setEscalating] = useState(false);
+  const [sending, setSending] = useState(false);
   const [escalationDraft, setEscalationDraft] = useState<GeneratedEmailOut | null>(null);
-  // Round 71: real, editable recipient fields -- there is no stored BCBA
-  // email anywhere in this system (Round 70 confirmed this gap); rather
-  // than inventing a new DB field for it this round, the user just types
-  // the recipient(s) directly here each time, pre-filled with whatever the
-  // backend's own resolution returned (blank if it returned nothing).
   const [escalateTo, setEscalateTo] = useState("");
   const [escalateCc, setEscalateCc] = useState("");
   const [escalateBcc, setEscalateBcc] = useState("");
-  // Round 71: every non-Pass status, not just fail/uncertain -- matches
-  // the SAME broadened FAILING_STATUSES set app/services/correction_email.py
-  // now uses to build the real persisted draft below, so this on-screen
-  // list and the actual generated email cover identical items.
-  const nonPassResults = useMemo(() => results.filter(r => r.final_status !== "pass"), [results]);
+  // Default selection on open: every non-Pass status -- the same starting
+  // point Round 71 always used, now user-adjustable via the checkboxes
+  // below rather than fixed.
+  const [selectedStatuses, setSelectedStatuses] = useState<Set<RuleResultStatus>>(
+    new Set(["fail", "uncertain", "na", "not_checkable"]),
+  );
+  const allStatusesChecked = ESCALATION_STATUS_ORDER.every(s => selectedStatuses.has(s));
+
+  function toggleStatus(status: RuleResultStatus) {
+    setSelectedStatuses(prev => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status); else next.add(status);
+      return next;
+    });
+  }
+  function toggleAllStatuses() {
+    setSelectedStatuses(allStatusesChecked ? new Set() : new Set(ESCALATION_STATUS_ORDER));
+  }
+
+  // Preview only -- computed client-side from whatever `results` this
+  // page already has loaded, grouped in the SAME fixed order the real
+  // email body uses. The real send below always re-fetches live data
+  // from the backend rather than trusting this preview to still be
+  // accurate by the time "Send" is clicked.
+  const previewByStatus = useMemo(() => {
+    const map = new Map<RuleResultStatus, RuleResultOut[]>();
+    for (const status of ESCALATION_STATUS_ORDER) {
+      if (selectedStatuses.has(status)) map.set(status, results.filter(r => r.final_status === status));
+    }
+    return map;
+  }, [results, selectedStatuses]);
 
   async function handleEscalate() {
     if (!finalUpload || !effectiveVersionId) return;
@@ -166,7 +198,7 @@ function PlanDetail() {
       const email = await generateCorrectionEmail(effectiveVersionId, {
         upload_id: finalUpload.id,
         routed_to: "bcba",
-        group_by: "category",
+        statuses: Array.from(selectedStatuses),
       });
       setEscalationDraft(email);
       setEscalateTo(email.to_addr ?? "");
@@ -177,6 +209,40 @@ function PlanDetail() {
       toast.error(apiErrorMessage(err));
     } finally {
       setEscalating(false);
+    }
+  }
+
+  // Real send: generate a FRESH draft (current checkboxes + recipients,
+  // live rule_results) and immediately send THAT one -- never re-sends
+  // whatever was shown when the modal opened, per this round's own
+  // "reflect overrides at send time" requirement.
+  async function handleSendNow() {
+    if (!finalUpload || !effectiveVersionId) return;
+    if (selectedStatuses.size === 0) {
+      toast.error("Select at least one result category to include.");
+      return;
+    }
+    if (!escalateTo.trim()) {
+      toast.error("Enter a recipient (\"To\" address) before sending.");
+      return;
+    }
+    setSending(true);
+    try {
+      const fresh = await generateCorrectionEmail(effectiveVersionId, {
+        upload_id: finalUpload.id,
+        routed_to: "bcba",
+        statuses: Array.from(selectedStatuses),
+        to_addr: escalateTo,
+        cc: escalateCc || null,
+        bcc: escalateBcc || null,
+      });
+      const sent = await sendGeneratedEmail(effectiveVersionId, fresh.id);
+      setEscalationDraft(sent);
+      toast.success(`Email sent to ${sent.to_addr}.`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    } finally {
+      setSending(false);
     }
   }
 
@@ -404,25 +470,30 @@ function PlanDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* Round 71: same modal pattern as the Intake Q&A dialog above --
-          same Dialog/DialogContent/DialogHeader/DialogFooter primitives,
-          same "Close" footer, same real-data-not-mock content -- just with
-          editable recipient fields (no stored BCBA email anywhere in this
-          system, see Round 70's report) and the real problem list below
-          them, rendered with the EXACT SAME RuleResultContent formatting
-          the results panel itself uses -- not a second rendering. */}
+      {/* Fix Round, item 3 (2026-08-12): real send capability -- category
+          checkboxes (All + one per result status, tab-bar order),
+          real attachments (auto-gathered server-side, nothing to pick
+          here), and a real "Send Now" that actually delivers via SMTP.
+          Preview list below still uses the exact same RuleResultContent
+          formatting the results panel itself uses -- not a second
+          rendering. */}
       <Dialog open={escalateOpen} onOpenChange={setEscalateOpen}>
         <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>Escalate to BCBA — draft only, not sent</DialogTitle>
+            <DialogTitle>Escalate to BCBA</DialogTitle>
             <DialogDescription>
-              Generated from this upload's real non-Pass results (upload U{finalUpload?.upload_number}) and saved to
-              the audit trail. There is no email-sending capability in this system yet — nothing is actually
-              delivered from here; edit recipients freely, this is a draft.
+              Sends a real email (upload U{finalUpload?.upload_number}) with the treatment plan, and any supporting
+              document / session notes / intake Q&A on file for this upload, attached automatically. Pick which
+              result categories to include below.
             </DialogDescription>
           </DialogHeader>
           {escalationDraft && (
             <div className="flex-1 overflow-y-auto space-y-4 text-sm pr-1">
+              {escalationDraft.sent_at && (
+                <div className="rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2 text-xs font-medium">
+                  Sent to {escalationDraft.to_addr} at {new Date(escalationDraft.sent_at).toLocaleString()}.
+                </div>
+              )}
               <div className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="escalate-to">To</Label>
@@ -446,33 +517,64 @@ function PlanDetail() {
                   <div className="text-sm font-medium text-slate-900">{escalationDraft.subject}</div>
                 </div>
               </div>
+
+              {/* Category checkboxes -- All + one per status, tab-bar
+                  order. Checking "All" checks/unchecks every individual
+                  box together; checking/unchecking an individual box
+                  updates All's own checked state to match (standard
+                  select-all behavior) without touching the OTHER
+                  individual boxes. */}
               <div className="border-t border-slate-200 pt-3">
-                <div className="text-xs font-medium text-slate-500 mb-2">
-                  {nonPassResults.length} item{nonPassResults.length === 1 ? "" : "s"} that didn't pass — fail, uncertain, N/A, and not-checkable all included
-                </div>
-                <div className="space-y-2">
-                  {nonPassResults.map(res => (
-                    // Round 74, Item 1: same rounded-card boundary as the
-                    // main results panel's RuleResultCard -- this list
-                    // shows the same underlying data and should read as
-                    // the same product, not a differently-styled list.
-                    <div key={res.id} className="rounded-lg border border-slate-200 bg-white px-3 py-3 flex shadow-sm">
-                      <RuleResultContent
-                        res={res}
-                        pageLabelMap={uploadDetailQuery.data?.page_label_map ?? {}}
-                        onGoToPage={goToPage}
-                      />
-                    </div>
+                <div className="text-xs font-medium text-slate-500 mb-2">Include in email</div>
+                <div className="flex gap-3 flex-wrap items-center">
+                  <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+                    <Checkbox checked={allStatusesChecked} onCheckedChange={toggleAllStatuses} />
+                    All
+                  </label>
+                  <span className="text-slate-300">|</span>
+                  {ESCALATION_STATUS_ORDER.map(status => (
+                    <label key={status} className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <Checkbox checked={selectedStatuses.has(status)} onCheckedChange={() => toggleStatus(status)} />
+                      {STATUS_LABELS[status]}
+                      <span className="rounded bg-slate-900/10 px-1 py-0.5 tabular-nums">{counts[status]}</span>
+                    </label>
                   ))}
-                  {nonPassResults.length === 0 && (
-                    <div className="py-4 text-center text-slate-500">Every result on this upload passed — nothing to escalate.</div>
-                  )}
                 </div>
+              </div>
+
+              <div className="space-y-3">
+                {Array.from(previewByStatus.entries()).map(([status, items]) => (
+                  <div key={status}>
+                    <div className="text-xs font-medium text-slate-500 mb-2">
+                      {STATUS_LABELS[status]} ({items.length})
+                    </div>
+                    <div className="space-y-2">
+                      {items.map(res => (
+                        <div key={res.id} className="rounded-lg border border-slate-200 bg-white px-3 py-3 flex shadow-sm">
+                          <RuleResultContent
+                            res={res}
+                            pageLabelMap={uploadDetailQuery.data?.page_label_map ?? {}}
+                            onGoToPage={goToPage}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {selectedStatuses.size > 0 && Array.from(previewByStatus.values()).every(items => items.length === 0) && (
+                  <div className="py-4 text-center text-slate-500">No results in the selected category/categories.</div>
+                )}
+                {selectedStatuses.size === 0 && (
+                  <div className="py-4 text-center text-slate-500">Select at least one category above to include in the email.</div>
+                )}
               </div>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setEscalateOpen(false)}>Close</Button>
+            <Button onClick={handleSendNow} disabled={sending || !escalationDraft}>
+              {sending ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Sending…</> : <><Send className="h-4 w-4 mr-1.5" />Send Now</>}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

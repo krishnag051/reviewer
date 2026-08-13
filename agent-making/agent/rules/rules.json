@@ -1,6 +1,6 @@
 {
   "description": "Master cross-payor rule set (111 universal + payor-specific rules). See rules/generate_payor_rules.py for per-payor generated exports.",
-  "rule_count": 120,
+  "rule_count": 121,
   "rules": [
     {
       "rule_id": "QA-TEMP-01",
@@ -194,6 +194,18 @@
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
       "notes": "Converted from judgment to deterministic (2026-07-28 round, item 1 backlog): this rule's own prior notes already said 'Internal consistency = DET' -- see pipeline/fields.py::_check_PPI05. Extracts every NPI and License mention and checks each set agrees. Verified live: both real documents have exactly one NPI and one License mention each (trivially consistent, nothing to contradict) -- previously reported as pass on both. The genuine multi-mention consistency path is unverified against real evidence since neither document repeats these fields. True validation against a provider roster remains out of scope, as before.\n\nFIXED (2026-08, Round 84, item 2): confirmed real overconfidence bug -- the plain-internal-consistency branch (no supporting-doc ground truth available) used to return a confident 'pass' for a rule literally named '...correct,' when all it had actually verified was that no contradicting NPI/License value appeared within the TP -- never that the value was actually correct. Now returns 'uncertain' with evidence stating plainly what was and wasn't verified. The supporting-document ground-truth branch (when a real cross-check succeeds) is unchanged and still correctly returns 'pass' -- that branch DOES verify something beyond internal consistency.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-PPI-06",
+      "category": "Patient/Provider Info",
+      "description": "Narrative sections do not name a person who isn't accounted for in this document's own structured fields",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "Added Fix Round (2026-08-12), item 2 -- user-decided rule_id/category, slotted right after PPI-01 through PPI-05. REAL BUG this closes: QA-PPI-03 only checks that the SAME patient name is used consistently; it has no way to catch a document that's internally consistent but names the WRONG person somewhere in its own narrative (e.g. a PCP/caregiver name that's actually a copy/paste artifact from a different patient's file). Uses spaCy NER (see pipeline/fields.py::_check_narrative_name_contamination) to detect every person-name mention in narrative sections (Biopsychosocial/Developmental-Psychological History and similar), then flags any detected name not on THIS document's own allow-list (patient name, AKA, mother/father/caregiver, PCP, BCBA -- all pulled from this same document's structured fields, never a fixed or shared list). Deliberately not a blocklist of previously-seen bad names -- verified live on a made-up name never used anywhere else in this project's fixtures, specifically to confirm it catches a contamination name it has never seen before, not just a known one.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -832,8 +844,8 @@
       "description": "All tantrum goals have a duration",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
-      "check_type": "judgment",
-      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket): a 'duration' qualifier means the goal states how long/how many consecutive sessions the reduced level must be sustained for, not just a bare frequency/percentage target. PASS example (confirmed real phrasing this engagement, Reeda's TP Behavior Reduction Goals): 'Reeda will reduce frequency of Tantrum Behavior to near 0 levels per session for 5 consecutive sessions' -- duration qualifier present ('for 5 consecutive sessions'). FAIL example: a tantrum-reduction goal reading only 'Reeda will reduce Tantrum Behavior to near 0 levels per session' with no consecutive-session/time-window qualifier at all.",
+      "check_type": "deterministic",
+      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket): a 'duration' qualifier means the goal states how long/how many consecutive sessions the reduced level must be sustained for, not just a bare frequency/percentage target. PASS example (confirmed real phrasing this engagement, Reeda's TP Behavior Reduction Goals): 'Reeda will reduce frequency of Tantrum Behavior to near 0 levels per session for 5 consecutive sessions' -- duration qualifier present ('for 5 consecutive sessions'). FAIL example: a tantrum-reduction goal reading only 'Reeda will reduce Tantrum Behavior to near 0 levels per session' with no consecutive-session/time-window qualifier at all.\n\nCONVERTED to deterministic (Fix Round, 2026-08-12, item 4): user-directed real-document verification (Yisroel Leibowitz's document, 'Reduce Crying Episodes' goal) exposed a blank Mastery Criteria field with no duration qualifier and no adjacent explanation -- see pipeline/fields.py::_check_BIP04, which reuses the same general adjacent-context helper (_nearby_block_explanation) this round's item 4 already built for QA-BIP-06, applied to a second real rule rather than duplicated.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true

@@ -248,26 +248,42 @@ def test_gip04_passes_when_all_mastery_dates_are_filled_in():
 
 
 # --------------------------------------- item 7: QA-GIP-16 vs QA-GIP-10 gap
+#
+# Fix Round, item 6 (2026-08-12) -- SUPERSEDES the "division of labor"
+# design these two tests originally encoded. That division was itself the
+# real bug the Fix Round's own task description named explicitly: GIP-16
+# deferring a blank Mastery Criteria to GIP-10 "happening to catch" it was
+# an undocumented, silently-breakable cross-rule dependency, not a real
+# design. GIP-16 now fails a blank Mastery Criteria directly and
+# unconditionally, with or without a Sampling Method field present --
+# updated both tests below to match the new, corrected behavior instead of
+# the dependency this round was told to remove.
 
 
 def test_gip16_now_catches_blank_mastery_criteria_with_no_sampling_method():
     """SYNTHETIC fixture: blank Mastery Criteria AND no Sampling Method
     field in the same block -- the one case QA-GIP-10 structurally can't
-    catch (it requires a Sampling Method match first). Must now fail."""
+    catch (it requires a Sampling Method match first). Must fail."""
     text = "Target Name: X will reduce tantrums\nBaseline: 7x daily\nMastery Criteria:\n"
     result, evidence, page, confidence = fields._check_GIP16({}, _fields(text))
     assert result == "fail"
-    assert "no Sampling Method" in evidence or "Sampling Method" in evidence
+    assert "blank" in evidence.lower()
 
 
-def test_gip16_defers_to_gip10_when_sampling_method_is_present():
-    """When Sampling Method IS present, GIP-16 must NOT also flag the blank
-    Mastery Criteria -- that's QA-GIP-10's job (avoid double-reporting the
-    same violation as if it were two separate problems)."""
+def test_gip16_also_fails_when_sampling_method_is_present():
+    """Fix Round, item 6: GIP-16 now fails a blank Mastery Criteria
+    unconditionally -- a Sampling Method field being present no longer
+    exempts it. GIP-10 may also independently flag the same block; that's
+    two rules correctly agreeing on a real problem, not a double-report
+    bug (see find_cross_rule_contradictions, which only flags a genuine
+    blank-vs-populated DISAGREEMENT between rules, never two rules
+    agreeing)."""
     text = "Target Goal: X\nBaseline: 10%\nMastery Criteria:\nSampling Method: Percent Correct\n"
     result, evidence, page, confidence = fields._check_GIP16({}, _fields(text))
-    assert result == "pass"
-    # Confirm QA-GIP-10 IS the one that catches it, so the gap is genuinely closed overall.
+    assert result == "fail"
+    assert "blank" in evidence.lower()
+    # QA-GIP-10 also independently catches it -- confirms both rules agree,
+    # which is the point, not a conflict.
     gip10_result, gip10_evidence, _, _ = fields._check_GIP10({}, _fields(text))
     assert gip10_result == "fail"
     assert "blank" in gip10_evidence.lower()

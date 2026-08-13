@@ -426,6 +426,18 @@ class GeneratedEmail(Base):
     routed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     routed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Fix Round, item 3 (2026-08-12) -- real email sending. `statuses`:
+    # which final_status values (pass/fail/uncertain/na/not_checkable)
+    # this draft's body was built to include -- persisted so the audit
+    # trail shows exactly what was sent, not just that something was.
+    # `sent_at`/`send_error` are mutually exclusive in practice (a send
+    # either succeeds -> sent_at set, send_error null; or fails ->
+    # send_error set, sent_at stays null) but both nullable rather than
+    # one enum column, so a never-attempted draft (sent_at AND send_error
+    # both null) is trivially distinguishable from a failed one.
+    statuses: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    send_error: Mapped[str | None] = mapped_column(Text)
 
 
 class AuditLog(Base):

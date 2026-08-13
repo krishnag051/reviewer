@@ -267,7 +267,21 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
         })
 
     if rendered_images:
-        content.append({"type": "text", "text": "Rendered images of pages with little/no extractable text, in page order:"})
+        # Fix Round, item 5: this used to be strictly true (rendered_images
+        # only ever held low-text pages). It no longer is -- a page can also
+        # be rendered because a rule opted into vision input for a section
+        # that lives partly in an embedded image (grids, legends, graphs)
+        # even though the page around it has plenty of real extractable
+        # text. The wording below covers both reasons without claiming one
+        # or the other for a given page.
+        content.append({
+            "type": "text",
+            "text": (
+                "Rendered images of pages that either have little/no extractable text, or "
+                "contain grid/legend/graph content embedded as an image that the text above "
+                "this line cannot capture, in page order:"
+            ),
+        })
         for page_number in sorted(rendered_images):
             content.append({"type": "text", "text": f"--- Rendered page {page_number} ---"})
             content.append({

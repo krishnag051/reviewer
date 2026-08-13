@@ -23,44 +23,59 @@ def _fields(*page_texts: str) -> dict:
 @pytest.mark.parametrize("filename,expected_tokens", [
     ("Zohran Hossain TP.pdf", ["zohran", "hossain"]),
     ("Zohran_Hossain_2026-08-10_v2.pdf", ["zohran", "hossain"]),
-    ("upload-3.pdf", ["upload"]),
+    # Fix Round, item 1: "upload" was added to _FILENAME_JUNK_TOKENS (a
+    # real regression fix -- generated storage-key filenames like this are
+    # today's real production shape, per backend/app/storage.py::save_blob,
+    # and carry no name information at all).
+    ("upload-3.pdf", []),
     ("Charny Gluck TP Feedback.pdf", ["charny", "gluck"]),
 ])
 def test_filename_name_tokens_strips_junk_dates_and_version_tags(filename, expected_tokens):
     assert fields._filename_name_tokens(filename) == expected_tokens
 
 
-def test_name_token_mismatch_detail_exact_match_is_none():
-    assert fields._name_token_mismatch_detail("Zohran Hossain", "Zohran Hossain TP.pdf") is None
+# Note: the underlying comparison function was replaced in the Fix Round
+# (rapidfuzz fuzz.token_set_ratio, threshold=97, see
+# _name_filename_score's own docstring for the calibration work) --
+# see test_fix_round_filename_name_check.py for the dedicated, made-up-name
+# verification the Fix Round itself requires. These below are kept as the
+# original real-document regression proof, updated to the new function/
+# score-based interface.
+
+def test_name_filename_score_exact_match_is_high():
+    assert fields._name_filename_score("Zohran Hossain", "Zohran Hossain TP.pdf") == 100.0
 
 
-def test_name_token_mismatch_detail_catches_the_real_confirmed_typo():
+def test_name_filename_score_catches_the_real_confirmed_typo():
     """REAL confirmed case: document body reads 'Zohan Hossain' throughout,
-    filename is 'Zohran Hossain TP.pdf' -- a one-letter typo."""
-    detail = fields._name_token_mismatch_detail("Zohan Hossain", "Zohran Hossain TP.pdf")
-    assert detail is not None
-    assert "zohran" in detail.lower() and "zohan" in detail.lower()
+    filename is 'Zohran Hossain TP.pdf' -- a one-letter typo. Score must
+    fall below the calibrated threshold."""
+    score = fields._name_filename_score("Zohan Hossain", "Zohran Hossain TP.pdf")
+    assert score is not None
+    assert score < fields._FILENAME_MATCH_THRESHOLD
 
 
-def test_name_token_mismatch_detail_ignores_innocuous_filename_variation():
+def test_name_filename_score_ignores_innocuous_filename_variation():
     """A date and a version tag added to the filename must not themselves
     register as a mismatch -- _filename_name_tokens already strips them,
-    so the remaining tokens still match exactly."""
-    assert fields._name_token_mismatch_detail("Zohran Hossain", "Zohran_Hossain_2026-08-10_v2.pdf") is None
+    so the remaining tokens still match exactly (score stays at 100)."""
+    score = fields._name_filename_score("Zohran Hossain", "Zohran_Hossain_2026-08-10_v2.pdf")
+    assert score == 100.0
 
 
-def test_name_token_mismatch_detail_none_when_filename_has_no_name_tokens():
+def test_name_filename_score_none_when_filename_has_no_name_tokens():
     """A generated storage-key filename (today's real production shape,
     per backend/app/storage.py::save_blob) carries no name-like tokens at
-    all -- nothing to compare, must not be flagged."""
-    assert fields._name_token_mismatch_detail("Zohran Hossain", "upload-3.pdf") is None
+    all -- nothing to compare, must not produce a score."""
+    assert fields._name_filename_score("Zohran Hossain", "upload-3.pdf") is None
 
 
-def test_name_token_mismatch_detail_does_not_flag_unrelated_low_similarity_word():
-    """A filename word that's just unrelated to the patient's name (not a
-    typo of it) should NOT be flagged -- low similarity means this isn't
-    confidently a misspelling of THIS name."""
-    assert fields._name_token_mismatch_detail("Zohran Hossain", "Intake Packet.pdf") is None
+def test_name_filename_score_low_for_an_unrelated_filename():
+    """A filename with no real relationship to the patient's name scores
+    low -- still correctly distinguishable from a real typo."""
+    score = fields._name_filename_score("Zohran Hossain", "Intake Packet.pdf")
+    assert score is not None
+    assert score < fields._FILENAME_MATCH_THRESHOLD
 
 
 def _ppi03_doc(name: str) -> str:
@@ -74,11 +89,13 @@ def test_check_ppi03_passes_on_exact_filename_match():
     assert result == "pass"
 
 
-def test_check_ppi03_flags_the_real_confirmed_typo_as_uncertain_not_fail():
+def test_check_ppi03_flags_the_real_confirmed_typo_as_fail():
+    """Fix Round: changed from 'uncertain' to a confident 'fail' -- this
+    round's own explicit instruction."""
     doc_fields = _fields(_ppi03_doc("Zohan Hossain"))
     doc_fields["source_filename"] = "Zohran Hossain TP.pdf"
     result, evidence, page, confidence = fields._check_PPI03({}, doc_fields)
-    assert result == "uncertain"
+    assert result == "fail"
     assert "Zohan" in str(evidence) and "Zohran" in str(evidence)
 
 

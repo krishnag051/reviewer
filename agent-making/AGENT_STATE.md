@@ -281,6 +281,23 @@ Learning-Tree logic.
   confirmed field-order variants. None of these were fixed — they're
   flagged as real, known exposure ahead of more documents arriving, not
   quietly left unflagged.
+- **`QA-PPI-06` (narrative name-contamination, Fix Round 2026-08-12) has
+  two known, accepted-for-now NER noise sources** — approved to ship live
+  anyway because neither produces a false confident `"fail"`, only
+  `"uncertain"`, which a human reviewer can dismiss quickly:
+  - spaCy's `en_core_web_sm` occasionally misreads a **medication name**
+    (confirmed real case: "Prozac," Charny's document) as a PERSON entity.
+  - spaCy occasionally misreads this project's own **practice letterhead**
+    ("Master Faster") as a PERSON entity too (confirmed on every one of
+    the 5 real documents tested).
+  - **Backlog for a future round** (both must stay general — no
+    hardcoding to "Prozac" or "Master Faster" specifically, in a way that
+    wouldn't generalize to other medications or other letterhead text):
+    add a lightweight medication-name exclusion (e.g. a common-drug-name
+    check or RxNorm-style list), and a check that excludes the practice's
+    own letterhead/organization name from being treated as a candidate
+    person-name. See `pipeline/fields.py::_looks_like_clinical_noise`'s
+    own docstring for where this was first disclosed.
 
 ---
 

@@ -58,8 +58,16 @@ function RulesStudio() {
   const [editing, setEditing] = useState<EditForm | null>(null);
   const [open, setOpen] = useState(false);
 
+  // "Applicable to this payor" (the count line + the table rows below it)
+  // must mean actually-checkable rules -- active-only. An inactive rule
+  // (e.g. the retired R-xxx placeholder set, 2026-08-12) is never applied
+  // to a real upload regardless of its payor, so it must never inflate
+  // this count or appear in this list. The top-level "X total · Y active"
+  // stat above intentionally still reads from the unfiltered `rules` --
+  // that one's showing both numbers on purpose, this is the one that
+  // isn't.
   const payorRules = useMemo(
-    () => payorTab === ALL_TAB ? rules : rules.filter(r => r.payor === null || r.payor === payorTab),
+    () => rules.filter(r => r.active && (payorTab === ALL_TAB || r.payor === null || r.payor === payorTab)),
     [rules, payorTab],
   );
   const categoriesForPayor = useMemo(() => Array.from(new Set(payorRules.map(r => r.category))).sort(), [payorRules]);

@@ -42,3 +42,18 @@ npm-debug.log*
 # --- Backend runtime data ---
 backend/data/*
 !backend/data/.gitkeep
+
+# --- agent-making: per-payor rule exports (regenerable, human-convenience
+# only — nothing in the live pipeline reads these, confirmed 2026-08-12.
+# rules.json is the single source of truth; regenerate locally via
+# `rules/generate_payor_rules.py` if you want to look at one, never
+# hand-edit or commit the output.) ---
+agent-making/agent/rules/aetna.json
+agent-making/agent/rules/anthem.json
+agent-making/agent/rules/cigna.json
+agent-making/agent/rules/emblem.json
+agent-making/agent/rules/empire.json
+agent-making/agent/rules/molina.json
+agent-making/agent/rules/mvp.json
+agent-making/agent/rules/new_york_medicaid.json
+agent-making/agent/rules/straight_medicaid.json

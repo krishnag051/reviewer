@@ -13,7 +13,7 @@ from app.db.base import get_db
 from app.db.models import GeneratedEmail, Patient, Upload, User, Version
 from app.deps import get_current_user, require_developer
 from app.services.app_config import get_app_config
-from app.services.correction_email import generate_correction_email
+from app.services.correction_email import generate_correction_email, send_generated_email
 from app.services.simulated_pipeline import simulate_upload_completion
 from app.services.upload_pipeline import run_upload_pipeline
 from app.services.uploads import create_upload, get_latest_intake_answers
@@ -73,7 +73,11 @@ class VersionDetailOut(VersionOut):
 class CorrectionEmailRequest(BaseModel):
     upload_id: uuid.UUID | None = None
     routed_to: Literal["bcba", "qa", "clinical_director", "coordinator"]
-    group_by: Literal["category", "page"] = "category"
+    # Fix Round, item 3 (2026-08-12): replaces the old group_by=category/
+    # page toggle -- this is now about WHICH RESULT CATEGORIES to include
+    # (pass/fail/uncertain/na/not_checkable), matching the frontend's new
+    # checkbox row. See app/services/correction_email.py::STATUS_ORDER.
+    statuses: list[Literal["pass", "fail", "uncertain", "na", "not_checkable"]]
     to_addr: str | None = None
     cc: str | None = None
     bcc: str | None = None
@@ -95,6 +99,9 @@ class GeneratedEmailOut(BaseModel):
     routed_by: uuid.UUID | None
     routed_at: datetime
     created_at: datetime
+    statuses: list[str]
+    sent_at: datetime | None
+    send_error: str | None
 
 
 def _jsonable(value):
@@ -372,7 +379,7 @@ def generate_correction_email_route(
         version_id,
         upload_id=body.upload_id,
         routed_to=body.routed_to,
-        group_by=body.group_by,
+        statuses=body.statuses,
         to_addr=body.to_addr,
         cc=body.cc,
         bcc=body.bcc,
@@ -380,5 +387,31 @@ def generate_correction_email_route(
     )
     if email is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="version not found")
+    db.refresh(email)
+    return email
+
+
+@router.post(
+    "/versions/{version_id}/correction-email/{email_id}/send",
+    response_model=GeneratedEmailOut,
+)
+def send_generated_email_route(
+    version_id: uuid.UUID,
+    email_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GeneratedEmail:
+    """Fix Round, item 3 (2026-08-12): actually sends the given, already-
+    generated draft (real SMTP, real attachments) -- the frontend calls
+    generate_correction_email_route immediately before this, every time,
+    so the draft being sent is always freshly built from this upload's
+    CURRENT rule_results (reflecting any override made up to the literal
+    moment "Send" was clicked), never a stale one from when a modal first
+    opened.
+    """
+    email = db.get(GeneratedEmail, email_id)
+    if email is None or email.version_id != version_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="generated email not found")
+    email = send_generated_email(db, email_id, actor_user_id=current_user.id)
     db.refresh(email)
     return email
