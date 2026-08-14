@@ -77,5 +77,17 @@ class Settings(BaseSettings):
     # on localhost) -- never for a real external host.
     smtp_use_tls: bool = True
 
+    # --- CORS (2026-08-13, deploy prep) ---------------------------------
+    # Comma-separated, not a real list field -- pydantic-settings expects
+    # JSON-array syntax for a List[str] env var ("[\"a\",\"b\"]"), which is
+    # an awkward thing to hand-type into a docker-compose.yml/.env file.
+    # Plain comma-split (see app/main.py) is the simpler contract for an
+    # operator setting this. Default matches every pre-2026-08-13 value
+    # (the frontend's own dev server ports) so nothing changes for local
+    # dev unless this is explicitly overridden. A real deploy sets this to
+    # the real frontend origin(s) once DNS/tunnel routing is finalized --
+    # deliberately NOT guessed at here.
+    cors_allow_origins: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173"
+
 
 settings = Settings()

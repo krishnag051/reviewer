@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .extract import extract_pdf_text
-from .model_provider import CallTracker, TransientModelCallError, call_tool_json
+from .model_provider import CallTracker, ModelCallError, call_tool_json
 
 # Live incident fix (2026-08): a session-note file whose extraction hit a
 # CONFIRMED-TRANSIENT upstream failure (model_provider.py's own retry loop
@@ -194,9 +194,16 @@ def extract_session_note_text(
     genuinely exhausted, not a first-attempt failure) and returns an
     honest failure marker instead of raising -- see
     _extraction_failed_result's own docstring for why this must be
-    visibly distinct from "the note doesn't mention this field." A plain
-    (non-transient) ModelCallError is NOT caught here and propagates
-    normally -- a real, permanent problem must still surface loudly.
+    visibly distinct from "the note doesn't mention this field."
+
+    2026-08-13: broadened to catch the base ModelCallError, not just
+    TransientModelCallError -- call_tool_json's OpenRouter path now falls
+    back to a real Anthropic call before ever raising (see
+    model_provider.py::call_openrouter_with_fallback), so anything that
+    still reaches this except clause means BOTH OpenRouter (with retries)
+    AND the Anthropic fallback were exhausted -- a stronger, not weaker,
+    failure signal than before this fix, and still exactly the case this
+    honest-failure-marker behavior exists for.
     """
     prompt = _build_prompt(full_text)
     try:
@@ -209,10 +216,10 @@ def extract_session_note_text(
             model_override=model_override,
             call_reason="session_note_extraction",
         )
-    except TransientModelCallError as exc:
+    except ModelCallError as exc:
         print(
-            f"[session-note-extraction] upstream extraction failed after retries ({exc}) -- "
-            f"returning an honest extraction-failure marker instead of raising."
+            f"[session-note-extraction] upstream extraction failed after retries and the Anthropic fallback "
+            f"({exc}) -- returning an honest extraction-failure marker instead of raising."
         )
         return _extraction_failed_result(str(exc))
     return _normalize(raw)

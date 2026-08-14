@@ -3,30 +3,82 @@ services:
     image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: tpuser
-      POSTGRES_PASSWORD: tppass
-      POSTGRES_DB: tpreview
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # 2026-08-13: NOT exposed on the host here (no top-level "ports:" for
+    # postgres) -- on the real server, only port 22 is open externally
+    # (zero-trust per Mendy), so publishing 5432 to the host would do
+    # nothing for outside access anyway and just adds an unused attack
+    # surface. If you need psql from your own machine, tunnel over SSH
+    # instead: ssh -L 5432:localhost:5432 ubuntu@15.204.121.119
     volumes:
+      # 2026-08-13: unchanged, per explicit instruction -- keep this exact
+      # volume, just don't run `docker compose down -v` against it. This
+      # is the ONLY thing that makes real patient/audit data survive a
+      # restart today; treat -v as a loaded gun near this file.
       - tp_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tpuser -d tpreview"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   backend:
-    build: ./backend
+    # 2026-08-13: pulled from Docker Hub now, not built on the server --
+    # server never needs the repo source at all for this service.
+    image: krishna0051/reviewer-backend:latest
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg2://tpuser:tppass@postgres:5432/tpreview
-      JWT_SECRET: dev-secret-not-for-production
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # 2026-08-13: real production origin -- update once tp.masterfaster.org
+      # tunnel routing is finalized; app/main.py reads this via
+      # settings.cors_allow_origins.
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+      # 2026-08-13: same fix carried over from local -- absolute path,
+      # skips storage.py's own-__file__ resolution ambiguity entirely.
+      UPLOAD_STORAGE_DIR: /app/data/uploads
+      # Real Anthropic/OpenRouter/JWT/Postgres secrets are deliberately
+      # NOT set here -- they live only in the .env file sitting next to
+      # this compose file on the server, which is never committed to git.
     ports:
       - "8000:8000"
+    volumes:
+      # 2026-08-13: same volume names as local, unchanged -- mount path
+      # matches settings.upload_storage_dir's resolved location inside
+      # the image (./data/uploads, relative to WORKDIR /app).
+      - tp_uploads_data:/app/data/uploads
+      # 2026-08-13: same reasoning, different failure mode -- without
+      # this, a restart silently re-triggers real, billed Anthropic calls
+      # for session-note files already extracted. Mount path matches
+      # session_note_extraction.py's own cache directory inside the image.
+      - tp_session_note_cache:/agent-making/agent/.cache/session_note_extractions
+
+  frontend:
+    # 2026-08-13: pulled from Docker Hub -- IMPORTANT: this image must be
+    # (re)built locally with the real production VITE_API_BASE_URL baked
+    # in via --build-arg BEFORE pushing (see note below). Changing this
+    # compose file alone does nothing -- Vite bakes the value in at
+    # `docker build` time, not container start.
+    image: krishna0051/reviewer-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # 2026-08-13: published on 5173, NOT 3000 -- per confirmation with
+      # Mendy (WhatsApp, today), the Cloudflare Tunnel's main hostname
+      # rule (tp.masterfaster.org) forwards to port 5173 on this server.
+      # The container's own nginx still listens on 80 internally; only
+      # the host-side published port changed.
+      - "5173:80"
 
 volumes:
   tp_postgres_data:
+  tp_uploads_data:
+  tp_session_note_cache:

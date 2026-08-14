@@ -49,6 +49,17 @@ load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"  # matches judge.py's MODEL
 
+# 2026-08-13 real incident: two separate real uploads (Yisroel, Zohan) both
+# failed at the session-note-extraction step on the SAME OpenRouter gateway
+# timeout, back to back -- frequent enough to block real end-to-end
+# testing. This is the model used ONLY when falling back from a failed
+# OpenRouter call (see call_openrouter_with_fallback below) -- deliberately
+# Haiku, not Sonnet: a fallback whose whole point is "OpenRouter is having
+# a bad moment, get a real answer anyway" shouldn't itself become the slow/
+# expensive path. Never the model for anthropic as a PRIMARY provider
+# choice (DEFAULT_ANTHROPIC_MODEL/judge.py's MODEL stay Sonnet for that).
+ANTHROPIC_FALLBACK_MODEL = "claude-haiku-4-5"
+
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_TIMEOUT_SECONDS = 120
 
@@ -73,7 +84,39 @@ _TRANSIENT_ERROR_MARKERS = (
     "temporarily unavailable",
     "try again later",
     "overloaded",
+    # 2026-08-13 real incident: two separate real uploads (Yisroel, Zohan)
+    # both failed at session-note extraction with the identical shape --
+    # {"error": {"message": "error code: 524...", "code": 504}}, a
+    # Cloudflare-style gateway timeout wrapped inside OpenRouter's own
+    # 200-status response body. Same "upstream infrastructure blip, will
+    # likely succeed seconds later" reasoning as the ResourceExhausted
+    # case above -- this text-based check is the belt; _is_transient_error_
+    # code below (checking the wrapped error's own numeric `code`, not
+    # just this text) is the suspenders, since the exact wording of a
+    # gateway's own error page isn't something to depend on staying
+    # constant.
+    "gateway timeout",
+    "bad gateway",
+    "error code: 524",
+    "error code: 502",
+    "error code: 503",
+    "error code: 504",
 )
+
+# Numeric-code counterpart to the text markers above -- OpenRouter wraps
+# the REAL upstream failure code inside the JSON body's own `error.code`
+# field (confirmed live: outer HTTP status was 200, inner `code` was 504)
+# rather than always surfacing it as the outer HTTP status. Checked
+# against both the outer response status and this inner code -- see
+# _call_openrouter's own two call sites of _is_transient_error_code below.
+_TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504, 524}
+
+
+def _is_transient_error_code(code: object) -> bool:
+    try:
+        return int(code) in _TRANSIENT_HTTP_CODES
+    except (TypeError, ValueError):
+        return False
 
 
 class ModelCallError(Exception):
@@ -138,6 +181,7 @@ def call_tool_json(
     max_transient_retries: int = 2,
     backoff_seconds: float = 1.0,
     sleep_fn=time.sleep,
+    enable_anthropic_fallback: bool = True,
 ) -> dict[str, Any]:
     """The one call site both session_note_extraction.py's extraction step
     and any future comparison-adjacent reasoning should use -- dispatches
@@ -166,25 +210,44 @@ def call_tool_json(
     `sleep_fn` defaults to `time.sleep` but is a real parameter so tests
     can inject a fake, instant sleep and assert on the backoff schedule
     without a real test actually waiting seconds.
+
+    2026-08-13: when the resolved provider is "openrouter", this now goes
+    through call_openrouter_with_fallback below -- same retry-with-backoff
+    behavior as before, PLUS a genuine fallback to a real (billed, Haiku)
+    Anthropic call if OpenRouter is still failing once retries are
+    exhausted. See that function's own docstring for the full design and
+    the real incident that motivated it. The "anthropic" provider branch
+    is unchanged -- there is nothing to fall back to when Anthropic is
+    already the primary, explicitly-chosen provider.
+
+    `enable_anthropic_fallback=False` disables the fallback for this call
+    only (still retries OpenRouter itself, per max_transient_retries) --
+    for a caller that deliberately wants OpenRouter-only behavior, or a
+    test isolating the retry logic from the fallback logic.
     """
     provider, model = resolve_provider_and_model(model_override)
+
+    if provider == "openrouter":
+        result = call_openrouter_with_fallback(
+            model=model, prompt_text=prompt_text, tool_name=tool_name, tool_description=tool_description,
+            input_schema=input_schema, max_tokens=max_tokens, call_reason=call_reason, tracker=tracker,
+            max_transient_retries=max_transient_retries, backoff_seconds=backoff_seconds, sleep_fn=sleep_fn,
+            enable_anthropic_fallback=enable_anthropic_fallback,
+        )
+        tracker.record(reason=call_reason, provider=result["provider_used"], model=result["model_used"], usage=result["usage"])
+        return result["arguments"]
+
+    if provider != "anthropic":
+        raise ModelCallError(f"Unknown provider {provider!r} (expected 'openrouter' or 'anthropic')")
 
     attempt = 0
     while True:
         tracker.check_before_call()
         try:
-            if provider == "openrouter":
-                result = _call_openrouter(
-                    model=model, prompt_text=prompt_text, tool_name=tool_name,
-                    tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
-                )
-            elif provider == "anthropic":
-                result = _call_anthropic(
-                    model=model, prompt_text=prompt_text, tool_name=tool_name,
-                    tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
-                )
-            else:
-                raise ModelCallError(f"Unknown provider {provider!r} (expected 'openrouter' or 'anthropic')")
+            result = _call_anthropic(
+                model=model, prompt_text=prompt_text, tool_name=tool_name,
+                tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
+            )
         except TransientModelCallError as exc:
             if attempt >= max_transient_retries:
                 raise
@@ -200,6 +263,131 @@ def call_tool_json(
 
     tracker.record(reason=call_reason, provider=provider, model=model, usage=result["usage"])
     return result["arguments"]
+
+
+def call_openrouter_with_fallback(
+    *,
+    model: str,
+    prompt_text: str,
+    tool_name: str,
+    tool_description: str,
+    input_schema: dict,
+    max_tokens: int,
+    call_reason: str = "call",
+    fallback_model: str | None = None,
+    enable_anthropic_fallback: bool = True,
+    max_transient_retries: int = 2,
+    backoff_seconds: float = 1.0,
+    sleep_fn=time.sleep,
+    tracker: "CallTracker | Any | None" = None,
+) -> dict[str, Any]:
+    """The general pattern (2026-08-13): retry a failing OpenRouter call
+    with short backoff, and if it's STILL failing once retries are
+    exhausted, fall back to a real Anthropic call (default model:
+    ANTHROPIC_FALLBACK_MODEL, i.e. Haiku -- fast and cheap, since the
+    whole point of a fallback is to not itself become the slow/expensive
+    path) rather than giving up. OpenRouter stays the PRIMARY path -- this
+    is a fallback for when it's failing, not a switch away from it; every
+    call still tries OpenRouter first, every time.
+
+    Real incident this fixes: two separate real uploads (Yisroel, Zohan)
+    both failed at the session-note-extraction step on the identical
+    OpenRouter gateway timeout, back to back -- frequent enough to block
+    real end-to-end testing. Shared by BOTH real call sites that talk to
+    OpenRouter with no protection before this (session_note_extraction.py
+    via call_tool_json above, and judge.py's own OpenRouter branch in
+    _run_judgment_checks_once, which called `_call_openrouter` directly
+    with no retry/fallback at all) -- one mechanism, not two copies of the
+    same logic.
+
+    Falls back on ANY OpenRouter failure once retries are exhausted --
+    not just ones matching the transient-error markers. Deliberately
+    broader than the retry loop's own transient/permanent distinction:
+    a bad/expired OPENROUTER_API_KEY, for instance, is a plain (non-
+    transient) ModelCallError that will never succeed no matter how many
+    times OpenRouter is retried, but IS exactly the kind of failure a
+    working Anthropic key can still recover from -- confirmed live, see
+    this fix's own real verification (a real OpenRouter call deliberately
+    broken via a bad key, recovered via the Anthropic fallback).
+
+    Returns {"arguments": ..., "usage": ..., "provider_used": "openrouter"
+    | "anthropic-fallback", "model_used": str} -- "provider_used"/
+    "model_used" are new, additive fields (not present on _call_openrouter/
+    _call_anthropic's own raw return shape) so a caller (or this
+    function's own log lines) can always tell which path actually served
+    a given request, per this fix's own explicit requirement -- never
+    silently ambiguous after the fact.
+
+    Raises the ORIGINAL OpenRouter error if `enable_anthropic_fallback` is
+    False (e.g. a caller that's deliberately testing OpenRouter-only
+    behavior), or a combined ModelCallError naming BOTH failures if the
+    Anthropic fallback also fails.
+
+    `tracker`, if given, must support `.check_before_call()` (both
+    CallTracker here and call_tracker.py's ApiCallTracker do) -- called
+    before EVERY real attempt this function makes (each OpenRouter retry,
+    and the fallback attempt), so a call-count cap is enforced across the
+    whole retry+fallback sequence, not just once before it starts. Does
+    NOT call `.record()` -- the two tracker classes' own record() methods
+    take different arguments (CallTracker: reason/provider/model/usage;
+    ApiCallTracker: reason/rule_ids/usage), so recording stays the
+    caller's own job, using this function's returned usage/provider_used/
+    model_used fields.
+    """
+    attempt = 0
+    last_error: ModelCallError | None = None
+    while True:
+        if tracker is not None:
+            tracker.check_before_call()
+        try:
+            result = _call_openrouter(
+                model=model, prompt_text=prompt_text, tool_name=tool_name,
+                tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
+            )
+            return {**result, "provider_used": "openrouter", "model_used": model}
+        except TransientModelCallError as exc:
+            last_error = exc
+            if attempt < max_transient_retries:
+                wait = backoff_seconds * (2 ** attempt)
+                attempt += 1
+                print(
+                    f"[model-provider] transient OpenRouter failure on attempt {attempt}/{max_transient_retries + 1} "
+                    f"(openrouter:{model}, reason={call_reason!r}): {exc}. Retrying in {wait:.1f}s..."
+                )
+                sleep_fn(wait)
+                continue
+            break
+        except ModelCallError as exc:
+            # Non-transient (e.g. a bad API key, a malformed response
+            # shape) -- retrying OpenRouter itself won't help, so go
+            # straight to the fallback decision below instead of wasting
+            # retries on a guaranteed-repeat failure.
+            last_error = exc
+            break
+
+    if not enable_anthropic_fallback:
+        raise last_error
+
+    fb_model = fallback_model or ANTHROPIC_FALLBACK_MODEL
+    print(
+        f"[model-provider] OpenRouter exhausted for this call (reason={call_reason!r}): {last_error}. "
+        f"Falling back to Anthropic ({fb_model})..."
+    )
+    if tracker is not None:
+        tracker.check_before_call()
+    try:
+        fb_result = _call_anthropic(
+            model=fb_model, prompt_text=prompt_text, tool_name=tool_name,
+            tool_description=tool_description, input_schema=input_schema, max_tokens=max_tokens,
+        )
+    except ModelCallError as fb_exc:
+        raise ModelCallError(
+            f"Both OpenRouter and the Anthropic fallback failed for this call (reason={call_reason!r}). "
+            f"OpenRouter ({model}): {last_error}. Anthropic fallback ({fb_model}): {fb_exc}"
+        ) from fb_exc
+
+    print(f"[model-provider] Anthropic fallback SUCCEEDED for this call (reason={call_reason!r}), model={fb_model}.")
+    return {**fb_result, "provider_used": "anthropic-fallback", "model_used": fb_model}
 
 
 def _call_openrouter(
@@ -232,7 +420,7 @@ def _call_openrouter(
     )
     if response.status_code != 200:
         error_cls = TransientModelCallError if (
-            response.status_code in (429, 502, 503) or _is_transient_error_text(response.text)
+            _is_transient_error_code(response.status_code) or _is_transient_error_text(response.text)
         ) else ModelCallError
         raise error_cls(f"OpenRouter call failed: {response.status_code} {response.text[:500]}")
 
@@ -250,7 +438,10 @@ def _call_openrouter(
         # capacity wall, not a broken request; raise the retryable
         # subclass when the body's own text matches that pattern.
         body_text = json.dumps(body)
-        error_cls = TransientModelCallError if _is_transient_error_text(body_text) else ModelCallError
+        wrapped_code = body.get("error", {}).get("code") if isinstance(body.get("error"), dict) else None
+        error_cls = TransientModelCallError if (
+            _is_transient_error_text(body_text) or _is_transient_error_code(wrapped_code)
+        ) else ModelCallError
         raise error_cls(f"OpenRouter response had no usable 'choices' (status 200): {body_text[:800]}")
     choice = body["choices"][0]
     tool_calls = choice.get("message", {}).get("tool_calls") or []

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import anthropic
 from dotenv import load_dotenv
 
-from .model_provider import _call_openrouter, resolve_provider_and_model
+from .model_provider import call_openrouter_with_fallback, resolve_provider_and_model
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
@@ -374,21 +374,39 @@ def _run_judgment_checks_once(
                 f"for any image-only pages relies on their extracted text alone under this provider. Flip "
                 f"'Use real Anthropic API' to include rendered images."
             )
-        or_result = _call_openrouter(
+        # 2026-08-13: was a bare `_call_openrouter(...)` -- no retry, no
+        # fallback, so a single OpenRouter gateway blip failed the whole
+        # judgment batch outright. Now goes through the same general
+        # retry-with-backoff + Anthropic-fallback mechanism
+        # session_note_extraction.py's own call site uses (see
+        # model_provider.py::call_openrouter_with_fallback's own docstring
+        # for the real incident and full design) -- NOTE this fallback
+        # call still uses the flattened, text-only prompt (same limitation
+        # the primary OpenRouter attempt already has -- rendered images
+        # are dropped either way on this branch, not just on the first
+        # attempt); recovering FROM a failed OpenRouter call is this fix's
+        # job, not also upgrading what that recovered call can see.
+        or_result = call_openrouter_with_fallback(
             model=model,
             prompt_text=_flatten_prompt_text(content),
             tool_name="record_findings",
             tool_description=FINDINGS_TOOL["description"],
             input_schema=FINDINGS_TOOL["input_schema"],
             max_tokens=OPENROUTER_MAX_TOKENS,
+            call_reason=call_reason,
+            tracker=tracker,
+        )
+        print(
+            f"[judge] this judgment batch was served by provider={or_result['provider_used']!r} "
+            f"model={or_result['model_used']!r} (reason={call_reason!r})."
         )
         if tracker is not None:
             tracker.record(reason=call_reason, rule_ids=rule_ids, usage=SimpleNamespace(**or_result["usage"]))
         tool_input = or_result["arguments"]
         if "findings" not in tool_input:
             raise RuntimeError(
-                f"Judgment call (openrouter:{model}) returned without a 'findings' key; "
-                f"got keys: {list(tool_input.keys())}."
+                f"Judgment call ({or_result['provider_used']}:{or_result['model_used']}) returned without a "
+                f"'findings' key; got keys: {list(tool_input.keys())}."
             )
         return _findings_dict_from_list(tool_input["findings"])
 

@@ -57,3 +57,10 @@ agent-making/agent/rules/molina.json
 agent-making/agent/rules/mvp.json
 agent-making/agent/rules/new_york_medicaid.json
 agent-making/agent/rules/straight_medicaid.json
+
+
+.env
+
+docker-compose.yml
+
+docker compose/

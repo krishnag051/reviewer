@@ -36,6 +36,16 @@ dependencies = [
     # first time since Round 59 landed and hit the resulting
     # ModuleNotFoundError. Confirmed via the exact same failure live.
     "requests>=2.31.0",
+    # Fix Round (2026-08-12) added rapidfuzz (QA-PPI-01 filename-vs-name
+    # matching) and spacy (QA-PPI-06 narrative name-contamination) to
+    # agent-making's own requirements.txt -- confirmed missing from here
+    # during deploy-prep investigation (2026-08-13); without these,
+    # importing pipeline.fields ImportErrors the first time either
+    # checker actually runs. spacy ALSO needs its en_core_web_sm model
+    # downloaded separately (not installable via pip alone) -- see
+    # backend/Dockerfile's own build-stage RUN step for that.
+    "rapidfuzz>=3.0.0",
+    "spacy>=3.8.0",
 ]
 
 [project.optional-dependencies]

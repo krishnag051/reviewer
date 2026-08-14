@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
 from app.routers import admin, auth, patients, reports, rule_results, rule_sync, rules, uploads, versions
 from app.scheduler import build_scheduler
 
@@ -21,11 +22,17 @@ app = FastAPI(title="TP Review System API", lifespan=lifespan)
 # own Vite dev server (a different origin/port) -- without this, the
 # browser blocks every request before it even reaches a route. Auth is
 # Bearer-token-in-header (never cookies), so allow_credentials stays False;
-# origins are the frontend dev server's usual ports, not a wildcard, so
-# this doesn't accidentally become "any site can call this API".
+# origins are explicit (never a wildcard), so this doesn't accidentally
+# become "any site can call this API".
+#
+# 2026-08-13 (deploy prep): sourced from settings.cors_allow_origins
+# (comma-separated) instead of a hardcoded list -- the real frontend
+# origin is a placeholder (CORS_ALLOW_ORIGINS env var) until DNS/tunnel
+# routing is finalized; the default below keeps local dev's exact
+# pre-existing behavior unchanged.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[origin.strip() for origin in settings.cors_allow_origins.split(",") if origin.strip()],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
