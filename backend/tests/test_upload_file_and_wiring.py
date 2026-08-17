@@ -44,7 +44,7 @@ def test_get_upload_file_serves_the_real_pdf_bytes(client, db_session, tmp_path,
 
     upload = make_patient_version_upload(db_session, status="ready", file_path=str(pdf_path))
 
-    resp = client.get(f"/uploads/{upload.id}/file", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/file", headers=headers)
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content == content
@@ -55,7 +55,7 @@ def test_get_upload_file_requires_auth(client, db_session, tmp_path, seeded_base
     pdf_path.write_bytes(_pdf_bytes())
     upload = make_patient_version_upload(db_session, status="ready", file_path=str(pdf_path))
 
-    resp = client.get(f"/uploads/{upload.id}/file")
+    resp = client.get(f"/api/uploads/{upload.id}/file")
     assert resp.status_code == 401
 
 
@@ -65,7 +65,7 @@ def test_get_upload_file_404s_when_purged(client, db_session, tmp_path, seeded_b
     pdf_path.write_bytes(_pdf_bytes())
     upload = make_patient_version_upload(db_session, status="ready", file_path=str(pdf_path), file_purged=True)
 
-    resp = client.get(f"/uploads/{upload.id}/file", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/file", headers=headers)
     assert resp.status_code == 404
 
 
@@ -73,13 +73,13 @@ def test_get_upload_file_404s_when_missing_on_disk(client, db_session, seeded_ba
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     upload = make_patient_version_upload(db_session, status="ready", file_path="/no/such/path/on/disk.pdf")
 
-    resp = client.get(f"/uploads/{upload.id}/file", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/file", headers=headers)
     assert resp.status_code == 404
 
 
 def test_get_upload_file_404s_for_unknown_upload(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    resp = client.get(f"/uploads/{uuid.uuid4()}/file", headers=headers)
+    resp = client.get(f"/api/uploads/{uuid.uuid4()}/file", headers=headers)
     assert resp.status_code == 404
 
 
@@ -139,19 +139,19 @@ def test_create_upload_route_reaches_real_pipeline_wiring_with_mocked_agent_call
 
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     patient_resp = client.post(
-        "/patients",
+        "/api/patients",
         json={"reference_id": f"TP-TEST-{uuid.uuid4().hex[:8]}", "name": "Wiring Test Patient", "payor": "Aetna"},
         headers=headers,
     )
     assert patient_resp.status_code == 201, patient_resp.text
     patient = patient_resp.json()
 
-    version_resp = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers)
+    version_resp = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers)
     assert version_resp.status_code == 201, version_resp.text
     version = version_resp.json()
 
     upload_resp = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -163,7 +163,7 @@ def test_create_upload_route_reaches_real_pipeline_wiring_with_mocked_agent_call
     assert upload_resp.status_code == 201, upload_resp.text
     upload_out = upload_resp.json()
 
-    detail_resp = client.get(f"/uploads/{upload_out['id']}", headers=headers)
+    detail_resp = client.get(f"/api/uploads/{upload_out['id']}", headers=headers)
     assert detail_resp.status_code == 200
     body = detail_resp.json()
     assert body["status"] == "ready", body

@@ -52,7 +52,7 @@ def test_authorization_rechecks_db_role_not_stale_jwt_claim(db_session, client):
     db_session.commit()
 
     resp = client.post(
-        "/rules",
+        "/api/rules",
         json={
             "rule_code": unique_rule_code(),
             "category": "Patient Info",
@@ -68,7 +68,7 @@ def test_authorization_rechecks_db_role_not_stale_jwt_claim(db_session, client):
 def test_get_and_post_rules_as_admin_succeeds(client, db_session, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
 
-    resp = client.get("/rules", headers=headers)
+    resp = client.get("/api/rules", headers=headers)
     assert resp.status_code == 200
     assert len(resp.json()) >= 24
 
@@ -77,7 +77,7 @@ def test_get_and_post_rules_as_admin_succeeds(client, db_session, seeded_baselin
 
     code = unique_rule_code()
     resp = client.post(
-        "/rules",
+        "/api/rules",
         json={
             "rule_code": code,
             "category": "Patient Info",
@@ -111,7 +111,7 @@ def test_post_rules_as_user_role_403(client, seeded_baseline):
     headers = login_headers(client, "s.patel@brightpath-aba.com")
 
     resp = client.post(
-        "/rules",
+        "/api/rules",
         json={
             "rule_code": unique_rule_code(),
             "category": "Patient Info",
@@ -131,7 +131,7 @@ def test_get_rules_as_user_role_succeeds_read_only(client, seeded_baseline):
     at least SEE the rule list).
     """
     headers = login_headers(client, "s.patel@brightpath-aba.com")  # role=user
-    resp = client.get("/rules", headers=headers)
+    resp = client.get("/api/rules", headers=headers)
     assert resp.status_code == 200
     assert len(resp.json()) >= 24
 
@@ -146,7 +146,7 @@ def test_create_and_patch_rule_payor_field(client, db_session, seeded_baseline):
     code = unique_rule_code()
 
     resp = client.post(
-        "/rules",
+        "/api/rules",
         json={
             "rule_code": code,
             "category": "Patient Info",
@@ -161,13 +161,13 @@ def test_create_and_patch_rule_payor_field(client, db_session, seeded_baseline):
     rule_id = resp.json()["id"]
     assert resp.json()["payor"] == "Aetna"
 
-    patch_resp = client.patch(f"/rules/{rule_id}", json={"payor": "Molina"}, headers=headers)
+    patch_resp = client.patch(f"/api/rules/{rule_id}", json={"payor": "Molina"}, headers=headers)
     assert patch_resp.status_code == 200
     assert patch_resp.json()["payor"] == "Molina"
     assert patch_resp.json()["current_version"] == 2
 
     # clearing back to universal (NULL) must also be a real, persisted diff
-    clear_resp = client.patch(f"/rules/{rule_id}", json={"payor": None}, headers=headers)
+    clear_resp = client.patch(f"/api/rules/{rule_id}", json={"payor": None}, headers=headers)
     assert clear_resp.status_code == 200
     assert clear_resp.json()["payor"] is None
     assert clear_resp.json()["current_version"] == 3
@@ -182,7 +182,7 @@ def test_create_and_patch_rule_payor_field(client, db_session, seeded_baseline):
 def _create_test_rule(client, headers) -> dict:
     code = unique_rule_code()
     resp = client.post(
-        "/rules",
+        "/api/rules",
         json={
             "rule_code": code,
             "category": "Patient Info",
@@ -205,7 +205,7 @@ def test_patch_rule_with_real_change(client, db_session, seeded_baseline):
     pending_before = sync_state.pending_change_count
 
     resp = client.patch(
-        f"/rules/{rule_id}",
+        f"/api/rules/{rule_id}",
         json={"question_text": "Updated text — a real change"},
         headers=headers,
     )
@@ -260,7 +260,7 @@ def test_patch_rule_no_op_creates_nothing(client, db_session, seeded_baseline):
     )
 
     resp = client.patch(
-        f"/rules/{rule_id}",
+        f"/api/rules/{rule_id}",
         json={"question_text": rule["question_text"], "category": rule["category"]},  # identical values
         headers=headers,
     )
@@ -292,7 +292,7 @@ def test_deactivate_and_reactivate_rule(client, db_session, seeded_baseline):
     sync_state = db_session.execute(select(RuleSyncState)).scalar_one()
     pending_before = sync_state.pending_change_count
 
-    resp = client.post(f"/rules/{rule_id}/deactivate", headers=headers)
+    resp = client.post(f"/api/rules/{rule_id}/deactivate", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["active"] is False
     assert resp.json()["current_version"] == 2
@@ -302,11 +302,11 @@ def test_deactivate_and_reactivate_rule(client, db_session, seeded_baseline):
     assert sync_state.pending_change_count == pending_before + 1
 
     # deactivating an already-inactive rule is a no-op
-    resp = client.post(f"/rules/{rule_id}/deactivate", headers=headers)
+    resp = client.post(f"/api/rules/{rule_id}/deactivate", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["current_version"] == 2, "deactivating an already-inactive rule must be a no-op"
 
-    resp = client.post(f"/rules/{rule_id}/reactivate", headers=headers)
+    resp = client.post(f"/api/rules/{rule_id}/reactivate", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["active"] is True
     assert resp.json()["current_version"] == 3
@@ -347,7 +347,7 @@ def test_expired_jwt_is_rejected(client, seeded_baseline):
     }
     expired_token = pyjwt.encode(expired_payload, settings.jwt_secret, algorithm=JWT_ALGORITHM)
 
-    resp = client.get("/rules", headers={"Authorization": f"Bearer {expired_token}"})
+    resp = client.get("/api/rules", headers={"Authorization": f"Bearer {expired_token}"})
     assert resp.status_code == 401
 
 
@@ -362,7 +362,7 @@ def test_get_me_returns_fresh_db_role_not_stale_jwt_claim(db_session, client):
     token = resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    me = client.get("/auth/me", headers=headers)
+    me = client.get("/api/auth/me", headers=headers)
     assert me.status_code == 200
     assert me.json()["role"] == "user"
     assert me.json()["email"] == user.email
@@ -370,13 +370,13 @@ def test_get_me_returns_fresh_db_role_not_stale_jwt_claim(db_session, client):
     db_session.execute(text("UPDATE users SET role = 'developer' WHERE id = :id"), {"id": user.id})
     db_session.commit()
 
-    me2 = client.get("/auth/me", headers=headers)
+    me2 = client.get("/api/auth/me", headers=headers)
     assert me2.status_code == 200
     assert me2.json()["role"] == "developer", "must reflect the live DB role, not the token's stale claim"
 
 
 def test_get_me_requires_auth(client):
-    resp = client.get("/auth/me")
+    resp = client.get("/api/auth/me")
     assert resp.status_code == 401
 
 
@@ -388,7 +388,7 @@ def test_admin_can_create_user_of_any_role(client, db_session, seeded_baseline):
     for role in ("admin", "user", "developer"):
         email = f"new-{role}-{uuid.uuid4().hex[:8]}@test.local"
         resp = client.post(
-            "/admin/users",
+            "/api/admin/users",
             json={"name": f"Test {role.title()}", "email": email, "password": "TestPass123!", "role": role},
             headers=headers,
         )
@@ -413,7 +413,7 @@ def test_admin_can_create_user_of_any_role(client, db_session, seeded_baseline):
 def test_admin_create_user_duplicate_email_409(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     resp = client.post(
-        "/admin/users",
+        "/api/admin/users",
         json={"name": "Dup", "email": "m.chen@brightpath-aba.com", "password": "x", "role": "user"},
         headers=headers,
     )
@@ -423,7 +423,7 @@ def test_admin_create_user_duplicate_email_409(client, seeded_baseline):
 def test_non_admin_cannot_create_user_403(client, seeded_baseline):
     headers = login_headers(client, "s.patel@brightpath-aba.com")  # role=user
     resp = client.post(
-        "/admin/users",
+        "/api/admin/users",
         json={"name": "x", "email": f"blocked-{uuid.uuid4().hex[:8]}@test.local", "password": "x", "role": "admin"},
         headers=headers,
     )

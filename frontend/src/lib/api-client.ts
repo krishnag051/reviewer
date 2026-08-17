@@ -11,7 +11,13 @@
 // upward so the auth layer can react (clear the stale token, redirect to
 // login) instead of every caller having to special-case it.
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+// Deployment round: backend routes now live under /api (every route moved,
+// no un-prefixed fallback kept on the backend side) -- this dev-mode
+// default was still the pre-/api-prefix value, which would 404 every real
+// request against the new backend unless VITE_API_BASE_URL is set
+// explicitly. Production is unaffected (its own VITE_API_BASE_URL is
+// baked in at build time as https://tp.masterfaster.org/api already).
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
 
 export class ApiError extends Error {
   status: number;

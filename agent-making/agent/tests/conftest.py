@@ -201,6 +201,10 @@ CHARNY_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\charm
 # named in _check_ACF07's own Round 64 docstring) but never given its own
 # pytest fixture until this round's real-document regression tests needed one.
 YISROEL_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\yl\YL.pdf")
+# Round 91: same convention -- referenced by name in several prior rounds'
+# scratch scripts but never given their own pytest fixture until now.
+BLYTHE_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\master faster\reviewer\document\Blythe Diaz .pdf")
+ZOHAN_TP_PDF_PATH = Path(r"C:\Users\DELL\OneDrive - Master Faster\Desktop\zohan hossian\Zohran Hossain TP.pdf")
 
 
 @pytest.fixture
@@ -229,6 +233,20 @@ def yisroel_tp_pdf() -> str:
     if not YISROEL_TP_PDF_PATH.exists():
         pytest.skip(f"Yisroel's TP not present at {YISROEL_TP_PDF_PATH} on this machine.")
     return str(YISROEL_TP_PDF_PATH)
+
+
+@pytest.fixture
+def blythe_tp_pdf() -> str:
+    if not BLYTHE_TP_PDF_PATH.exists():
+        pytest.skip(f"Blythe's TP not present at {BLYTHE_TP_PDF_PATH} on this machine.")
+    return str(BLYTHE_TP_PDF_PATH)
+
+
+@pytest.fixture
+def zohan_tp_pdf() -> str:
+    if not ZOHAN_TP_PDF_PATH.exists():
+        pytest.skip(f"Zohan's TP not present at {ZOHAN_TP_PDF_PATH} on this machine.")
+    return str(ZOHAN_TP_PDF_PATH)
 
 
 @pytest.fixture

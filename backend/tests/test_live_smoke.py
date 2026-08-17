@@ -58,13 +58,13 @@ def test_one_real_upload_full_lifecycle(client, db_session, seeded_baseline):
 
     ref = f"TP-TEST-livesmoke-{uuid.uuid4().hex[:8]}"
     patient = client.post(
-        "/patients", json={"reference_id": ref, "name": "Live Smoke Test Patient"}, headers=headers
+        "/api/patients", json={"reference_id": ref, "name": "Live Smoke Test Patient"}, headers=headers
     ).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
 
     with open(SAMPLE_PDF, "rb") as f:
         upload = client.post(
-            f"/versions/{version['id']}/uploads",
+            f"/api/versions/{version['id']}/uploads",
             files={
                 "file": ("Ullah_Zyaan_Redacted.pdf", f, "application/pdf"),
                 "supporting_document": ("supporting.pdf", _synthetic_supporting_document_bytes(), "application/pdf"),
@@ -75,7 +75,7 @@ def test_one_real_upload_full_lifecycle(client, db_session, seeded_baseline):
     # TestClient runs the upload's BackgroundTask (run_upload_pipeline) to
     # completion before the POST above even returns -- no polling needed,
     # same as every other real-pipeline test in this suite.
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready", detail
     rule_results = detail["rule_results"]
 
@@ -97,7 +97,7 @@ def test_one_real_upload_full_lifecycle(client, db_session, seeded_baseline):
     target = rule_results[0]
     override_target_status = "fail" if target["final_status"] != "fail" else "pass"
     resp = client.patch(
-        f"/rule_results/{target['id']}",
+        f"/api/rule_results/{target['id']}",
         json={
             "updated_at": target["updated_at"],
             "final_status": override_target_status,
@@ -115,24 +115,24 @@ def test_one_real_upload_full_lifecycle(client, db_session, seeded_baseline):
     # Resolve any real "uncertain" results to "na" first -- this test isn't
     # exercising finalize's uncertain-results guard, and real content can
     # legitimately produce some.
-    fresh = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    fresh = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     for rr in fresh["rule_results"]:
         if rr["final_status"] == "uncertain":
             client.patch(
-                f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"}, headers=headers,
+                f"/api/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"}, headers=headers,
             )
 
     # ---- finalize ----
-    finalize_resp = client.post(f"/uploads/{upload['id']}/finalize", json={"reference_id": ref}, headers=headers)
+    finalize_resp = client.post(f"/api/uploads/{upload['id']}/finalize", json={"reference_id": ref}, headers=headers)
     assert finalize_resp.status_code == 200, finalize_resp.text
     assert finalize_resp.json()["is_final"] is True
     print("LIVE SMOKE -- finalized successfully")
 
     # ---- attempt another override on the now-finalized upload: must reject ----
-    fresh2 = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    fresh2 = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     another = next(r for r in fresh2["rule_results"] if r["id"] != target["id"])
     reject_resp = client.patch(
-        f"/rule_results/{another['id']}",
+        f"/api/rule_results/{another['id']}",
         json={"updated_at": another["updated_at"], "final_status": "pass"},
         headers=headers,
     )

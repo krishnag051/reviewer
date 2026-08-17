@@ -33,21 +33,21 @@ def _resolve_all_uncertain(client, headers, detail: dict) -> dict:
     for rr in detail["rule_results"]:
         if rr["final_status"] == "uncertain":
             client.patch(
-                f"/rule_results/{rr['id']}",
+                f"/api/rule_results/{rr['id']}",
                 json={"updated_at": rr["updated_at"], "final_status": "na"},
                 headers=headers,
             )
-    return client.get(f"/uploads/{detail['id']}", headers=headers).json()
+    return client.get(f"/api/uploads/{detail['id']}", headers=headers).json()
 
 
 def _ready_upload(client, headers) -> dict:
     ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
     patient = client.post(
-        "/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
+        "/api/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
     ).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     upload = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -56,7 +56,7 @@ def _ready_upload(client, headers) -> dict:
         },
         headers=headers,
     ).json()
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready", detail
     detail = _resolve_all_uncertain(client, headers, detail)
     return {"patient": patient, "version": version, "upload": detail}
@@ -64,7 +64,7 @@ def _ready_upload(client, headers) -> dict:
 
 def _finalize(client, headers, upload_id: str, reference_id: str):
     return client.post(
-        f"/uploads/{upload_id}/finalize", json={"reference_id": reference_id}, headers=headers
+        f"/api/uploads/{upload_id}/finalize", json={"reference_id": reference_id}, headers=headers
     )
 
 
@@ -88,7 +88,7 @@ def test_finalize_rejects_voided_upload(client, db_session, seeded_baseline):
     ctx = _ready_upload(client, headers)
 
     resp = client.post(
-        f"/uploads/{ctx['upload']['id']}/void", json={"reason": "wrong patient"}, headers=headers
+        f"/api/uploads/{ctx['upload']['id']}/void", json={"reason": "wrong patient"}, headers=headers
     )
     assert resp.status_code == 200
 
@@ -106,7 +106,7 @@ def test_finalize_rejects_existing_final_sibling(client, seeded_baseline):
 
     # A second upload for the SAME version.
     upload2 = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
@@ -115,7 +115,7 @@ def test_finalize_rejects_existing_final_sibling(client, seeded_baseline):
         },
         headers=headers,
     ).json()
-    detail2 = client.get(f"/uploads/{upload2['id']}", headers=headers).json()
+    detail2 = client.get(f"/api/uploads/{upload2['id']}", headers=headers).json()
     assert detail2["status"] == "ready"
 
     resp2 = _finalize(client, headers, upload2["id"], ctx["patient"]["reference_id"])
@@ -129,7 +129,7 @@ def test_finalize_rejects_uncertain_remaining(client, seeded_baseline):
     rr = ctx["upload"]["rule_results"][0]
 
     resp = client.patch(
-        f"/rule_results/{rr['id']}",
+        f"/api/rule_results/{rr['id']}",
         json={"updated_at": rr["updated_at"], "final_status": "uncertain"},
         headers=headers,
     )
@@ -155,7 +155,7 @@ def test_finalize_rejects_missing_reference_id(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _ready_upload(client, headers)
 
-    resp = client.post(f"/uploads/{ctx['upload']['id']}/finalize", json={}, headers=headers)
+    resp = client.post(f"/api/uploads/{ctx['upload']['id']}/finalize", json={}, headers=headers)
     assert resp.status_code in (409, 422)  # 422 if pydantic rejects a missing required field outright
 
 
@@ -168,7 +168,7 @@ def test_finalize_rejects_already_finalized_upload_and_changes_nothing(client, d
     ctx = _ready_upload(client, headers)
 
     sibling = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
@@ -227,7 +227,7 @@ def test_finalize_success_sets_purge_after_on_siblings_not_self(client, db_sessi
 
     # Second, non-final sibling upload for the same version.
     upload2 = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
@@ -266,20 +266,20 @@ def test_finalize_success_computes_score_via_scoring_module(client, db_session, 
     for rr in results:
         if rr["final_status"] != "na":
             client.patch(
-                f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"},
+                f"/api/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"},
                 headers=headers,
             )
-    results = client.get(f"/uploads/{ctx['upload']['id']}", headers=headers).json()["rule_results"]
+    results = client.get(f"/api/uploads/{ctx['upload']['id']}", headers=headers).json()["rule_results"]
 
     # Override 2 to pass, 1 to fail before finalizing -> score = 2/3 * 100.
     for rr in results[:2]:
         client.patch(
-            f"/rule_results/{rr['id']}",
+            f"/api/rule_results/{rr['id']}",
             json={"updated_at": rr["updated_at"], "final_status": "pass"},
             headers=headers,
         )
     client.patch(
-        f"/rule_results/{results[2]['id']}",
+        f"/api/rule_results/{results[2]['id']}",
         json={"updated_at": results[2]["updated_at"], "final_status": "fail"},
         headers=headers,
     )
@@ -309,7 +309,7 @@ def test_void_rejected_on_already_final_upload(client, seeded_baseline):
     resp = _finalize(client, headers, ctx["upload"]["id"], ctx["patient"]["reference_id"])
     assert resp.status_code == 200
 
-    resp = client.post(f"/uploads/{ctx['upload']['id']}/void", json={"reason": "changed my mind"}, headers=headers)
+    resp = client.post(f"/api/uploads/{ctx['upload']['id']}/void", json={"reason": "changed my mind"}, headers=headers)
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "already_final"
 
@@ -318,10 +318,10 @@ def test_void_requires_reason(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _ready_upload(client, headers)
 
-    resp = client.post(f"/uploads/{ctx['upload']['id']}/void", json={}, headers=headers)
+    resp = client.post(f"/api/uploads/{ctx['upload']['id']}/void", json={}, headers=headers)
     assert resp.status_code in (400, 422)
 
-    resp = client.post(f"/uploads/{ctx['upload']['id']}/void", json={"reason": "   "}, headers=headers)
+    resp = client.post(f"/api/uploads/{ctx['upload']['id']}/void", json={"reason": "   "}, headers=headers)
     assert resp.status_code == 400
 
 
@@ -330,7 +330,7 @@ def test_void_sets_purge_after_immediately(client, db_session, seeded_baseline):
     ctx = _ready_upload(client, headers)
 
     resp = client.post(
-        f"/uploads/{ctx['upload']['id']}/void", json={"reason": "wrong file uploaded"}, headers=headers
+        f"/api/uploads/{ctx['upload']['id']}/void", json={"reason": "wrong file uploaded"}, headers=headers
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -359,11 +359,11 @@ def test_voided_upload_excluded_from_finalize_sibling_check(client, seeded_basel
 
     # Void the first upload, then finalize a second — must NOT be blocked by
     # the (voided) first even if it were somehow marked final beforehand.
-    resp = client.post(f"/uploads/{ctx['upload']['id']}/void", json={"reason": "duplicate upload"}, headers=headers)
+    resp = client.post(f"/api/uploads/{ctx['upload']['id']}/void", json={"reason": "duplicate upload"}, headers=headers)
     assert resp.status_code == 200
 
     upload2 = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
@@ -372,7 +372,7 @@ def test_voided_upload_excluded_from_finalize_sibling_check(client, seeded_basel
         },
         headers=headers,
     ).json()
-    detail2 = client.get(f"/uploads/{upload2['id']}", headers=headers).json()
+    detail2 = client.get(f"/api/uploads/{upload2['id']}", headers=headers).json()
     assert detail2["status"] == "ready"
 
     resp2 = _finalize(client, headers, upload2["id"], ctx["patient"]["reference_id"])
@@ -389,7 +389,7 @@ def test_voided_siblings_purge_after_not_extended_by_finalize(client, db_session
     ctx = _ready_upload(client, headers)
 
     upload2 = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp2.pdf", _pdf_bytes(), "application/pdf"),
@@ -398,7 +398,7 @@ def test_voided_siblings_purge_after_not_extended_by_finalize(client, db_session
         },
         headers=headers,
     ).json()
-    void_resp = client.post(f"/uploads/{upload2['id']}/void", json={"reason": "wrong file"}, headers=headers)
+    void_resp = client.post(f"/api/uploads/{upload2['id']}/void", json={"reason": "wrong file"}, headers=headers)
     assert void_resp.status_code == 200
 
     db_session.expire_all()
@@ -422,7 +422,7 @@ def test_mark_reviewed_rejected_before_finalize(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _ready_upload(client, headers)
 
-    resp = client.post(f"/versions/{ctx['version']['id']}/mark-reviewed", headers=headers)
+    resp = client.post(f"/api/versions/{ctx['version']['id']}/mark-reviewed", headers=headers)
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "not_finalized"
 
@@ -434,7 +434,7 @@ def test_mark_reviewed_succeeds_after_finalize(client, db_session, seeded_baseli
     resp = _finalize(client, headers, ctx["upload"]["id"], ctx["patient"]["reference_id"])
     assert resp.status_code == 200
 
-    resp = client.post(f"/versions/{ctx['version']['id']}/mark-reviewed", headers=headers)
+    resp = client.post(f"/api/versions/{ctx['version']['id']}/mark-reviewed", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["reviewed"] is True
@@ -459,7 +459,7 @@ def test_mark_reviewed_succeeds_independent_of_audit_result(client, db_session, 
     rr = ctx["upload"]["rule_results"][0]
 
     client.patch(
-        f"/rule_results/{rr['id']}",
+        f"/api/rule_results/{rr['id']}",
         json={"updated_at": rr["updated_at"], "final_status": "fail"},
         headers=headers,
     )
@@ -471,7 +471,7 @@ def test_mark_reviewed_succeeds_independent_of_audit_result(client, db_session, 
     version = db_session.get(Version, uuid.UUID(ctx["version"]["id"]))
     assert version.audit_result == "fail"
 
-    resp = client.post(f"/versions/{ctx['version']['id']}/mark-reviewed", headers=headers)
+    resp = client.post(f"/api/versions/{ctx['version']['id']}/mark-reviewed", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["reviewed"] is True
 

@@ -52,11 +52,11 @@ def _resolve_all_uncertain(client, headers, detail: dict) -> dict:
     for rr in detail["rule_results"]:
         if rr["final_status"] == "uncertain":
             client.patch(
-                f"/rule_results/{rr['id']}",
+                f"/api/rule_results/{rr['id']}",
                 json={"updated_at": rr["updated_at"], "final_status": "na"},
                 headers=headers,
             )
-    return client.get(f"/uploads/{detail['id']}", headers=headers).json()
+    return client.get(f"/api/uploads/{detail['id']}", headers=headers).json()
 
 
 def _ready_upload(client, headers) -> dict:
@@ -71,11 +71,11 @@ def _ready_upload(client, headers) -> dict:
     """
     ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
     patient = client.post(
-        "/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
+        "/api/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
     ).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     upload = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -84,7 +84,7 @@ def _ready_upload(client, headers) -> dict:
         },
         headers=headers,
     ).json()
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready", detail
     detail = _resolve_all_uncertain(client, headers, detail)
     return {"patient": patient, "version": version, "upload": detail}
@@ -92,7 +92,7 @@ def _ready_upload(client, headers) -> dict:
 
 def _override(client, headers, rule_result: dict, **fields) -> "client response":
     body = {"updated_at": rule_result["updated_at"], **fields}
-    return client.patch(f"/rule_results/{rule_result['id']}", json=body, headers=headers)
+    return client.patch(f"/api/rule_results/{rule_result['id']}", json=body, headers=headers)
 
 
 # --------------------------------------------------------------- partial overrides
@@ -243,14 +243,14 @@ def test_optimistic_lock_stale_updated_at_409(client, seeded_baseline):
     rr = ctx["upload"]["rule_results"][9]
 
     resp = client.patch(
-        f"/rule_results/{rr['id']}",
+        f"/api/rule_results/{rr['id']}",
         json={"updated_at": "2020-01-01T00:00:00+00:00", "final_status": _different_status(rr["final_status"])},
         headers=headers,
     )
     assert resp.status_code == 409
 
     # Confirm nothing was applied — still whatever the agent originally said.
-    fresh = client.get(f"/uploads/{ctx['upload']['id']}", headers=headers).json()
+    fresh = client.get(f"/api/uploads/{ctx['upload']['id']}", headers=headers).json()
     fresh_rr = next(r for r in fresh["rule_results"] if r["id"] == rr["id"])
     assert fresh_rr["final_status"] == rr["final_status"]
     assert fresh_rr["is_overridden"] is False
@@ -292,7 +292,7 @@ def test_override_on_final_upload_is_rejected_409(client, db_session, seeded_bas
     results = ctx["upload"]["rule_results"]
 
     finalize_resp = client.post(
-        f"/uploads/{ctx['upload']['id']}/finalize",
+        f"/api/uploads/{ctx['upload']['id']}/finalize",
         json={"reference_id": ctx["patient"]["reference_id"]},
         headers=headers,
     )
@@ -309,7 +309,7 @@ def test_override_on_final_upload_is_rejected_409(client, db_session, seeded_bas
 
     # Nothing changed: not the rule_result, not the version's score.
     db_session.expire_all()
-    fresh = client.get(f"/uploads/{ctx['upload']['id']}", headers=headers).json()
+    fresh = client.get(f"/api/uploads/{ctx['upload']['id']}", headers=headers).json()
     fresh_rr = next(r for r in fresh["rule_results"] if r["id"] == results[0]["id"])
     assert fresh_rr["final_status"] == results[0]["final_status"]
     assert fresh_rr["is_overridden"] is False
@@ -406,7 +406,7 @@ def test_concurrent_overrides_same_rule_result_prevents_lost_update(client, db_s
     assert errors[0].status_code == 409
 
     db_session.expire_all()
-    fresh = client.get(f"/uploads/{ctx['upload']['id']}", headers=headers).json()
+    fresh = client.get(f"/api/uploads/{ctx['upload']['id']}", headers=headers).json()
     fresh_rr = next(r for r in fresh["rule_results"] if r["id"] == rr["id"])
     # Whichever one won, the row reflects exactly that one edit — not both,
     # not neither, and not silently overwritten by the loser.

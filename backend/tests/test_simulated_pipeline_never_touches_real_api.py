@@ -76,12 +76,12 @@ def test_simulate_route_404s_when_disabled_by_default_even_for_a_developer(clien
     dev_headers = login_headers(client, dev_email, "TestPass123!")
 
     patient = client.post(
-        "/patients", json={"reference_id": f"TP-TEST-sim-{uuid.uuid4().hex[:8]}", "name": "x"}, headers=admin_headers,
+        "/api/patients", json={"reference_id": f"TP-TEST-sim-{uuid.uuid4().hex[:8]}", "name": "x"}, headers=admin_headers,
     ).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=admin_headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=admin_headers).json()
 
     resp = client.post(
-        f"/versions/{version['id']}/uploads/simulate",
+        f"/api/versions/{version['id']}/uploads/simulate",
         files={"file": ("x.pdf", _pdf_bytes(), "application/pdf")},
         headers=dev_headers,
     )
@@ -93,11 +93,11 @@ def test_simulate_route_403s_for_non_developer_even_when_enabled(client, seeded_
 
     monkeypatch.setattr(settings, "allow_simulated_completion", True)
     headers = login_headers(client, "m.chen@brightpath-aba.com")  # admin, not developer
-    patient = client.post("/patients", json={"reference_id": f"TP-TEST-sim-{uuid.uuid4().hex[:8]}", "name": "x"}, headers=headers).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": f"TP-TEST-sim-{uuid.uuid4().hex[:8]}", "name": "x"}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
 
     resp = client.post(
-        f"/versions/{version['id']}/uploads/simulate",
+        f"/api/versions/{version['id']}/uploads/simulate",
         files={"file": ("x.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
     )
@@ -122,13 +122,13 @@ def test_simulate_route_reaches_ready_with_labeled_findings_and_never_touches_th
     dev_headers = login_headers(client, dev_email, "TestPass123!")
 
     patient = client.post(
-        "/patients", json={"reference_id": f"TP-TEST-sim-{uuid.uuid4().hex[:8]}", "name": "Simulated Lifecycle Test"},
+        "/api/patients", json={"reference_id": f"TP-TEST-sim-{uuid.uuid4().hex[:8]}", "name": "Simulated Lifecycle Test"},
         headers=admin_headers,
     ).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=admin_headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=admin_headers).json()
 
     resp = client.post(
-        f"/versions/{version['id']}/uploads/simulate",
+        f"/api/versions/{version['id']}/uploads/simulate",
         files={"file": ("x.pdf", _pdf_bytes(), "application/pdf")},
         headers=dev_headers,
     )
@@ -139,7 +139,7 @@ def test_simulate_route_reaches_ready_with_labeled_findings_and_never_touches_th
     # TestClient runs the background task synchronously before returning
     # above -- by the time we get here, simulate_upload_completion (5s
     # sleep + synthetic write) has already run to completion.
-    detail = client.get(f"/uploads/{upload['id']}", headers=admin_headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=admin_headers).json()
 
     assert detail["status"] == "ready", detail  # NOT "error" -- proves the guardrail was never triggered
     assert detail["error_detail"] is None

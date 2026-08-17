@@ -13,6 +13,15 @@ default is accepted, as a no-op.
 No live document, no live API -- _run_judgment_checks_once is monkeypatched
 with canned per-call responses so this tests _reconcile_consistency_check's
 logic in isolation.
+
+Round 93 (2026-08-14), item 1: added the best-of-3 tie-breaker -- on a
+call 1/2 disagreement, ONE additional batched 3rd call now runs, scoped
+to only the disagreeing rule_id(s), majority-voted against calls 1/2. A
+dropped/missing 3rd-call answer falls back to the exact pre-existing
+two-call "uncertain" finding (_two_way_uncertain_finding), never a new
+or different fallback. _reconcile_consistency_check itself (tested above,
+unchanged) is retained standalone for callers/tests that want the plain
+two-call reconciliation without the tie-breaker.
 """
 from pipeline import judge
 
@@ -59,14 +68,14 @@ def test_mixed_batch_some_agree_some_disagree_some_missing():
     assert "A-3" not in reconciled
 
 
-def test_run_judgment_checks_makes_exactly_two_underlying_calls_and_reconciles(monkeypatch):
+def test_run_judgment_checks_makes_exactly_two_calls_when_calls_1_and_2_agree(monkeypatch):
+    """Round 93, item 1: the best-of-3 tie-breaker must NEVER fire when
+    calls 1/2 already agree -- zero extra cost on the common case."""
     call_log = []
 
     def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
         call_log.append(call_reason)
-        if len(call_log) == 1:
-            return {"A-1": _finding("pass")}
-        return {"A-1": _finding("fail")}
+        return {"A-1": _finding("pass")}
 
     monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_once)
 
@@ -76,7 +85,66 @@ def test_run_judgment_checks_makes_exactly_two_underlying_calls_and_reconciles(m
     assert len(call_log) == 2
     assert "1/2" in call_log[0]
     assert "2/2" in call_log[1]
+    assert result["A-1"]["result"] == "pass"
+
+
+def test_run_judgment_checks_makes_a_third_tiebreak_call_only_on_disagreement(monkeypatch):
+    """Round 93, item 1: when calls 1/2 disagree, exactly ONE additional
+    batched 3rd call fires (not one per disagreeing rule_id), scoped to
+    ONLY the disagreeing rule_id(s) -- A-2 (which agreed) must never be
+    re-sent. Majority of the 3 calls wins when it's a real majority."""
+    call_log = []
+
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
+        call_log.append((call_reason, [r["rule_id"] for r in judgment_rules]))
+        n = len(call_log)
+        if n == 1:
+            return {"A-1": _finding("pass"), "A-2": _finding("pass")}
+        if n == 2:
+            return {"A-1": _finding("fail"), "A-2": _finding("pass")}
+        # 3rd call: only A-1 should ever be sent here (A-2 already agreed).
+        return {"A-1": _finding("fail")}
+
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_once)
+
+    rules = [
+        {"rule_id": "A-1", "category": "Test", "description": "d", "notes": None},
+        {"rule_id": "A-2", "category": "Test", "description": "d", "notes": None},
+    ]
+    result = judge.run_judgment_checks(rules, {"pages": []}, {}, call_reason="initial batch")
+
+    assert len(call_log) == 3
+    assert "tie-break 3/3" in call_log[2][0]
+    assert call_log[2][1] == ["A-1"], "the 3rd call must be scoped to ONLY the disagreeing rule_id(s)"
+    assert result["A-2"]["result"] == "pass", "A-2 agreed on calls 1/2 and must be untouched by the tie-break"
+    assert result["A-1"]["result"] == "fail", "2 of 3 calls said fail -- majority wins"
+
+
+def test_run_judgment_checks_falls_back_to_two_call_uncertain_when_tiebreak_drops_the_rule_id(monkeypatch):
+    """Round 93, item 1's explicit requirement: if the 3rd call fails to
+    answer a disagreeing rule_id, fall back to today's existing two-call
+    'uncertain' behavior -- never silently drop it, never leave it unset."""
+    call_log = []
+
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
+        call_log.append(call_reason)
+        n = len(call_log)
+        if n == 1:
+            return {"A-1": _finding("pass", "looks fine")}
+        if n == 2:
+            return {"A-1": _finding("fail", "actually a problem")}
+        return {}  # 3rd call drops A-1 entirely
+
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_once)
+
+    rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]
+    result = judge.run_judgment_checks(rules, {"pages": []}, {}, call_reason="initial batch")
+
+    assert len(call_log) == 3
+    assert "A-1" in result, "must never be silently dropped"
     assert result["A-1"]["result"] == "uncertain"
+    assert "looks fine" in result["A-1"]["evidence"]
+    assert "actually a problem" in result["A-1"]["evidence"]
 
 
 def test_run_judgment_checks_with_no_rules_makes_zero_calls(monkeypatch):

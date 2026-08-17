@@ -76,7 +76,7 @@ def test_get_upload_file_serves_a_relative_legacy_style_path(client, db_session,
         upload = make_patient_version_upload(db_session, status="ready", file_path=relative)
         headers = login_headers(client, "m.chen@brightpath-aba.com")
 
-        resp = client.get(f"/uploads/{upload.id}/file", headers=headers)
+        resp = client.get(f"/api/uploads/{upload.id}/file", headers=headers)
         assert resp.status_code == 200
         assert resp.content == content
     finally:
@@ -98,7 +98,7 @@ def test_get_upload_file_still_404s_when_genuinely_purged(client, db_session, se
         upload = make_patient_version_upload(db_session, status="ready", file_path=relative, file_purged=True)
         headers = login_headers(client, "m.chen@brightpath-aba.com")
 
-        resp = client.get(f"/uploads/{upload.id}/file", headers=headers)
+        resp = client.get(f"/api/uploads/{upload.id}/file", headers=headers)
         assert resp.status_code == 404
     finally:
         test_file.unlink(missing_ok=True)

@@ -27,15 +27,15 @@ def _finalized_version(client, headers, reviewer_id: str | None = None, statuses
     """
     ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
     patient = client.post(
-        "/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
+        "/api/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
     ).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
 
     if reviewer_id is not None:
-        client.patch(f"/versions/{version['id']}", json={"reviewer_id": reviewer_id}, headers=headers)
+        client.patch(f"/api/versions/{version['id']}", json={"reviewer_id": reviewer_id}, headers=headers)
 
     upload = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -44,7 +44,7 @@ def _finalized_version(client, headers, reviewer_id: str | None = None, statuses
         },
         headers=headers,
     ).json()
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready"
 
     # The real rule-checking agent (2026-07-30, previously the hollow stub)
@@ -58,20 +58,20 @@ def _finalized_version(client, headers, reviewer_id: str | None = None, statuses
     for rr in detail["rule_results"]:
         if rr["final_status"] != "na":
             client.patch(
-                f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"},
+                f"/api/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": "na"},
                 headers=headers,
             )
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
 
     for i, target_status in enumerate(statuses or []):
         rr = detail["rule_results"][i]
         client.patch(
-            f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": target_status},
+            f"/api/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": target_status},
             headers=headers,
         )
 
     resp = client.post(
-        f"/uploads/{upload['id']}/finalize", json={"reference_id": ref}, headers=headers
+        f"/api/uploads/{upload['id']}/finalize", json={"reference_id": ref}, headers=headers
     )
     assert resp.status_code == 200, resp.text
 
@@ -122,7 +122,7 @@ def test_overview_counts_real_ready_uploads_not_just_finalized(client, db_sessio
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     _ready_upload_direct(db_session, statuses=["pass", "fail"])
 
-    resp = client.get("/reports/overview", params={"range": "all"}, headers=headers)
+    resp = client.get("/api/reports/overview", params={"range": "all"}, headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["processed"] >= 1
@@ -135,15 +135,15 @@ def test_overview_before_after_counts_isolated(client, db_session, seeded_baseli
     not count."""
     headers = login_headers(client, "m.chen@brightpath-aba.com")
 
-    before = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
+    before = client.get("/api/reports/overview", params={"range": "all"}, headers=headers).json()
 
     upload = _ready_upload_direct(db_session, statuses=["pass"])
-    after_ready = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
+    after_ready = client.get("/api/reports/overview", params={"range": "all"}, headers=headers).json()
     assert after_ready["processed"] == before["processed"] + 1, "a real, completed upload must be counted immediately, with no finalize step"
 
     upload.voided = True
     db_session.commit()
-    after_void = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
+    after_void = client.get("/api/reports/overview", params={"range": "all"}, headers=headers).json()
     assert after_void["processed"] == before["processed"], "a voided upload must not be counted"
 
 
@@ -152,9 +152,9 @@ def test_overview_date_range_filtering_excludes_out_of_range(client, db_session,
     # Pushed 100 days into the past — outside "week"/"30d" range.
     _ready_upload_direct(db_session, created_at=datetime.now(timezone.utc) - timedelta(days=100), statuses=["pass"])
 
-    resp_all = client.get("/reports/overview", params={"range": "all"}, headers=headers).json()
-    resp_30d = client.get("/reports/overview", params={"range": "30d"}, headers=headers).json()
-    resp_week = client.get("/reports/overview", params={"range": "week"}, headers=headers).json()
+    resp_all = client.get("/api/reports/overview", params={"range": "all"}, headers=headers).json()
+    resp_30d = client.get("/api/reports/overview", params={"range": "30d"}, headers=headers).json()
+    resp_week = client.get("/api/reports/overview", params={"range": "week"}, headers=headers).json()
 
     assert resp_all["processed"] >= 1
     # The specific upload we pushed 100 days back must not appear in the tighter windows.
@@ -170,7 +170,7 @@ def test_overview_custom_range_actually_filters(client, db_session, seeded_basel
     _ready_upload_direct(db_session, created_at=known_created_at, statuses=["pass"])
 
     resp_hit = client.get(
-        "/reports/overview",
+        "/api/reports/overview",
         params={"range": "custom", "start": "2020-06-01", "end": "2020-06-30"},
         headers=headers,
     )
@@ -178,7 +178,7 @@ def test_overview_custom_range_actually_filters(client, db_session, seeded_basel
     assert resp_hit.json()["processed"] >= 1
 
     resp_miss = client.get(
-        "/reports/overview",
+        "/api/reports/overview",
         params={"range": "custom", "start": "2021-01-01", "end": "2021-01-31"},
         headers=headers,
     )
@@ -187,7 +187,7 @@ def test_overview_custom_range_actually_filters(client, db_session, seeded_basel
     # window must not be included, so compare against the hit count context
     # via a narrower custom range around just this upload's date.
     resp_narrow = client.get(
-        "/reports/overview",
+        "/api/reports/overview",
         params={"range": "custom", "start": "2020-06-15", "end": "2020-06-15"},
         headers=headers,
     )
@@ -196,7 +196,7 @@ def test_overview_custom_range_actually_filters(client, db_session, seeded_basel
 
 def test_overview_custom_range_requires_start_and_end(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    resp = client.get("/reports/overview", params={"range": "custom"}, headers=headers)
+    resp = client.get("/api/reports/overview", params={"range": "custom"}, headers=headers)
     assert resp.status_code == 400
 
 
@@ -208,7 +208,7 @@ def test_per_reviewer_breakdown_pass_rate(client, seeded_baseline):
     _finalized_version(client, headers, reviewer_id=reviewer_id, statuses=["pass"])
     _finalized_version(client, headers, reviewer_id=reviewer_id, statuses=["fail"])
 
-    resp = client.get("/reports/overview", params={"range": "all"}, headers=headers)
+    resp = client.get("/api/reports/overview", params={"range": "all"}, headers=headers)
     assert resp.status_code == 200
     per_reviewer = resp.json()["per_reviewer"]
     row = next(r for r in per_reviewer if r["reviewer_id"] == reviewer_id)
@@ -233,13 +233,13 @@ def test_trends_matrix_reflects_rule_result_edit_history_averaged(client, seeded
     ctx2 = _finalized_version(client, headers, reviewer_id=reviewer_id, statuses=["fail"])
 
     # Same rule_code was overridden differently across the two audits.
-    resp1 = client.get(f"/uploads/{ctx1['upload_id']}", headers=headers).json()
-    resp2 = client.get(f"/uploads/{ctx2['upload_id']}", headers=headers).json()
+    resp1 = client.get(f"/api/uploads/{ctx1['upload_id']}", headers=headers).json()
+    resp2 = client.get(f"/api/uploads/{ctx2['upload_id']}", headers=headers).json()
     rule_code_1 = next(
         rr for rr in resp1["rule_results"] if rr["final_status"] == "pass"
     )["rule_id"]
 
-    resp = client.get("/reports/trends", params={"group_by": "provider"}, headers=headers)
+    resp = client.get("/api/reports/trends", params={"group_by": "provider"}, headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     row = next(r for r in body["rows"] if r["row_key"] == reviewer_id)
@@ -257,11 +257,11 @@ def test_trends_group_by_provider_default(client, seeded_baseline):
     # Total average must reflect ALL rule_results on the upload, not just the
     # 2 that were explicitly overridden to "pass" — the other (untouched, na)
     # results correctly count in the denominator, dragging the average down.
-    detail = client.get(f"/uploads/{ctx['upload_id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{ctx['upload_id']}", headers=headers).json()
     total_rules = len(detail["rule_results"])
     expected_average = round(2 / total_rules * 100, 1)
 
-    resp = client.get("/reports/trends", headers=headers)
+    resp = client.get("/api/reports/trends", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["group_by"] == "provider"
@@ -274,7 +274,7 @@ def test_trends_group_by_questionset(client, seeded_baseline):
     reviewer_id = str(seeded_baseline["a.thompson@brightpath-aba.com"])
     _finalized_version(client, headers, reviewer_id=reviewer_id, statuses=["fail"])
 
-    resp = client.get("/reports/trends", params={"group_by": "questionset"}, headers=headers)
+    resp = client.get("/api/reports/trends", params={"group_by": "questionset"}, headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["group_by"] == "questionset"
@@ -285,7 +285,7 @@ def test_trends_group_by_questionset(client, seeded_baseline):
 
 def test_trends_rejects_invalid_group_by(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    resp = client.get("/reports/trends", params={"group_by": "nonsense"}, headers=headers)
+    resp = client.get("/api/reports/trends", params={"group_by": "nonsense"}, headers=headers)
     assert resp.status_code == 422  # FastAPI Literal validation rejects it outright
 
 
@@ -319,10 +319,10 @@ def test_v_override_analytics_excludes_non_finalized_uploads(client, db_session,
     """
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Not final"}, headers=headers).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": ref, "name": "Not final"}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     upload = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -331,7 +331,7 @@ def test_v_override_analytics_excludes_non_finalized_uploads(client, db_session,
         },
         headers=headers,
     ).json()
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     rr = detail["rule_results"][0]
 
     from app.db.models import Rule
@@ -350,7 +350,7 @@ def test_v_override_analytics_excludes_non_finalized_uploads(client, db_session,
     # real agent returned for this row.
     target = next(s for s in ("pass", "fail", "na", "uncertain", "not_checkable") if s != rr["final_status"])
     client.patch(
-        f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": target}, headers=headers
+        f"/api/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], "final_status": target}, headers=headers
     )
 
     after = _total_for_rule_code()

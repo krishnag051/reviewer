@@ -34,13 +34,13 @@ def _pdf_bytes() -> bytes:
 
 def _create_patient_and_version(client, headers) -> dict:
     ref = f"TP-TEST-r56-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Round 56 Test Patient"}, headers=headers).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": ref, "name": "Round 56 Test Patient"}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     return {"patient": patient, "version": version}
 
 
 def _restore_mode(client, headers, mode: str) -> None:
-    client.patch("/admin/app-config", json={"supporting_doc_mode": mode}, headers=headers)
+    client.patch("/api/admin/app-config", json={"supporting_doc_mode": mode}, headers=headers)
 
 
 # --------------------------------------------------------- app-config flag
@@ -48,30 +48,30 @@ def _restore_mode(client, headers, mode: str) -> None:
 
 def test_app_config_defaults_to_structured_form(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    resp = client.get("/admin/app-config", headers=headers)
+    resp = client.get("/api/admin/app-config", headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["supporting_doc_mode"] == "structured_form"
 
 
 def test_app_config_readable_by_any_authenticated_role(client, seeded_baseline):
     headers = login_headers(client, "s.patel@brightpath-aba.com")  # role: user
-    resp = client.get("/admin/app-config", headers=headers)
+    resp = client.get("/api/admin/app-config", headers=headers)
     assert resp.status_code == 200, resp.text
 
 
 def test_app_config_patch_rejected_for_plain_user_role(client, seeded_baseline):
     headers = login_headers(client, "s.patel@brightpath-aba.com")  # role: user
-    resp = client.patch("/admin/app-config", json={"supporting_doc_mode": "document"}, headers=headers)
+    resp = client.patch("/api/admin/app-config", json={"supporting_doc_mode": "document"}, headers=headers)
     assert resp.status_code == 403
 
 
 def test_app_config_patch_allowed_for_admin_and_persists(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     try:
-        resp = client.patch("/admin/app-config", json={"supporting_doc_mode": "document"}, headers=headers)
+        resp = client.patch("/api/admin/app-config", json={"supporting_doc_mode": "document"}, headers=headers)
         assert resp.status_code == 200, resp.text
         assert resp.json()["supporting_doc_mode"] == "document"
-        assert client.get("/admin/app-config", headers=headers).json()["supporting_doc_mode"] == "document"
+        assert client.get("/api/admin/app-config", headers=headers).json()["supporting_doc_mode"] == "document"
     finally:
         _restore_mode(client, headers, "structured_form")
 
@@ -84,7 +84,7 @@ def test_structured_form_upload_rejects_missing_qa_field(client, seeded_baseline
     ctx = _create_patient_and_version(client, headers)
     incomplete = {k: v for k, v in VALID_QA.items() if k != "hours_requesting"}
     resp = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=incomplete,
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf"), "session_notes": ("note.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
@@ -97,7 +97,7 @@ def test_structured_form_upload_rejects_missing_session_notes(client, seeded_bas
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _create_patient_and_version(client, headers)
     resp = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=VALID_QA,
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
@@ -111,7 +111,7 @@ def test_structured_form_upload_succeeds_and_persists_answers_and_notes(client, 
     ctx = _create_patient_and_version(client, headers)
 
     resp = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=VALID_QA,
         files=[
             ("file", ("tp.pdf", _pdf_bytes(), "application/pdf")),
@@ -137,12 +137,12 @@ def test_structured_form_upload_succeeds_and_persists_answers_and_notes(client, 
 def test_document_mode_still_works_unchanged_when_switched_back(client, db_session, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     try:
-        client.patch("/admin/app-config", json={"supporting_doc_mode": "document"}, headers=headers)
+        client.patch("/api/admin/app-config", json={"supporting_doc_mode": "document"}, headers=headers)
         ctx = _create_patient_and_version(client, headers)
 
         # Missing supporting_document -> 422, same as pre-Round-56 behavior.
         missing_resp = client.post(
-            f"/versions/{ctx['version']['id']}/uploads",
+            f"/api/versions/{ctx['version']['id']}/uploads",
             files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
             headers=headers,
         )
@@ -150,7 +150,7 @@ def test_document_mode_still_works_unchanged_when_switched_back(client, db_sessi
         assert any(e.get("loc", [])[-1] == "supporting_document" for e in missing_resp.json()["detail"])
 
         ok_resp = client.post(
-            f"/versions/{ctx['version']['id']}/uploads",
+            f"/api/versions/{ctx['version']['id']}/uploads",
             files={
                 "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
                 "supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf"),
@@ -174,7 +174,7 @@ def test_document_mode_still_works_unchanged_when_switched_back(client, db_sessi
 def test_latest_intake_answers_null_before_any_structured_upload(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _create_patient_and_version(client, headers)
-    resp = client.get(f"/patients/{ctx['patient']['id']}/latest-intake-answers", headers=headers)
+    resp = client.get(f"/api/patients/{ctx['patient']['id']}/latest-intake-answers", headers=headers)
     assert resp.status_code == 200
     assert resp.json() is None
 
@@ -183,12 +183,12 @@ def test_latest_intake_answers_prefill_from_previous_upload(client, seeded_basel
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _create_patient_and_version(client, headers)
     client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=VALID_QA,
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf"), "session_notes": ("note.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
     )
-    resp = client.get(f"/patients/{ctx['patient']['id']}/latest-intake-answers", headers=headers)
+    resp = client.get(f"/api/patients/{ctx['patient']['id']}/latest-intake-answers", headers=headers)
     assert resp.status_code == 200
     assert resp.json() == VALID_QA
 
@@ -201,14 +201,14 @@ def test_session_notes_list_and_serve(client, seeded_baseline):
     ctx = _create_patient_and_version(client, headers)
     content = _pdf_bytes()
     upload_resp = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=VALID_QA,
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf"), "session_notes": ("note.pdf", content, "application/pdf")},
         headers=headers,
     )
     upload_id = upload_resp.json()["id"]
 
-    list_resp = client.get(f"/uploads/{upload_id}/session-notes", headers=headers)
+    list_resp = client.get(f"/api/uploads/{upload_id}/session-notes", headers=headers)
     assert list_resp.status_code == 200
     page = list_resp.json()
     # Round 57, Item 2: the page's response now wraps the file list with
@@ -219,7 +219,7 @@ def test_session_notes_list_and_serve(client, seeded_baseline):
     assert len(notes) == 1
     assert notes[0]["original_filename"] == "note.pdf"
 
-    file_resp = client.get(f"/uploads/{upload_id}/session-notes/{notes[0]['id']}", headers=headers)
+    file_resp = client.get(f"/api/uploads/{upload_id}/session-notes/{notes[0]['id']}", headers=headers)
     assert file_resp.status_code == 200
     assert file_resp.content == content
 
@@ -227,7 +227,7 @@ def test_session_notes_list_and_serve(client, seeded_baseline):
 def test_session_notes_list_empty_for_document_mode_upload(client, db_session, seeded_baseline):
     upload = make_patient_version_upload(db_session, status="ready", file_path="/no/such.pdf", supporting_document_path="/no/such-supporting.pdf")
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    resp = client.get(f"/uploads/{upload.id}/session-notes", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/session-notes", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["files"] == []
@@ -238,21 +238,21 @@ def test_session_note_file_404s_when_upload_id_does_not_match(client, db_session
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     ctx = _create_patient_and_version(client, headers)
     upload_resp = client.post(
-        f"/versions/{ctx['version']['id']}/uploads",
+        f"/api/versions/{ctx['version']['id']}/uploads",
         data=VALID_QA,
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf"), "session_notes": ("note.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
     )
     upload_id = upload_resp.json()["id"]
-    note_id = client.get(f"/uploads/{upload_id}/session-notes", headers=headers).json()["files"][0]["id"]
+    note_id = client.get(f"/api/uploads/{upload_id}/session-notes", headers=headers).json()["files"][0]["id"]
 
     other_upload = make_patient_version_upload(db_session, status="ready")
-    resp = client.get(f"/uploads/{other_upload.id}/session-notes/{note_id}", headers=headers)
+    resp = client.get(f"/api/uploads/{other_upload.id}/session-notes/{note_id}", headers=headers)
     assert resp.status_code == 404
 
 
 def test_session_notes_requires_auth(client, seeded_baseline):
-    resp = client.get(f"/uploads/{uuid.uuid4()}/session-notes")
+    resp = client.get(f"/api/uploads/{uuid.uuid4()}/session-notes")
     assert resp.status_code == 401
 
 
@@ -261,7 +261,7 @@ def test_session_notes_requires_auth(client, seeded_baseline):
 
 def test_rules_response_includes_session_notes_only_and_tp_section_fields(client, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    resp = client.get("/rules", headers=headers)
+    resp = client.get("/api/rules", headers=headers)
     assert resp.status_code == 200
     rules_by_code = {r["rule_code"]: r for r in resp.json()}
     for code in ("QA-RPT-03", "QA-ACF-02", "QA-ACF-08"):
@@ -289,7 +289,7 @@ def _create_test_rule(client, headers) -> dict:
     pristine (e.g. test_seed.py's "every rule has exactly one history row
     at version 1" invariant check)."""
     resp = client.post(
-        "/rules",
+        "/api/rules",
         json={
             "rule_code": unique_rule_code("R-TEST-r56"), "category": "Test", "question_set": "Test",
             "question_text": "Disposable test rule for Round 56 flagging coverage.", "rule_type": "structural",
@@ -305,7 +305,7 @@ def test_rule_update_can_set_session_notes_only_and_tp_section(client, seeded_ba
     target = _create_test_rule(client, headers)
 
     resp = client.patch(
-        f"/rules/{target['id']}",
+        f"/api/rules/{target['id']}",
         json={"session_notes_only": True, "tp_section": "Assessment of Current Functioning"},
         headers=headers,
     )
@@ -321,5 +321,5 @@ def test_rule_update_rejected_for_non_admin(client, seeded_baseline):
     target = _create_test_rule(client, admin_headers)
 
     user_headers = login_headers(client, "s.patel@brightpath-aba.com")
-    resp = client.patch(f"/rules/{target['id']}", json={"session_notes_only": True}, headers=user_headers)
+    resp = client.patch(f"/api/rules/{target['id']}", json={"session_notes_only": True}, headers=user_headers)
     assert resp.status_code == 403

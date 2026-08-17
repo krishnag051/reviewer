@@ -30,15 +30,15 @@ def _pdf_bytes() -> bytes:
 
 def _create_patient_and_version(client, headers, name="Round 57 Test Patient") -> dict:
     ref = f"TP-TEST-r57-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": name}, headers=headers).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": ref, "name": name}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     return {"patient": patient, "version": version}
 
 
 def _structured_upload(client, headers, version_id, qa_overrides=None) -> dict:
     data = {**ROUND56_QA_FORM_DATA, **(qa_overrides or {})}
     resp = client.post(
-        f"/versions/{version_id}/uploads",
+        f"/api/versions/{version_id}/uploads",
         data=data,
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf"), "session_notes": ("note.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
@@ -55,14 +55,14 @@ def test_upload_detail_includes_intake_answers_for_structured_form_upload(client
     ctx = _create_patient_and_version(client, headers)
     upload = _structured_upload(client, headers, ctx["version"]["id"])
 
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["intake_answers"] == ROUND56_QA_FORM_DATA
 
 
 def test_upload_detail_intake_answers_null_for_document_mode_upload(client, db_session, seeded_baseline):
     upload = make_patient_version_upload(db_session, status="ready", file_path="/no/such.pdf", supporting_document_path="/no/such-supporting.pdf")
     headers = login_headers(client, "m.chen@brightpath-aba.com")
-    detail = client.get(f"/uploads/{upload.id}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload.id}", headers=headers).json()
     assert detail["intake_answers"] is None
 
 
@@ -82,8 +82,8 @@ def test_intake_answers_are_specific_to_each_upload_not_shared_across_them(clien
     # version, which the backend allows for additional draft attempts).
     upload2 = _structured_upload(client, headers, ctx["version"]["id"], {"hours_requesting": "25 hrs/week"})
 
-    detail1 = client.get(f"/uploads/{upload1['id']}", headers=headers).json()
-    detail2 = client.get(f"/uploads/{upload2['id']}", headers=headers).json()
+    detail1 = client.get(f"/api/uploads/{upload1['id']}", headers=headers).json()
+    detail2 = client.get(f"/api/uploads/{upload2['id']}", headers=headers).json()
 
     assert detail1["intake_answers"]["hours_requesting"] == "10 hrs/week"
     assert detail2["intake_answers"]["hours_requesting"] == "25 hrs/week"
@@ -97,7 +97,7 @@ def test_session_notes_page_shows_the_correct_patient(client, seeded_baseline):
     ctx = _create_patient_and_version(client, headers, name="Jordan Nakamura")
     upload = _structured_upload(client, headers, ctx["version"]["id"])
 
-    page = client.get(f"/uploads/{upload['id']}/session-notes", headers=headers).json()
+    page = client.get(f"/api/uploads/{upload['id']}/session-notes", headers=headers).json()
     assert page["patient_name"] == "Jordan Nakamura"
     assert page["patient_reference_id"] == ctx["patient"]["reference_id"]
 
@@ -111,7 +111,7 @@ def test_session_notes_page_patient_name_distinguishes_two_different_patients(cl
     upload_a = _structured_upload(client, headers, ctx_a["version"]["id"])
     upload_b = _structured_upload(client, headers, ctx_b["version"]["id"])
 
-    page_a = client.get(f"/uploads/{upload_a['id']}/session-notes", headers=headers).json()
-    page_b = client.get(f"/uploads/{upload_b['id']}/session-notes", headers=headers).json()
+    page_a = client.get(f"/api/uploads/{upload_a['id']}/session-notes", headers=headers).json()
+    page_b = client.get(f"/api/uploads/{upload_b['id']}/session-notes", headers=headers).json()
     assert page_a["patient_name"] == "Patient A"
     assert page_b["patient_name"] == "Patient B"

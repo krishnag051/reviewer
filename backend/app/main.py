@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -38,18 +38,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(admin.router)
-app.include_router(admin.config_router)
-app.include_router(rules.router)
-app.include_router(rule_sync.router)
-app.include_router(patients.router)
-app.include_router(versions.router)
-app.include_router(uploads.router)
-app.include_router(rule_results.router)
-app.include_router(reports.router)
+# 2026-08-14 (deploy fix): Cloudflare Tunnel forwards everything under
+# /api on tp.masterfaster.org to this backend container, but the routes
+# below were registered with no /api prefix at all -- every real request
+# 404'd. Cloudflare intentionally does NOT strip /api at the tunnel level
+# (the frontend also has its own page route at /rules, which would become
+# indistinguishable from this API's /rules endpoint if stripped there), so
+# the prefix has to live here instead. One APIRouter wraps every existing
+# sub-router (each sub-router keeps its own prefix/tags/dependencies
+# unchanged) plus /health, so every path below becomes /api/<unchanged
+# path> -- e.g. /auth/login -> /api/auth/login -- with no other path
+# renamed.
+api_router = APIRouter(prefix="/api")
+api_router.include_router(auth.router)
+api_router.include_router(admin.router)
+api_router.include_router(admin.config_router)
+api_router.include_router(rules.router)
+api_router.include_router(rule_sync.router)
+api_router.include_router(patients.router)
+api_router.include_router(versions.router)
+api_router.include_router(uploads.router)
+api_router.include_router(rule_results.router)
+api_router.include_router(reports.router)
 
 
-@app.get("/health")
+@api_router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+app.include_router(api_router)

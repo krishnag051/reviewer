@@ -227,9 +227,33 @@ def _bare_rbt_mentions(text: str) -> list[str]:
     return [m.group(0) for m in re.finditer(r"\bRBT\b(?!/BT)", text)]
 
 
-def _find_blank_labels(text: str) -> list[str]:
+_BLANK_LABEL_DEBUG_CONTEXT_LINES = 3
+
+
+def _find_blank_labels(text: str) -> list[tuple[str, str]]:
     """Heuristic: a label ending in ':' with nothing but whitespace before the
     next line's content, suggesting an unfilled form field.
+
+    Round 93 (2026-08-14), item 4: DIAGNOSTIC LOGGING added -- no pass/fail
+    logic changed. QA-RPT-01 has been reported to flag real, filled fields
+    (e.g. 'Mastered Goals:', 'Parent/Caregiver Involvement:') as blank on
+    real documents, but two candidate mechanisms (a page-boundary artifact
+    where the real content starts on the NEXT page's own text, vs. a
+    placeholder/instructional line ending in ':' being mistaken for its
+    own separate label) couldn't be distinguished without seeing the real
+    per-page extracted text around a flagged case.
+
+    Round 94 (2026-08-14), item 1: the Round 93 version only printed this
+    diagnostic to the console, which isn't captured when someone runs the
+    real pipeline directly (not through this file's own console). Now
+    RETURNED alongside each flagged label -- (label, debug_suffix) pairs
+    instead of bare label strings -- so the caller (_check_RPT01) can fold
+    the diagnostic context directly into the evidence/Detail text a real
+    run actually surfaces, with zero extra steps on the human running it.
+    Still diagnostic-only: PASS/FAIL/page/confidence are computed exactly
+    as before this round; only the evidence STRING gains this appended
+    context. The console print is kept too, unchanged, for anyone who
+    does have console access.
     """
     blanks = []
     lines = text.splitlines()
@@ -238,7 +262,19 @@ def _find_blank_labels(text: str) -> list[str]:
         if stripped.endswith(":") and len(stripped) < 60:
             next_nonblank = next((lines[j].strip() for j in range(i + 1, min(i + 2, len(lines)))), "")
             if not next_nonblank:
-                blanks.append(stripped)
+                before = lines[max(0, i - _BLANK_LABEL_DEBUG_CONTEXT_LINES):i]
+                after = lines[i + 1:i + 1 + _BLANK_LABEL_DEBUG_CONTEXT_LINES]
+                is_last_line = i == len(lines) - 1
+                debug_suffix = (
+                    f"[DEBUG context before={before!r} after={after!r} "
+                    f"is_last_line_of_page={is_last_line}]"
+                )
+                print(
+                    f"[_find_blank_labels DEBUG] flagged {stripped!r} as blank (line {i} of this page's text). "
+                    f"Context before: {before!r}. Context after: {after!r}. "
+                    f"(is_last_line_of_page={is_last_line})"
+                )
+                blanks.append((stripped, debug_suffix))
     return blanks
 
 
@@ -276,7 +312,7 @@ def _find_weekly_hours_for_code(text: str, cpt_code: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+_DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 
 def _is_leap_year(year: int) -> bool:
@@ -759,6 +795,14 @@ def _check_TEMP05(rule: dict, fields: dict) -> tuple:
 
 
 def _check_RPT01(rule: dict, fields: dict) -> tuple:
+    """Round 94, item 1: _find_blank_labels now returns (label, debug_suffix)
+    pairs rather than bare label strings -- the debug_suffix (surrounding
+    text context + is_last_line_of_page) is folded directly into this
+    rule's own evidence/Detail text below, so it reaches the CSV export
+    automatically on a real run with zero extra steps. DIAGNOSTIC ONLY --
+    the result/page/confidence computed below are unchanged from before
+    this round; only the evidence STRING is longer.
+    """
     blanks = []
     for p in fields["pages"]:
         found = _find_blank_labels(p["text"])
@@ -767,7 +811,9 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
     if not blanks:
         return "pass", "No unfilled 'Label:' form fields detected.", None, 0.6
     if len(blanks) == 1:
-        page, labels = blanks[0]
+        page, label_pairs = blanks[0]
+        labels = [label for label, _ in label_pairs]
+        debug_text = " ".join(suffix for _, suffix in label_pairs)
         # confidence 0.65, not 0.5: a blank required field is a plain fact
         # this regex either finds or doesn't, not a judgment call, and
         # confidence < ESCALATION_CONFIDENCE_THRESHOLD (0.6) forces this
@@ -778,13 +824,19 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
         # escalation silently replaced it with the model's wrong guess (19).
         # Round 77, Item 2: "[Page N]" tag, same standard convention as
         # every other checker/the judgment prompt -- was "on page {page}:".
-        return "fail", f"Possible unfilled field(s): {labels}. [Page {page}]", page, 0.65
+        return "fail", f"Possible unfilled field(s): {labels}. [Page {page}] {debug_text}", page, 0.65
     # More than one page implicated: one {page, detail} entry per page,
     # naming that page's specific labels — never a collapsed page-range
     # summary a reviewer would have to decode.
     evidence = [
-        {"page": page, "detail": f"Possible unfilled field(s): {labels}."}
-        for page, labels in blanks
+        {
+            "page": page,
+            "detail": (
+                f"Possible unfilled field(s): {[label for label, _ in label_pairs]}. "
+                + " ".join(suffix for _, suffix in label_pairs)
+            ),
+        }
+        for page, label_pairs in blanks
     ]
     return "fail", evidence, None, 0.65
 
@@ -863,6 +915,54 @@ def _check_GIP04(rule: dict, fields: dict) -> tuple:
         return "fail", detail, page, 0.85
     evidence = [{"page": page, "detail": detail} for page, detail in blank_dates]
     return "fail", evidence, None, 0.85
+
+
+_HRS05_THRESHOLD_HOURS = 10.0
+
+
+def _check_HRS05(rule: dict, fields: dict) -> tuple:
+    """Round 92 (2026-08-14): converted from judgment to a deterministic
+    PRECONDITION check. Confirmed real bug across all 3 real patients this
+    round (Amir Howell, Arisha Haque, Solomon Schnitzer) -- this rule's
+    entire premise ("<10 hrs of 97153 -> confirm approved") only applies
+    when 97153 hours requested are under 10/week, but in all 3 real cases
+    the actual number (17, 15, 31.5) was stated plainly in the Hours
+    Requesting table and nowhere close to the threshold -- the rule still
+    reached judgment every time regardless, producing "uncertain".
+
+    Reuses the already-proven _find_weekly_hours_for_code helper (same one
+    _check_HF02 already uses for a different CPT code/cap) rather than a
+    new extraction pattern. If 97153 hours are found and >= 10, this
+    resolves to not_applicable immediately -- zero judgment call needed.
+    If hours are genuinely < 10, or the 97153 hours figure can't be found
+    at all, this returns not_checkable, which escalates to the judgment
+    layer -- the rule's other real premise ("confirm approved") genuinely
+    needs external confirmation ("'Approved' status lives outside the
+    TP/system" per this rule's own notes) that this pipeline doesn't have
+    in V1; that part is unchanged, only the >= 10 short-circuit is new.
+    """
+    hours = _find_weekly_hours_for_code(fields["full_text"], "97153")
+    if hours is None:
+        return (
+            "not_checkable",
+            "Could not find a 97153 hours-per-week figure in the Hours Requesting section "
+            "to compare against the <10 hrs/week threshold.",
+            None, 0.0,
+        )
+    if hours >= _HRS05_THRESHOLD_HOURS:
+        return (
+            "not_applicable",
+            f"97153 hours requested: {hours}/week, at or above the {_HRS05_THRESHOLD_HOURS}-hour "
+            f"threshold this rule applies below -- rule does not apply.",
+            None, 0.85,
+        )
+    return (
+        "not_checkable",
+        f"97153 hours requested: {hours}/week, below the {_HRS05_THRESHOLD_HOURS}-hour threshold -- "
+        f"rule applies, but 'Approved' status lives outside the TP/system and cannot be confirmed "
+        f"from the document alone.",
+        None, 0.0,
+    )
 
 
 def _check_HF02(rule: dict, fields: dict) -> tuple:
@@ -1773,6 +1873,11 @@ VISION_ELIGIBLE_RULE_SECTIONS: dict[str, str] = {
     "QA-ACF-03": "acf",  # grid-with-legend presence check
     "QA-ACF-06": "acf",  # assessor name -- sometimes only in a grid header
     "QA-ACF-07": "acf",  # old-vs-new testing tool administration dates
+    # Round 92: same section, opposite legend requirement (no legend should
+    # appear under Vineland specifically) -- the legend content this checks
+    # for is the same frequently-image-embedded grid/legend QA-ACF-03
+    # already needed vision for, so this rule needs it too.
+    "QA-ACF-11": "acf",  # no-legend-under-Vineland check
     # Fix Round, item 5 real verification (2026-08-12): "3mo/6mo graph data
     # matches auth length" -- this rule's own notes already name the exact
     # gap ("needs vision LLM if graphs are embedded images"). Every goal's
@@ -2197,6 +2302,59 @@ def extract_acf_fields(fields: dict) -> dict[str, str | None]:
     }
 
 
+def _check_ACF12(rule: dict, fields: dict) -> tuple:
+    """Round 92 (2026-08-14): NEW rule -- "Assessment date is within the
+    appropriate range (within report dates, before testing tool date, per
+    payor guidelines)". Confirmed genuinely missing from the 171-rule set
+    before this round (no equivalent rule_id anywhere).
+
+    Reuses two already-established, separately-tested pieces rather than
+    inventing new extraction: extract_acf_fields()['assessment_date'] (the
+    testing tool's own stated administration date -- this IS this rule's
+    "testing tool date," not a second separate date to find) and
+    _find_labeled_date_range(text, "Date of Current Report") (the TP's own
+    stated report range) -- same pairing _check_SIG04 already uses for a
+    different field (signature date) against the same report range.
+
+    SCOPE, DELIBERATE: this rule's own "per payor guidelines" clause is NOT
+    implemented here -- payor-specific date-window rules already exist
+    separately (e.g. HF-06's 3-month Healthfirst rule); duplicating that
+    logic inside a universal rule would double-count the same violation
+    under two rule_ids. This checker's scope is only the universal
+    within-report-dates comparison.
+
+    NOT YET VERIFIED against a real document -- built from ma'am's
+    description only, per this round's explicit no-real-pipeline-run
+    constraint. Recommend confirming against a real document before
+    trusting results.
+    """
+    assessment_date_str = extract_acf_fields(fields).get("assessment_date")
+    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
+    if not assessment_date_str or not report_range:
+        return (
+            "not_checkable",
+            "Could not find both the testing tool's own Assessment Date and this TP's "
+            "'Date of Current Report' range.",
+            None, 0.0,
+        )
+    assessment_date = datetime.strptime(assessment_date_str, "%m/%d/%Y")
+    report_start = datetime.strptime(report_range[0], "%m/%d/%Y")
+    report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
+    if report_start <= assessment_date <= report_end:
+        return (
+            "pass",
+            f"Assessment Date {assessment_date_str} falls within the Date of Current Report "
+            f"range ({report_range[0]} to {report_range[1]}).",
+            None, 0.8,
+        )
+    return (
+        "fail",
+        f"Assessment Date {assessment_date_str} falls outside the Date of Current Report "
+        f"range ({report_range[0]} to {report_range[1]}).",
+        None, 0.8,
+    )
+
+
 _ACF06_ADMIN_BY_RE = re.compile(
     r"\b(?:administered|completed|conducted)\s+by\s+([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+){0,3}(?:,\s*[A-Za-z.]+)?)",
 )
@@ -2341,6 +2499,54 @@ def _goal_block_starts(text: str) -> list[int]:
     of its own and is a different block entirely.
     """
     return [m.start() for m in re.finditer(r"Target Goal:|Target Name:", text)]
+
+
+def _check_GIP23(rule: dict, fields: dict) -> tuple:
+    """Round 92 (2026-08-14): HYBRID deterministic-then-judgment checker,
+    same pattern as QA-PROB-02 (see that rule's own notes). Confirmed
+    across all 3 real patients this round (Amir Howell, Arisha Haque,
+    Solomon Schnitzer) this rule needs 3 preconditions checked in order:
+    (a) does behavior-reduction-goal data exist at all -- if the section
+    is blank, resolve to not_applicable with zero judgment call; (b) if
+    data exists, is there an upward trend in the graph/data; (c) if
+    there's an upward trend, does a narrative explanation already exist
+    nearby.
+
+    This implements ONLY precondition (a) deterministically, reusing the
+    same already-proven 'Target Name:' (Behavior Reduction Goal) block
+    detector _goal_block_starts already uses for QA-BIP-04/05/06 -- a
+    real, tested pattern, not a new guess.
+
+    Preconditions (b) and (c) are NOT attempted deterministically this
+    round and still escalate to judgment unchanged when goal data exists:
+    (b) requires reading a graph that is frequently an embedded image
+    (same vision-dependency QA-ACF-03 already established for a different
+    section), and (c) has no existing, real-document-confirmed field
+    pattern to reuse safely without guessing -- both left to the judgment
+    layer rather than risk a fragile, unverified extraction (see
+    QA-SCH-08's own notes for a confirmed real example of exactly that
+    failure mode). PARTIAL FIX -- only the (a) short-circuit is real,
+    verified logic; (b)/(c) are unchanged from before this round.
+    """
+    text = fields["full_text"]
+    goal_starts = _goal_block_starts(text)
+    has_behavior_reduction_goal = any(
+        text[start:start + len("Target Name:")] == "Target Name:" for start in goal_starts
+    )
+    if not has_behavior_reduction_goal:
+        return (
+            "not_applicable",
+            "No Behavior Reduction Goal ('Target Name:') blocks found in this document -- "
+            "no behavior-reduction goal data to check for an unexplained upward trend.",
+            None, 0.85,
+        )
+    return (
+        "not_checkable",
+        "Behavior Reduction Goal(s) present -- checking for an upward trend without a nearby "
+        "narrative explanation requires reading the goal's graph/data and matching it against "
+        "any explanation text, which still requires judgment.",
+        None, 0.0,
+    )
 
 
 def _check_GIP10(rule: dict, fields: dict) -> tuple:
@@ -3523,6 +3729,64 @@ def _check_PPI03(rule: dict, fields: dict) -> tuple:
     return "pass", f"Patient name spelled consistently as {name!r} across all {len(names)} mention(s).", None, 0.85
 
 
+_AKA_BLANK_RE = re.compile(r"^N/?A\b[\s:.,\-–—]*$|^none$|^n/?a$", re.IGNORECASE)
+
+
+def _check_PPI07(rule: dict, fields: dict) -> tuple:
+    """Round 91 (169-rule reconciliation): a brand-new rule_id, deliberately
+    NOT a repoint of QA-PPI-06 (that rule keeps its own, unrelated,
+    already-shipped meaning -- narrative name-contamination -- see this
+    round's own discussion). Same shape as QA-PPI-03, just applied to the
+    'AKA:' field instead of 'Patient Name:': "If patient has an AKA/alias,
+    it is included and spelled correctly alongside legal name."
+
+    Extracts every 'AKA:' value using the SAME regex boundary
+    _document_name_allow_list already uses (a page-1-header-only field in
+    every real document checked so far -- confirmed live: Reeda/Blythe
+    ('N/A', no real alias), Charny ('Charna'), Yisroel ('Sruly'), each
+    with exactly ONE occurrence -- Zohan's real document has no 'AKA:'
+    label anywhere at all, a genuinely different template variant).
+
+    Three real outcomes:
+    - No 'AKA:' label anywhere in the document at all -- not_checkable
+      (this template variant doesn't carry the field; can't confirm
+      whether the patient has an alias or not).
+    - Label present but blank/N-A/None on every occurrence -- pass
+      (patient genuinely has no alias; nothing to include).
+    - Label present with a real value -- pass if every occurrence agrees
+      on the exact same spelling (same multi-mention consistency check
+      QA-PPI-03 already does for the legal name); fail if occurrences
+      disagree. Same disclosed scoping as QA-PPI-05's own precedent: this
+      confirms internal consistency and presence, not correctness against
+      some external ground truth (no alias registry exists to check
+      against) -- that's a real, stated limitation, not silently assumed
+      solved.
+    """
+    text = fields["full_text"]
+    raw_values = [
+        m.group(1).strip()
+        for m in re.finditer(r"AKA:[ \t]*([^\n]+?)(?=\s*(?:Patient DOB:|$))", text)
+    ]
+    if not raw_values:
+        return "not_checkable", "No 'AKA:' field found anywhere in this document.", None, 0.0
+
+    real_values = [v for v in raw_values if v and not _AKA_BLANK_RE.match(v)]
+    if not real_values:
+        return "pass", f"'AKA:' field present but blank/N-A on all {len(raw_values)} mention(s) -- patient has no stated alias.", None, 0.85
+
+    normalized = {v.lower() for v in real_values}
+    if len(normalized) > 1:
+        counts = Counter(real_values)
+        return "fail", f"Inconsistent AKA/alias spelling found: {dict(counts)}.", None, 0.85
+
+    return (
+        "pass",
+        f"AKA/alias spelled consistently as {real_values[0]!r} across all {len(real_values)} mention(s) "
+        f"alongside the legal name.",
+        None, 0.85,
+    )
+
+
 # --- Fix Round, item 2: narrative name-contamination detection -----------
 #
 # REAL BUG this closes: a document's Developmental/Psychological History
@@ -3975,6 +4239,8 @@ DET_CHECKS = {
     "QA-RPT-01": _check_RPT01,
     "QA-GIP-04": _check_GIP04,
     "HF-02": _check_HF02,
+    # Round 92: precondition-only checker -- see _check_HRS05's own docstring.
+    "QA-HRS-05": _check_HRS05,
     "QA-OBS-01": _check_OBS01,
     # Added following the full deterministic-label audit: these were all
     # labeled check_type "deterministic" but had no real checker, so every
@@ -4041,6 +4307,9 @@ DET_CHECKS = {
     # each verified live against both real documents before wiring in. See
     # each checker's own docstring for the specific verification detail.
     "QA-GIP-16": _check_GIP16,
+    # Round 92: hybrid DET pre-check (precondition (a) only), same shape as
+    # QA-PROB-02 -- see _check_GIP23's own docstring.
+    "QA-GIP-23": _check_GIP23,
     # Round 83, item 2b: hybrid DET pre-check, same shape as QA-PROB-02/
     # QA-BIP-05 -- see _check_GIP05's own docstring.
     "QA-GIP-05": _check_GIP05,
@@ -4059,6 +4328,10 @@ DET_CHECKS = {
     # rule_id/category decision -- QA-PPI-06, "Patient/Provider Info",
     # slotted right after PPI-01 through PPI-05.
     "QA-PPI-06": _check_narrative_name_contamination,
+    # Round 91 (169-rule reconciliation, 2026-08-14): the AKA/alias check
+    # -- deliberately a NEW rule_id (QA-PPI-07), not a repoint of QA-PPI-06,
+    # per the user's explicit decision. See _check_PPI07's own docstring.
+    "QA-PPI-07": _check_PPI07,
     # Fix Round, item 4 (2026-08-12): converted from judgment to
     # deterministic -- see _check_BIP04's own docstring.
     "QA-BIP-04": _check_BIP04,
@@ -4077,6 +4350,8 @@ DET_CHECKS = {
     # -- a narrower, separate gap from ACF-07/extract_acf_fields's
     # section-boundary bug -- see _check_ACF06's own docstring.
     "QA-ACF-06": _check_ACF06,
+    # Round 92: NEW rule -- see _check_ACF12's own docstring.
+    "QA-ACF-12": _check_ACF12,
     # Follow-up round item 1: fixes a confirmed regression (this rule's
     # judgment-only behavior had narrowed to only recognizing email-header
     # text) -- see _check_TEMP04's and _find_embedded_reviewer_comments's

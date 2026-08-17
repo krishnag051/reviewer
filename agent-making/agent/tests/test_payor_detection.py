@@ -3,11 +3,14 @@ no live document, no live API, per the standing rule. Uses the real
 rules.json so counts are checked against the actual rule set, not a
 fabricated stand-in.
 
-Four distinct payor-specific groups exist now: Healthfirst's HF-01/02/03,
-Straight Medicaid's SM-01/02, Aetna's AET-01, and Empire's EMP-01/02/03
-(Emblem's EMB-01 too). A rule scoped to one of them is `not_applicable`
-for every OTHER known payor (including each other) — e.g. a Molina-labeled
-doc excludes all of them, not just Healthfirst's.
+Six distinct payor-specific groups exist now: Healthfirst's HF-01/02/03,
+Straight Medicaid's SM-01/02, Aetna's AET-01, Empire's EMP-01/02/03
+(Emblem's EMB-01 too), and — new as of the Round 91 169-rule reconciliation
+— Cigna's CIG-01 and Molina's MOL-01, the first-ever payor-specific rules
+for either payor (both were universal-only before). A rule scoped to one
+of them is `not_applicable` for every OTHER known payor (including each
+other) — e.g. an MVP-labeled doc excludes all of them, not just
+Healthfirst's.
 """
 import json
 from pathlib import Path
@@ -19,16 +22,32 @@ RULES = json.loads(RULES_PATH.read_text(encoding="utf-8"))["rules"]
 ACTIVE_RULES = [r for r in RULES if r.get("active", True)]
 N_ACTIVE = len(ACTIVE_RULES)
 N_UNIVERSAL = sum(1 for r in ACTIVE_RULES if r["applies_to_payor"] == "ALL")
-HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03"}
+# Round 91 (169-rule reconciliation): confirmed via a real count mismatch
+# this test's own guardrail caught (170 active != 151 universal + 12
+# tracked payor-specific -- off by 7) that Healthfirst/Emblem/Empire each
+# picked up NEW payor-specific rules too, not just Cigna/Molina's
+# first-ever ones -- HF-04/05/06/07/09, EMB-02, EMP-04. Confirmed by
+# direct inspection of rules.json, not assumed from the round's own
+# summary (which only called out Cigna/Molina since those were the
+# notable "first ever" cases).
+HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-04", "HF-05", "HF-06", "HF-07", "HF-09"}
 STRAIGHT_MEDICAID_ONLY_IDS = {"SM-01", "SM-02"}
 AETNA_ONLY_IDS = {"AET-01"}
-EMBLEM_ONLY_IDS = {"EMB-01"}
-EMPIRE_ONLY_IDS = {"EMP-01", "EMP-02", "EMP-03"}
+EMBLEM_ONLY_IDS = {"EMB-01", "EMB-02"}
+EMPIRE_ONLY_IDS = {"EMP-01", "EMP-02", "EMP-03", "EMP-04"}
+# Round 91 (169-rule reconciliation): first-ever payor-specific rules for
+# Cigna/Molina -- confirmed via _detect_payor's own KNOWN_PAYORS dict that
+# both were ALREADY recognized keywords well before either had any
+# payor-specific rule content, so this is the scoping logic catching up to
+# detection that was already there, not new detection work.
+CIGNA_ONLY_IDS = {"CIG-01"}
+MOLINA_ONLY_IDS = {"MOL-01"}
 # Every payor-specific rule id, regardless of which payor it belongs to —
 # this is what gets excluded (not_applicable) for any OTHER known payor.
 ALL_PAYOR_SPECIFIC_IDS = (
     HEALTHFIRST_ONLY_IDS | STRAIGHT_MEDICAID_ONLY_IDS
     | AETNA_ONLY_IDS | EMBLEM_ONLY_IDS | EMPIRE_ONLY_IDS
+    | CIGNA_ONLY_IDS | MOLINA_ONLY_IDS
 )
 assert N_ACTIVE == N_UNIVERSAL + len(ALL_PAYOR_SPECIFIC_IDS), (
     "a new payor-specific rule was added without updating this test file's "
@@ -113,11 +132,12 @@ def test_detect_payor_never_returns_none():
 
 # --- partition_rules_by_scope: the three payor cases ---
 
-def test_healthfirst_labeled_doc_gets_universal_plus_its_own_three_rules():
+def test_healthfirst_labeled_doc_gets_universal_plus_its_own_rules():
     """Not "all active rules" anymore now that other payors also have their
     own payor-specific rules — a Healthfirst-labeled doc gets universal
-    + HF-01/02/03, and correctly excludes every other payor's rules as
-    not_applicable."""
+    + all of HEALTHFIRST_ONLY_IDS (8 as of Round 91's reconciliation,
+    HF-01/02/03/04/05/06/07/09), and correctly excludes every other
+    payor's rules as not_applicable."""
     fields = {"plan_type": None, "payor": "Healthfirst"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     applicable_ids = {r["rule_id"] for r in applicable}
@@ -127,20 +147,25 @@ def test_healthfirst_labeled_doc_gets_universal_plus_its_own_three_rules():
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 
-def test_molina_labeled_doc_gets_universal_rules_and_marks_other_payors_rules_not_applicable():
+def test_molina_labeled_doc_gets_universal_plus_its_own_rule():
+    """Round 91: Molina now has a real payor-specific rule (MOL-01) -- was
+    universal-only before, same shape Aetna/Emblem already have."""
     fields = {"plan_type": None, "payor": "Molina"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
+    applicable_ids = {r["rule_id"] for r in applicable}
 
-    assert len(applicable) == N_UNIVERSAL
-    assert all(r["applies_to_payor"] == "ALL" for r in applicable)
+    assert MOLINA_ONLY_IDS <= applicable_ids
+    assert len(applicable) == N_UNIVERSAL + len(MOLINA_ONLY_IDS)
 
-    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS
+    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - MOLINA_ONLY_IDS
     for rule_id, finding in excluded.items():
         assert finding["result"] == "not_applicable"
         assert "Molina" in finding["evidence"]
 
 
-def test_mvp_labeled_doc_same_shape_as_molina():
+def test_mvp_labeled_doc_universal_only():
+    """MVP has no payor-specific rule content -- unlike Cigna/Molina as of
+    Round 91, this is still universal-only."""
     fields = {"plan_type": None, "payor": "MVP"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     assert len(applicable) == N_UNIVERSAL
@@ -148,10 +173,10 @@ def test_mvp_labeled_doc_same_shape_as_molina():
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 
-def test_new_york_medicaid_labeled_doc_same_shape_as_molina():
-    """Same treatment as Molina/MVP: universal rules run, every OTHER
-    payor's payor-specific rules are not_applicable (not_checkable is
-    reserved for a genuinely undetected payor, which this is not)."""
+def test_new_york_medicaid_labeled_doc_same_shape_as_mvp():
+    """Same treatment as MVP: universal rules run, every OTHER payor's
+    payor-specific rules are not_applicable (not_checkable is reserved for
+    a genuinely undetected payor, which this is not)."""
     fields = {"plan_type": None, "payor": "New York Medicaid"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     assert len(applicable) == N_UNIVERSAL
@@ -179,7 +204,7 @@ def test_straight_medicaid_labeled_doc_gets_universal_plus_its_own_two_rules():
         assert "Straight Medicaid" in finding["evidence"]
 
 
-def test_anthem_labeled_doc_same_shape_as_molina():
+def test_anthem_labeled_doc_same_shape_as_mvp():
     fields = {"plan_type": None, "payor": "Anthem"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     assert len(applicable) == N_UNIVERSAL
@@ -187,12 +212,20 @@ def test_anthem_labeled_doc_same_shape_as_molina():
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 
-def test_cigna_labeled_doc_same_shape_as_molina():
+def test_cigna_labeled_doc_gets_universal_plus_its_own_rule():
+    """Round 91: Cigna now has a real payor-specific rule (CIG-01) -- was
+    universal-only before, same shape Aetna/Emblem already have."""
     fields = {"plan_type": None, "payor": "Cigna"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
-    assert len(applicable) == N_UNIVERSAL
-    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS
-    assert all(f["result"] == "not_applicable" for f in excluded.values())
+    applicable_ids = {r["rule_id"] for r in applicable}
+
+    assert CIGNA_ONLY_IDS <= applicable_ids
+    assert len(applicable) == N_UNIVERSAL + len(CIGNA_ONLY_IDS)
+
+    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - CIGNA_ONLY_IDS
+    for rule_id, finding in excluded.items():
+        assert finding["result"] == "not_applicable"
+        assert "Cigna" in finding["evidence"]
 
 
 def test_aetna_labeled_doc_gets_universal_plus_its_own_rule():
@@ -205,7 +238,8 @@ def test_aetna_labeled_doc_gets_universal_plus_its_own_rule():
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 
-def test_emblem_labeled_doc_gets_universal_plus_its_own_rule():
+def test_emblem_labeled_doc_gets_universal_plus_its_own_rules():
+    """EMB-01 and, as of Round 91, EMB-02 too."""
     fields = {"plan_type": None, "payor": "Emblem"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     applicable_ids = {r["rule_id"] for r in applicable}
@@ -214,11 +248,12 @@ def test_emblem_labeled_doc_gets_universal_plus_its_own_rule():
     assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - EMBLEM_ONLY_IDS
 
 
-def test_empire_labeled_doc_gets_universal_plus_its_own_three_rules():
+def test_empire_labeled_doc_gets_universal_plus_its_own_rules():
     """Includes EMP-02, which has no real checker yet (flagged, see its own
     blocked_status) — it still belongs in the applicable set for scope
     purposes; it'll just always come back not_checkable via the same
-    no-checker fallback as the other flagged rules."""
+    no-checker fallback as the other flagged rules. EMP-04 is new as of
+    Round 91's reconciliation."""
     fields = {"plan_type": None, "payor": "Empire"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     applicable_ids = {r["rule_id"] for r in applicable}
@@ -248,9 +283,13 @@ def test_unknown_payor_doc_gets_universal_rules_and_marks_payor_specific_not_che
 
 
 def test_unknown_and_healthfirst_produce_different_results_for_the_same_rules():
-    """Guards against the two cases collapsing into each other by accident."""
+    """Guards against the two cases collapsing into each other by accident.
+    Uses MVP (not Molina) as the "known mismatch" payor -- Molina has its
+    own payor-specific rule (MOL-01) as of Round 91, which would no longer
+    be excluded for a Molina-labeled doc; MVP is still universal-only, so
+    every ALL_PAYOR_SPECIFIC_IDS entry is guaranteed excluded here."""
     _, excluded_unknown = partition_rules_by_scope(RULES, {"plan_type": None, "payor": "Unknown"})
-    _, excluded_known_mismatch = partition_rules_by_scope(RULES, {"plan_type": None, "payor": "Molina"})
+    _, excluded_known_mismatch = partition_rules_by_scope(RULES, {"plan_type": None, "payor": "MVP"})
 
     for rule_id in ALL_PAYOR_SPECIFIC_IDS:
         assert excluded_unknown[rule_id]["result"] == "not_checkable"
@@ -260,11 +299,19 @@ def test_unknown_and_healthfirst_produce_different_results_for_the_same_rules():
 # --- End-to-end within fields.py: _detect_payor's output feeding partition_rules_by_scope ---
 
 def test_detected_molina_payor_flows_through_to_correct_scoping():
+    """Round 91: Molina now has its own payor-specific rule (MOL-01) --
+    the detected value flows through to the SAME universal+own-rule shape
+    test_molina_labeled_doc_gets_universal_plus_its_own_rule already
+    confirms directly; this test's job is only proving detection's own
+    output feeds scoping correctly, not re-proving the shape."""
     detected = _detect_payor(_pages("Patient Payor: Molina Healthcare - Medicaid\n..."))
+    assert detected == "Molina"
     fields = {"plan_type": None, "payor": detected}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
-    assert len(applicable) == N_UNIVERSAL
-    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS
+    applicable_ids = {r["rule_id"] for r in applicable}
+    assert MOLINA_ONLY_IDS <= applicable_ids
+    assert len(applicable) == N_UNIVERSAL + len(MOLINA_ONLY_IDS)
+    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - MOLINA_ONLY_IDS
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 

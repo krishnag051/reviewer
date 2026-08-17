@@ -25,8 +25,8 @@ def _pdf_bytes() -> bytes:
 
 def _create_patient_and_version(client, headers) -> dict:
     ref = f"TP-TEST-supdoc-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Supporting Doc Test Patient"}, headers=headers).json()
-    return client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": ref, "name": "Supporting Doc Test Patient"}, headers=headers).json()
+    return client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
 
 
 def test_upload_rejected_when_supporting_document_missing(client, seeded_baseline, document_mode):
@@ -34,7 +34,7 @@ def test_upload_rejected_when_supporting_document_missing(client, seeded_baselin
     version = _create_patient_and_version(client, headers)
 
     resp = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         files={"file": ("tp.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
     )
@@ -51,7 +51,7 @@ def test_upload_rejected_when_tp_file_missing_but_supporting_document_present(cl
     version = _create_patient_and_version(client, headers)
 
     resp = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         files={"supporting_document": ("supporting.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
     )
@@ -65,7 +65,7 @@ def test_upload_succeeds_with_both_files_and_both_persist(client, db_session, se
     version = _create_patient_and_version(client, headers)
 
     resp = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
             "supporting_document": ("helping.pdf", _pdf_bytes(), "application/pdf"),
@@ -89,7 +89,7 @@ def test_get_supporting_file_serves_the_real_bytes(client, db_session, tmp_path,
     path.write_bytes(content)
     upload = make_patient_version_upload(db_session, status="ready", supporting_document_path=str(path))
 
-    resp = client.get(f"/uploads/{upload.id}/supporting-file", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/supporting-file", headers=headers)
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content == content
@@ -100,7 +100,7 @@ def test_get_supporting_file_requires_auth(client, db_session, tmp_path, seeded_
     path.write_bytes(_pdf_bytes())
     upload = make_patient_version_upload(db_session, status="ready", supporting_document_path=str(path))
 
-    resp = client.get(f"/uploads/{upload.id}/supporting-file")
+    resp = client.get(f"/api/uploads/{upload.id}/supporting-file")
     assert resp.status_code == 401
 
 
@@ -108,7 +108,7 @@ def test_get_supporting_file_404s_when_missing_on_disk(client, db_session, seede
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     upload = make_patient_version_upload(db_session, status="ready", supporting_document_path="/no/such/path.pdf")
 
-    resp = client.get(f"/uploads/{upload.id}/supporting-file", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/supporting-file", headers=headers)
     assert resp.status_code == 404
 
 
@@ -118,7 +118,7 @@ def test_get_supporting_file_404s_when_file_purged(client, db_session, tmp_path,
     path.write_bytes(_pdf_bytes())
     upload = make_patient_version_upload(db_session, status="ready", supporting_document_path=str(path), file_purged=True)
 
-    resp = client.get(f"/uploads/{upload.id}/supporting-file", headers=headers)
+    resp = client.get(f"/api/uploads/{upload.id}/supporting-file", headers=headers)
     assert resp.status_code == 404
 
 
@@ -156,7 +156,7 @@ def test_run_rule_checks_forwards_supporting_document_path_to_review_treatment_p
     version = _create_patient_and_version(client, headers)
 
     upload_resp = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
             "supporting_document": ("helping.pdf", _pdf_bytes(), "application/pdf"),
@@ -183,7 +183,7 @@ def test_upload_rejected_for_existing_patient_flow_missing_supporting_document(c
     version = _create_patient_and_version(client, headers)
 
     first = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
             "supporting_document": ("helping.pdf", _pdf_bytes(), "application/pdf"),
@@ -193,7 +193,7 @@ def test_upload_rejected_for_existing_patient_flow_missing_supporting_document(c
     assert first.status_code == 201, first.text
 
     second = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         files={"file": ("tp2.pdf", _pdf_bytes(), "application/pdf")},
         headers=headers,
     )

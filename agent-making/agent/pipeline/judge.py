@@ -524,26 +524,48 @@ def run_judgment_checks(
     """Self-consistency wrapper (2026-07-28 round): calls
     _run_judgment_checks_once TWICE with identical inputs and reconciles.
     Where both calls agree on a rule_id's result, that result is kept.
-    Where they disagree, the finding is downgraded to "uncertain" rather
-    than silently reporting whichever call happened to run second — this
-    is the fix for the confirmed judgment-layer non-determinism (live
-    consistency probe: some rules flip result across identical repeated
-    calls on the same document, even in complete isolation from other
-    rules in the batch). temperature/top_p/top_k are not available as a
+    Where they disagree... temperature/top_p/top_k are not available as a
     cheaper fix on this model — confirmed live, not just from docs:
     passing a non-default temperature returns a 400
     ("`temperature` is deprecated for this model"); only the model's own
     default is accepted, as a no-op.
 
-    Doubles the real API call count (and cost) for every judgment batch —
-    this is the deliberate tradeoff: a finding a reviewer can trust over
-    one that's cheaper but may silently be whichever answer the model
-    happened to land on that run. If a rule_id is missing from either
-    call (rejected internally via evidence_supports_result, or dropped),
-    it's left out of the returned dict entirely rather than guessed at —
-    integrity.py's existing missing-rule_id retry already handles that
-    case correctly, and re-asking is more honest than picking the
-    surviving half of a pair that didn't fully agree.
+    Round 93 (2026-08-14), item 1: BEST-OF-3 TIE-BREAKER added. Where the
+    two calls disagree on a rule_id, this used to downgrade straight to
+    "uncertain" and stop there. Confirmed live (real ground-truth
+    comparison across 3 real patients, agreement improved 69-71% ->
+    70-75% after Round 92's fixes) that a large share of these
+    disagreements have one of the two calls already matching ground
+    truth -- throwing both away as "uncertain" discards a correct answer
+    roughly as often as it discards a wrong one. Now: only for the
+    SPECIFIC rule_id(s) that disagreed between call 1 and call 2 (never
+    for rule_ids that already agreed -- zero extra cost on those), sends
+    ONE additional batched 3rd call covering just that disagreeing
+    subset, then majority-votes among all 3 answers for each. If the 3rd
+    call fails to return an answer for one of those rule_ids (dropped,
+    rejected via evidence_supports_result, whatever), that rule_id falls
+    back to exactly the same two-call "uncertain" finding this function
+    already produced before this round -- never silently dropped, never
+    left unset. See _two_way_uncertain_finding (the extracted, unchanged
+    fallback) and _three_way_majority_finding (the new reconciliation)
+    below.
+
+    COST, EXPLICIT: +1 real API call per document, ONLY IF at least one
+    rule_id in the batch disagreed between calls 1 and 2 -- not one extra
+    call per disagreeing rule_id (all disagreeing rule_ids for a
+    document are sent together in that single 3rd call, same batching
+    principle integrity.py's own missing-rule_id retry already uses). Zero
+    extra cost when calls 1 and 2 fully agree (unchanged from before this
+    round: exactly 2 calls total).
+
+    RISK, EXPLICIT, NOT ELIMINATED BY THIS CHANGE: a 2-of-3 majority is
+    more-likely-correct, not guaranteed-correct -- this trades some of
+    the old policy's conservative "when in doubt, flag for human review"
+    safety margin for higher average correctness, in both directions.
+    Some previously-safe "uncertain" findings will now confidently land
+    on a WRONG pass/fail, not just a right one. Given the confirmed real
+    evidence above (one of the two calls is usually already right), this
+    trade looks favorable on net, but it is a real trade, not a pure win.
     """
     if not judgment_rules:
         return {}
@@ -555,29 +577,108 @@ def run_judgment_checks(
         judgment_rules, fields, rendered_images, tracker=tracker,
         call_reason=f"{call_reason} (consistency check 2/2)", model_override=model_override,
     )
-    return _reconcile_consistency_check(first, second)
+
+    reconciled: dict[str, dict] = {}
+    disagreed_ids: list[str] = []
+    for rule_id in set(first) & set(second):
+        f, s = first[rule_id], second[rule_id]
+        if f["result"] == s["result"]:
+            reconciled[rule_id] = f
+        else:
+            disagreed_ids.append(rule_id)
+
+    if not disagreed_ids:
+        return reconciled
+
+    rules_by_id = {r["rule_id"]: r for r in judgment_rules}
+    tiebreak_rules = [rules_by_id[rid] for rid in disagreed_ids]
+    third = _run_judgment_checks_once(
+        tiebreak_rules, fields, rendered_images, tracker=tracker,
+        call_reason=f"{call_reason} (tie-break 3/3, {len(disagreed_ids)} disagreeing rule_id(s))",
+        model_override=model_override,
+    )
+
+    for rule_id in disagreed_ids:
+        f, s = first[rule_id], second[rule_id]
+        t = third.get(rule_id)
+        if t is None:
+            # 3rd call didn't answer this rule_id -- fall back to the
+            # existing, unchanged two-call behavior. Never silently drop.
+            reconciled[rule_id] = _two_way_uncertain_finding(f, s)
+        else:
+            reconciled[rule_id] = _three_way_majority_finding(f, s, t)
+    return reconciled
+
+
+def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
+    """The original (pre-Round-93) two-call disagreement fallback,
+    extracted unchanged so both run_judgment_checks' own two-call path and
+    the Round 93 best-of-3 tie-breaker's "3rd call didn't answer" fallback
+    produce byte-identical output for the same two-call disagreement --
+    the explicit requirement approved for item 1: a dropped/missing 3rd
+    call must fall back to today's existing "uncertain" behavior, not a
+    new or different one.
+    """
+    f_evidence = f["evidence"] if isinstance(f["evidence"], str) else json.dumps(f["evidence"])
+    s_evidence = s["evidence"] if isinstance(s["evidence"], str) else json.dumps(s["evidence"])
+    return {
+        "result": "uncertain",
+        "evidence": (
+            f"Judgment layer disagreed across two consistency-check calls for this "
+            f"rule with identical input: first call said '{f['result']}' ({f_evidence}); "
+            f"second call said '{s['result']}' ({s_evidence}). Flagged uncertain rather "
+            f"than silently keeping one of the two answers."
+        ),
+        "page": None,
+        "confidence": 0.0,
+    }
+
+
+def _three_way_majority_finding(f: dict, s: dict, t: dict) -> dict:
+    """Round 93, item 1: reconciles the 3rd, tie-breaking call against the
+    first two for ONE rule_id that already disagreed between calls 1/2.
+    A strict majority (2 of 3 sharing the same result) wins, keeping
+    whichever of the matching pair's own finding dict (evidence/page/
+    confidence) came first. No majority (all 3 disagree) falls back to
+    "uncertain", same honesty principle as the two-call and
+    run_judgment_checks_majority_vote's own N-way versions -- a 3-way
+    split is not this function's job to force a pick on.
+    """
+    entries = [f, s, t]
+    counts = Counter(e["result"] for e in entries)
+    winning_result, winning_count = counts.most_common(1)[0]
+    if winning_count >= 2:
+        return next(e for e in entries if e["result"] == winning_result)
+    summaries = []
+    for i, e in enumerate(entries):
+        ev = e["evidence"] if isinstance(e["evidence"], str) else json.dumps(e["evidence"])
+        summaries.append(f"call {i + 1} said '{e['result']}' ({ev})")
+    return {
+        "result": "uncertain",
+        "evidence": (
+            "Judgment layer split with no majority across a 2-call disagreement plus its own "
+            "tie-breaking 3rd call, all with identical input: " + "; ".join(summaries) +
+            ". Flagged uncertain rather than silently keeping one answer."
+        ),
+        "page": None,
+        "confidence": 0.0,
+    }
 
 
 def _reconcile_consistency_check(first: dict[str, dict], second: dict[str, dict]) -> dict[str, dict]:
+    """Retained standalone (2026-08-14, Round 93) for any caller/test that
+    wants the plain two-call reconciliation without the best-of-3
+    tie-breaker run_judgment_checks now applies -- byte-identical
+    behavior to before this round, via the same extracted
+    _two_way_uncertain_finding helper the tie-breaker's own fallback uses.
+    """
     reconciled = {}
     for rule_id in set(first) & set(second):
         f, s = first[rule_id], second[rule_id]
         if f["result"] == s["result"]:
             reconciled[rule_id] = f
             continue
-        f_evidence = f["evidence"] if isinstance(f["evidence"], str) else json.dumps(f["evidence"])
-        s_evidence = s["evidence"] if isinstance(s["evidence"], str) else json.dumps(s["evidence"])
-        reconciled[rule_id] = {
-            "result": "uncertain",
-            "evidence": (
-                f"Judgment layer disagreed across two consistency-check calls for this "
-                f"rule with identical input: first call said '{f['result']}' ({f_evidence}); "
-                f"second call said '{s['result']}' ({s_evidence}). Flagged uncertain rather "
-                f"than silently keeping one of the two answers."
-            ),
-            "page": None,
-            "confidence": 0.0,
-        }
+        reconciled[rule_id] = _two_way_uncertain_finding(f, s)
     return reconciled
 
 

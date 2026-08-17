@@ -71,7 +71,10 @@ beforeAll(() => {
   window.URL.revokeObjectURL = () => {};
 });
 
-const API_BASE = "http://localhost:8000";
+// Deployment round: backend routes now live under /api -- was pointed at
+// the pre-/api-prefix path, matching lib/api-client.ts's own real dev
+// default fix (same round, same reason).
+const API_BASE = "http://localhost:8000/api";
 const TOKEN_KEY = "tp_review_token";
 
 /** `token`, if given, is written to localStorage BEFORE the app mounts --
@@ -220,9 +223,19 @@ describe("real patient data on the converted surfaces", () => {
     // findBy default as that list grows. Real network + real N+1, not
     // flaky -- give it real headroom instead of a default that assumes an
     // instant mock response.
-    await screen.findByText("Round41 List Test Patient", {}, { timeout: 8000 });
-    const row = screen.getByText("Round41 List Test Patient").closest("tr")!;
-    expect(within(row).getByText(refId)).toBeTruthy();
+    //
+    // Deployment round: the SAME accumulation this comment already flags
+    // also broke the row lookup itself -- "Round41 List Test Patient" is a
+    // shared literal name every run of this test creates another copy of
+    // (only refId is unique per run, via crypto.randomUUID above), so a
+    // dev database that's had this file run more than once has multiple
+    // rows with that identical name, and getByText (a single-match query)
+    // started throwing "Found multiple elements" once that happened.
+    // refId IS unique per run -- locate the row by that instead, which
+    // stays correct no matter how many previous runs' patients remain.
+    await screen.findByText(refId, {}, { timeout: 8000 });
+    const row = screen.getByText(refId).closest("tr")!;
+    expect(within(row).getByText("Round41 List Test Patient")).toBeTruthy();
     console.log("STEP A: a real, freshly-created patient (not mock demo data) appears in the real Treatment Plans list");
 
     // Confirm the OLD mock demo data (e.g. "Ethan Ramirez", never created
@@ -283,6 +296,7 @@ describe("real PDF pane (Round 42)", () => {
     expect(blob.size).toBeGreaterThan(0);
     console.log(`STEP A: real PDF blob fetched for the draft's upload -- type=${blob.type} size=${blob.size} bytes`);
 
+    await expandAllRuleResultCards();
     await screen.findAllByText(/Round 42 demo finding for/);
     expect(screen.getAllByText(/Round 42 demo finding for/).length).toBeGreaterThan(0);
     console.log("STEP B: real rule results render in the same view as the real PDF pane -- side by side, not one replacing the other");
@@ -309,10 +323,35 @@ describe("real PDF pane (Round 42)", () => {
     expect(blob.size).toBeGreaterThan(0);
     console.log(`STEP A: switching to the finalized v1 fetches ITS OWN real PDF (upload ${capturedObjectUrlBlobs.length}) -- type=${blob.type} size=${blob.size} bytes`);
 
+    await expandAllRuleResultCards();
     expect(screen.getAllByText(/Round 42 demo finding for/).length).toBeGreaterThan(0);
     console.log("STEP B: the finalized version's real rule results render alongside its real PDF");
   }, 15000);
 });
+
+/** Deployment round: RuleResultCard defaults to COLLAPSED
+ * (components/tp/RuleResultCard.tsx's `useState(false)`, Round 70/73's own
+ * intentional Brellium-reference behavior) -- the Context/evidence block
+ * that actually carries `final_finding` text only renders once a card is
+ * expanded. Several tests in this file asserted on finding text without
+ * ever expanding a card -- a stale assertion written against an earlier
+ * always-expanded shape, not a real app bug (confirmed: the real API/data
+ * layer returns the correct finding text every time, verified directly
+ * against the live backend outside this test file). Clicks every
+ * "Expand ..." affordance currently on screen so already-loaded cards'
+ * finding text becomes visible to query against.
+ */
+async function expandAllRuleResultCards() {
+  // Wait for at least one card to actually be in the DOM first -- rule
+  // results load via their own separate query from the PDF pane's, so a
+  // caller that only awaited the PDF being visible could otherwise find
+  // zero "Expand" buttons yet (nothing to click), silently no-op, and
+  // leave every card collapsed by the time it actually renders.
+  const expandButtons = await screen.findAllByRole("button", { name: /^Expand /, expanded: false });
+  for (const btn of expandButtons) {
+    (btn as HTMLButtonElement).click();
+  }
+}
 
 async function waitForBlobCountAbove(count: number) {
   for (let i = 0; i < 40; i++) {
@@ -559,7 +598,19 @@ describe("Stage 3: real override + finalize (Round 43)", () => {
 // confirmation, real locked state afterward -- for both V1 and V2.
 describe("Round 49: simulated-completion lifecycle (dev-only, zero real API calls)", () => {
   it("developer-only 'Simulate completion' checkbox is visible and toggles; hidden from a real reviewer role", async () => {
-    const devToken = await login("round41.developer@test.local", "TestPass123!");
+    // Deployment round: was a hardcoded login against a user
+    // ("round41.developer@test.local") that only ever existed because it
+    // was created manually, once, outside any script, during whatever
+    // Round 41 test run first needed it -- undocumented and not
+    // reproducible against a fresh dev database. provisionUser (already
+    // used correctly elsewhere in this same file, e.g. the developer-role
+    // nav-gating tests above) is the real, self-sufficient fixture: it
+    // creates a fresh random-suffixed developer user via the real admin
+    // API every run, so this test no longer depends on undocumented
+    // pre-existing state.
+    const admin = await adminToken();
+    const dev = await provisionUser(admin, "developer");
+    const devToken = await login(dev.email, dev.password);
     const user = userEvent.setup();
 
     renderApp("/upload", devToken);
@@ -580,7 +631,11 @@ describe("Round 49: simulated-completion lifecycle (dev-only, zero real API call
   }, 15000);
 
   it("U1 simulated -> V1 -> U1(v2) simulated -> V2, real UI throughout, clearly labeled as simulated at every step", async () => {
-    const devToken = await login("round41.developer@test.local", "TestPass123!");
+    // Same fix as the test above -- provisionUser instead of a hardcoded
+    // login against an undocumented, manually-created fixture user.
+    const admin2 = await adminToken();
+    const dev2 = await provisionUser(admin2, "developer");
+    const devToken = await login(dev2.email, dev2.password);
     const user = userEvent.setup();
     const refId = `TP-TEST-round49-simlifecycle-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -619,6 +674,7 @@ describe("Round 49: simulated-completion lifecycle (dev-only, zero real API call
     await screen.findByText(/In progress · not finalized/);
     await screen.findByText(/SIMULATED — this upload's findings are dev-only synthetic placeholders/, {}, { timeout: 12000 });
     await screen.findByText(/Rule check results \(SIMULATED, dev-only/);
+    await expandAllRuleResultCards();
     const simulatedFindings = await screen.findAllByText(/SIMULATED — not a real agent result/);
     expect(simulatedFindings.length).toBeGreaterThan(0);
     console.log(`STEP B: real polling (Round 42's refetchInterval) picked up the simulated pipeline's real ~5s completion; ${simulatedFindings.length} findings rendered, every one clearly labeled SIMULATED`);
@@ -927,6 +983,7 @@ describe("Round 51: mandatory supporting document (storage + display only)", () 
     // Main review area unchanged -- still the real PDF pane + real rule
     // results, not replaced by anything related to the supporting doc.
     await screen.findByTitle("Treatment plan PDF");
+    await expandAllRuleResultCards();
     await screen.findAllByText(/Round 42 demo finding for/);
     console.log("STEP A: draft view -- Helping Document opened a real blob: URL in a new tab; main PDF/rule-results area untouched");
 

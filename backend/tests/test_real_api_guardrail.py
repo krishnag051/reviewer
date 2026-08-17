@@ -30,10 +30,10 @@ def _pdf_bytes() -> bytes:
 
 def _create_upload(client, headers) -> dict:
     ref = f"TP-TEST-guardrail-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Guardrail Test Patient"}, headers=headers).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": ref, "name": "Guardrail Test Patient"}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     upload = client.post(
-        f"/versions/{version['id']}/uploads",
+        f"/api/versions/{version['id']}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -42,7 +42,7 @@ def _create_upload(client, headers) -> dict:
         },
         headers=headers,
     ).json()
-    return client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    return client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
 
 
 def test_real_pipeline_call_is_blocked_before_any_network_request(client, seeded_baseline):

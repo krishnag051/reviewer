@@ -256,7 +256,7 @@ def test_rule_sync_status_endpoint_returns_correct_shape(client, db_session, see
     headers = login_headers(client, "s.patel@brightpath-aba.com")
     sync_state = db_session.execute(select(RuleSyncState)).scalar_one()
 
-    resp = client.get("/rule-sync/status", headers=headers)
+    resp = client.get("/api/rule-sync/status", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert set(body.keys()) == {"pending_change_count", "next_sync_at"}

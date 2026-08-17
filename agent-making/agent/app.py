@@ -66,6 +66,67 @@ EXAMPLE_YISROEL_ANSWERS = {
     ),
 }
 
+# Round 93: 3 regular test patients' real Q&A/authorization data, verbatim
+# from the round's own task -- same "only applied when explicitly clicked"
+# discipline as EXAMPLE_YISROEL_ANSWERS above.
+EXAMPLE_AMIR_ANSWERS = {
+    "client_insurance": "Healthfirst - Medicaid, Insurance ID GQ71194J",
+    "bcba_name_credentials_npi": "Tittus A Thomas, BCBA, LBA, Certification/License #: 1-24-73182/003587, NPI: 1487381018",
+    "authorization_dates": "08/31/2026 to 11/30/2026",
+    "pos_schedule_vs_97153_hours": (
+        "Place of Service (97153, direct care): Home. Schedule: Sat/Sun 11am-3pm, Tue/Thu/Fri 4pm-7pm. "
+        "17 hrs/week scheduled = 17 hrs/week of 97153 requested — MATCH"
+    ),
+    "hours_requesting": (
+        "97151 Assessment 5 hrs/auth period (BCBA/LBA, Telehealth/Home/Office); "
+        "97153 Direct Care 17 hrs/week (Behavior Technician, Home); "
+        "97155 Supervision/BTM 2 hrs/week (BCBA/LBA, Telehealth/Home/Office); "
+        "97156 Parent Training 2 hrs/week (BCBA/LBA, Telehealth/Home/Office)"
+    ),
+}
+
+EXAMPLE_ARISHA_ANSWERS = {
+    "client_insurance": "Healthfirst – NY Medicaid MCO, Insurance ID WU51998P",
+    "bcba_name_credentials_npi": "Rena Goldstein, BCBA, LBA, Certification/License #: 12367176/2595281, NPI: 1992132542",
+    "authorization_dates": "08/31/2026 to 11/30/2026 (approximately 3 months)",
+    "pos_schedule_vs_97153_hours": (
+        "Place of Service (97153, direct care): Home. Schedule: Mon-Fri 3pm-6pm. "
+        "15 hrs/week scheduled = 15 hrs/week of 97153 requested — MATCH"
+    ),
+    "hours_requesting": (
+        "97151 Assessment 5 hrs/auth period (BCBA/LBA, Telehealth/Home/Office); "
+        "97153 Direct Care 15 hrs/week (Behavior Technician, Home); "
+        "97155 Supervision/BTM 1.5 hrs/week (BCBA/LBA, Telehealth/Home/Office); "
+        "97156 Parent Training 1 hr/week (BCBA/LBA, Telehealth/Home/Office)"
+    ),
+}
+
+# CAUTION (2026-08-14, Round 93) -- FLAGGED, NOT RESOLVED: the source Q&A
+# doc for this patient states "Healthfirst Healthcare - Medicaid" as the
+# client_insurance below, but a real TP/pipeline run for this same patient
+# separately detected payor as "Molina Healthcare - Medicaid" -- a real
+# discrepancy between two source-of-truth-looking values, NOT silently
+# picked one way by this fix. Hardcoded here exactly as given in the Q&A
+# doc (Healthfirst) pending the user's own double-check of which is
+# actually correct -- do not treat this value as confirmed correct.
+EXAMPLE_SOLOMON_ANSWERS = {
+    "client_insurance": "Healthfirst Healthcare - Medicaid, Insurance ID HE11465Q",
+    "bcba_name_credentials_npi": "Shoshanna Lasky, BCBA, LBA, Certification/License #: 1-25-86222/0046901, NPI: 1972469773",
+    "authorization_dates": "08/30/2026 to 02/28/2027",
+    "pos_schedule_vs_97153_hours": (
+        "Place of Service (97153, direct care): Home, Office, and/or Community. Schedule: Sun 11am-3pm, "
+        "Mon-Thu 9:30am-12pm and 1pm-4:30pm, Fri 9:30am-1pm. "
+        "31.5 hrs/week scheduled = 31.5 hrs/week of 97153 requested — MATCH"
+    ),
+    "hours_requesting": (
+        "97151 Assessment 8 hrs/auth period (BCBA/LBA, Telehealth/Home/Office); "
+        "97153 Direct Care 31.5 hrs/week (Behavior Technician, Home); "
+        "97154 Social Skills Group 6 hrs/week (BCBA/LBA, Telehealth/Home/Office); "
+        "97155 Supervision/BTM 3 hrs/week (BCBA/LBA, Telehealth/Home/Office); "
+        "97156 Parent Training 1 hr/week (BCBA/LBA, Telehealth/Home/Office)"
+    ),
+}
+
 QA_FIELDS = [
     ("client_insurance", "Client Insurance"),
     ("bcba_name_credentials_npi", "BCBA Name, Credentials & NPI"),
@@ -173,6 +234,24 @@ if st.button("Use example data (Yisroel Leibowitz)"):
     # OWN session_state key, before that widget is instantiated below.
     for key, _ in QA_FIELDS:
         st.session_state[f"qa_input_{key}"] = EXAMPLE_YISROEL_ANSWERS[key]
+
+# Round 93: 3 one-click autofill buttons for the 3 regular test patients --
+# same session_state-key-write pattern as the Yisroel button above (the
+# ONLY way a keyed text_input's value can be changed after its first
+# render, per that button's own Round 62 fix).
+autofill_col1, autofill_col2, autofill_col3 = st.columns(3)
+with autofill_col1:
+    if st.button("Autofill: Amir Howell"):
+        for key, _ in QA_FIELDS:
+            st.session_state[f"qa_input_{key}"] = EXAMPLE_AMIR_ANSWERS[key]
+with autofill_col2:
+    if st.button("Autofill: Arisha Haque"):
+        for key, _ in QA_FIELDS:
+            st.session_state[f"qa_input_{key}"] = EXAMPLE_ARISHA_ANSWERS[key]
+with autofill_col3:
+    if st.button("Autofill: Solomon Schnitzer"):
+        for key, _ in QA_FIELDS:
+            st.session_state[f"qa_input_{key}"] = EXAMPLE_SOLOMON_ANSWERS[key]
 
 qa_values = {}
 for key, label in QA_FIELDS:

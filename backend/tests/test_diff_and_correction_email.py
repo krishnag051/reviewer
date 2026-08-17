@@ -26,12 +26,12 @@ def _ready_upload(client, headers, version_id: str | None = None, patient=None) 
     if version_id is None:
         ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
         patient = client.post(
-            "/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
+            "/api/patients", json={"reference_id": ref, "name": "Test Patient"}, headers=headers
         ).json()
-        version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+        version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
         version_id = version["id"]
     upload = client.post(
-        f"/versions/{version_id}/uploads",
+        f"/api/versions/{version_id}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": ("tp.pdf", _pdf_bytes(), "application/pdf"),
@@ -40,14 +40,14 @@ def _ready_upload(client, headers, version_id: str | None = None, patient=None) 
         },
         headers=headers,
     ).json()
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready", detail
     return {"patient": patient, "version_id": version_id, "upload": detail}
 
 
 def _override(client, headers, rr: dict, **fields):
     return client.patch(
-        f"/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], **fields}, headers=headers
+        f"/api/rule_results/{rr['id']}", json={"updated_at": rr["updated_at"], **fields}, headers=headers
     )
 
 
@@ -160,7 +160,7 @@ def test_diff_buckets_fixed_newly_broken_still_failing_unchanged(client, seeded_
     _override(client, headers, results2[r_fail_stays_fail["rule_id"]], final_status="fail")
 
     resp = client.get(
-        f"/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
+        f"/api/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -195,7 +195,7 @@ def test_diff_rules_changed_bucket_for_snapshot_drift(client, db_session, seeded
     db_session.commit()
 
     resp = client.get(
-        f"/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
+        f"/api/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -217,7 +217,7 @@ def test_diff_was_overridden_previously(client, seeded_baseline):
     # Leave rr2 untouched (is_overridden=False on THIS upload).
 
     resp = client.get(
-        f"/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
+        f"/api/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -234,7 +234,7 @@ def test_diff_rejects_uploads_from_different_versions(client, seeded_baseline):
     ctx2 = _ready_upload(client, headers)  # different patient/version entirely
 
     resp = client.get(
-        f"/uploads/{ctx1['upload']['id']}/diff", params={"against": ctx2["upload"]["id"]}, headers=headers
+        f"/api/uploads/{ctx1['upload']['id']}/diff", params={"against": ctx2["upload"]["id"]}, headers=headers
     )
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "different_version"
@@ -245,10 +245,10 @@ def test_diff_rejects_when_either_upload_voided(client, seeded_baseline):
     ctx1 = _ready_upload(client, headers)
     ctx2 = _ready_upload(client, headers, version_id=ctx1["version_id"])
 
-    client.post(f"/uploads/{ctx1['upload']['id']}/void", json={"reason": "test void"}, headers=headers)
+    client.post(f"/api/uploads/{ctx1['upload']['id']}/void", json={"reason": "test void"}, headers=headers)
 
     resp = client.get(
-        f"/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
+        f"/api/uploads/{ctx2['upload']['id']}/diff", params={"against": ctx1["upload"]["id"]}, headers=headers
     )
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "voided_upload"
@@ -263,7 +263,7 @@ def test_generate_correction_email_persists_with_routing(client, db_session, see
     _override(client, headers, rr, final_status="fail", final_finding="Missing BCBA signature")
 
     resp = client.post(
-        f"/versions/{ctx['version_id']}/correction-email",
+        f"/api/versions/{ctx['version_id']}/correction-email",
         json={"routed_to": "bcba", "statuses": ["fail"]},
         headers=headers,
     )
@@ -293,7 +293,7 @@ def test_generate_correction_email_defaults_to_latest_upload(client, seeded_base
     ctx2 = _ready_upload(client, headers, version_id=ctx1["version_id"])
 
     resp = client.post(
-        f"/versions/{ctx1['version_id']}/correction-email",
+        f"/api/versions/{ctx1['version_id']}/correction-email",
         json={"routed_to": "qa", "statuses": ["pass", "fail", "uncertain", "na", "not_checkable"]},
         headers=headers,
     )
@@ -307,7 +307,7 @@ def test_generate_correction_email_explicit_upload_id(client, seeded_baseline):
     _ready_upload(client, headers, version_id=ctx1["version_id"])
 
     resp = client.post(
-        f"/versions/{ctx1['version_id']}/correction-email",
+        f"/api/versions/{ctx1['version_id']}/correction-email",
         json={
             "routed_to": "clinical_director", "upload_id": ctx1["upload"]["id"],
             "statuses": ["pass", "fail", "uncertain", "na", "not_checkable"],
@@ -324,7 +324,7 @@ def test_generate_correction_email_rejects_upload_from_other_version(client, see
     ctx2 = _ready_upload(client, headers)  # different version entirely
 
     resp = client.post(
-        f"/versions/{ctx1['version_id']}/correction-email",
+        f"/api/versions/{ctx1['version_id']}/correction-email",
         json={"routed_to": "coordinator", "upload_id": ctx2["upload"]["id"], "statuses": ["fail"]},
         headers=headers,
     )
@@ -336,7 +336,7 @@ def test_generate_correction_email_requires_at_least_one_status(client, db_sessi
     ctx = _direct_ready_upload(db_session, seeded_baseline, tmp_path)
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     resp = client.post(
-        f"/versions/{ctx['version'].id}/correction-email",
+        f"/api/versions/{ctx['version'].id}/correction-email",
         json={"routed_to": "bcba", "statuses": []},
         headers=headers,
     )
@@ -359,7 +359,7 @@ def test_generate_correction_email_only_includes_checked_statuses_in_fixed_order
     headers = login_headers(client, "m.chen@brightpath-aba.com")
 
     resp = client.post(
-        f"/versions/{ctx['version'].id}/correction-email",
+        f"/api/versions/{ctx['version'].id}/correction-email",
         json={"routed_to": "bcba", "statuses": ["fail", "na"]},  # deliberately NOT uncertain
         headers=headers,
     )
@@ -381,7 +381,7 @@ def test_generate_correction_email_header_identifies_patient_tp_upload(
     ctx = _direct_ready_upload(db_session, seeded_baseline, tmp_path, statuses={"X": "fail"})
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     resp = client.post(
-        f"/versions/{ctx['version'].id}/correction-email",
+        f"/api/versions/{ctx['version'].id}/correction-email",
         json={"routed_to": "bcba", "statuses": ["fail"]},
         headers=headers,
     )
@@ -425,13 +425,13 @@ def test_send_without_smtp_configured_fails_clearly_not_silently(
     ctx = _direct_ready_upload(db_session, seeded_baseline, tmp_path, statuses={"X": "pass"})
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     gen = client.post(
-        f"/versions/{ctx['version'].id}/correction-email",
+        f"/api/versions/{ctx['version'].id}/correction-email",
         json={"routed_to": "bcba", "statuses": ["pass"], "to_addr": "bcba@example.com"},
         headers=headers,
     ).json()
 
     resp = client.post(
-        f"/versions/{ctx['version'].id}/correction-email/{gen['id']}/send",
+        f"/api/versions/{ctx['version'].id}/correction-email/{gen['id']}/send",
         headers=headers,
     )
     assert resp.status_code == 502
@@ -448,12 +448,12 @@ def test_send_without_recipient_returns_422(client, db_session, seeded_baseline,
     ctx = _direct_ready_upload(db_session, seeded_baseline, tmp_path, statuses={"X": "pass"})
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     gen = client.post(
-        f"/versions/{ctx['version'].id}/correction-email",
+        f"/api/versions/{ctx['version'].id}/correction-email",
         json={"routed_to": "bcba", "statuses": ["pass"], "to_addr": ""},
         headers=headers,
     ).json()
     resp = client.post(
-        f"/versions/{ctx['version'].id}/correction-email/{gen['id']}/send",
+        f"/api/versions/{ctx['version'].id}/correction-email/{gen['id']}/send",
         headers=headers,
     )
     assert resp.status_code == 422
@@ -501,13 +501,13 @@ def test_send_success_attaches_tp_supporting_doc_session_note_and_intake_qa(
         )
         headers = login_headers(client, "m.chen@brightpath-aba.com")
         gen = client.post(
-            f"/versions/{ctx['version'].id}/correction-email",
+            f"/api/versions/{ctx['version'].id}/correction-email",
             json={"routed_to": "bcba", "statuses": ["fail"], "to_addr": "bcba@example.com"},
             headers=headers,
         ).json()
 
         resp = client.post(
-            f"/versions/{ctx['version'].id}/correction-email/{gen['id']}/send",
+            f"/api/versions/{ctx['version'].id}/correction-email/{gen['id']}/send",
             headers=headers,
         )
         assert resp.status_code == 200, resp.text

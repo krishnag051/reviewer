@@ -12,7 +12,7 @@ from app.db.base import get_db
 from app.db.models import User
 from app.deps import get_current_user, require_admin
 from app.security import hash_password
-from app.services.app_config import get_app_config, set_supporting_doc_mode
+from app.services.app_config import get_app_config, set_notification_settings, set_supporting_doc_mode
 
 # Admin-provisioned accounts only -- CLAUDE.md's Auth invariant ("No public
 # signup route. Users are created only via POST /admin/users") is unchanged
@@ -105,10 +105,25 @@ class AppConfigOut(BaseModel):
     id: uuid.UUID
     supporting_doc_mode: SupportingDocMode
     retention_days: int
+    # Deployment round: the real "From" name/address/default-CC a
+    # correction email actually sends with -- previously NULL with no way
+    # to set them except a direct DB write. Surfaced here so Admin
+    # Settings can show/edit the real values, not hide them.
+    notif_from_name: str | None
+    notif_from_address: str | None
+    notif_default_cc: str | None
 
 
 class SupportingDocModeUpdate(BaseModel):
     supporting_doc_mode: SupportingDocMode
+
+
+class NotificationSettingsUpdate(BaseModel):
+    # None means "leave unchanged" for that one field -- a PATCH, not a
+    # full replace; matches this file's own existing PATCH semantics.
+    notif_from_name: str | None = None
+    notif_from_address: str | None = None
+    notif_default_cc: str | None = None
 
 
 @config_router.get("/app-config", response_model=AppConfigOut)
@@ -127,6 +142,30 @@ def update_supporting_doc_mode_route(
     current_user: User = Depends(_require_admin_or_developer),
 ) -> object:
     config = set_supporting_doc_mode(db, body.supporting_doc_mode, actor_user_id=current_user.id)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+@config_router.patch("/app-config/notifications", response_model=AppConfigOut)
+def update_notification_settings_route(
+    body: NotificationSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_require_admin_or_developer),
+) -> object:
+    """Deployment round: the real "From" name/address/default-CC a
+    correction email sends with -- see set_notification_settings' own
+    docstring for why this didn't exist before. Separate sub-path from the
+    existing /app-config PATCH (which only ever handled supporting_doc_mode)
+    rather than overloading that route's single-purpose body shape.
+    """
+    config = set_notification_settings(
+        db,
+        notif_from_name=body.notif_from_name,
+        notif_from_address=body.notif_from_address,
+        notif_default_cc=body.notif_default_cc,
+        actor_user_id=current_user.id,
+    )
     db.commit()
     db.refresh(config)
     return config

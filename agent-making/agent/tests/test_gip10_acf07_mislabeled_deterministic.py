@@ -161,8 +161,17 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_forty_four_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...forty_three..." (2026-08, Round 84, item 3) --
+def test_exactly_forty_seven_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...forty_four..." (2026-08-14, Round 92) -- three more
+    joined this set this round: QA-HRS-05 and QA-GIP-23 (both converted
+    from judgment to deterministic PRECONDITION checkers -- resolve the
+    easy structural case, still escalate to judgment when the precondition
+    doesn't resolve it outright, same hybrid shape as QA-PROB-02; see
+    _check_HRS05's and _check_GIP23's own docstrings) and QA-ACF-12 (a
+    genuinely NEW rule_id, not a relabeling -- built as a real deterministic
+    checker from the start, see _check_ACF12's own docstring).
+
+    Renamed from "...forty_three..." (2026-08, Round 84, item 3) --
     QA-PROB-01 joined this set: a hybrid DET pre-check, same shape as
     QA-PROB-02, adding the narrative-vs-matrix/checklist format signal
     this rule's rubric never checked before -- see _check_PROB01's own
@@ -285,6 +294,25 @@ def test_exactly_forty_four_deterministic_labeled_rules_have_real_checkers():
         # blank-field-with-no-adjacent-context gap -- see
         # fields._check_BIP04's own docstring.
         "QA-BIP-04",
+        # Round 91 (169-rule reconciliation, 2026-08-14): a genuinely NEW
+        # rule_id, not a relabeling -- QA-PPI-07 (AKA/alias check) didn't
+        # exist before this round. Deliberately NOT a repoint of
+        # QA-PPI-06, which keeps its own unrelated meaning -- see
+        # fields._check_PPI07's own docstring.
+        "QA-PPI-07",
+        # Round 92 (2026-08-14): converted from judgment to a deterministic
+        # PRECONDITION checker (>= 10 hrs/week 97153 -> not_applicable,
+        # zero judgment call) -- see fields._check_HRS05's own docstring.
+        "QA-HRS-05",
+        # Round 92 (2026-08-14): converted from judgment to a deterministic
+        # PRECONDITION checker (no Behavior Reduction Goal data ->
+        # not_applicable, zero judgment call) -- see fields._check_GIP23's
+        # own docstring.
+        "QA-GIP-23",
+        # Round 92 (2026-08-14): a genuinely NEW rule_id, not a relabeling --
+        # QA-ACF-12 (assessment date within report range) didn't exist
+        # before this round -- see fields._check_ACF12's own docstring.
+        "QA-ACF-12",
     }
 
 

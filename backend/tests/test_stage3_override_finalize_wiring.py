@@ -55,13 +55,13 @@ def test_override_then_finalize_then_override_409_via_the_real_hardened_routes(c
     patient = db_session.get(Patient, version.patient_id)
 
     # --- 1. real override on a real draft, through the real PATCH route ---
-    get_resp = client.get(f"/uploads/{upload.id}", headers=headers)
+    get_resp = client.get(f"/api/uploads/{upload.id}", headers=headers)
     assert get_resp.status_code == 200
     live = next(r for r in get_resp.json()["rule_results"] if r["id"] == str(rr_fail.id))
     assert live["final_status"] == "fail"
 
     override_resp = client.patch(
-        f"/rule_results/{rr_fail.id}",
+        f"/api/rule_results/{rr_fail.id}",
         json={"updated_at": live["updated_at"], "final_status": "pass"},
         headers=headers,
     )
@@ -78,7 +78,7 @@ def test_override_then_finalize_then_override_409_via_the_real_hardened_routes(c
 
     # --- 2. real finalize, through the real POST .../finalize route ---
     finalize_resp = client.post(
-        f"/uploads/{upload.id}/finalize",
+        f"/api/uploads/{upload.id}/finalize",
         json={"reference_id": patient.reference_id},
         headers=headers,
     )
@@ -97,11 +97,11 @@ def test_override_then_finalize_then_override_409_via_the_real_hardened_routes(c
     assert persisted_version.final_upload_id == upload.id
 
     # --- 3. override-after-finalize is rejected for real, 409, nothing applied ---
-    get_resp_2 = client.get(f"/uploads/{upload.id}", headers=headers)
+    get_resp_2 = client.get(f"/api/uploads/{upload.id}", headers=headers)
     live_2 = next(r for r in get_resp_2.json()["rule_results"] if r["id"] == str(rr_pass.id))
 
     blocked_resp = client.patch(
-        f"/rule_results/{rr_pass.id}",
+        f"/api/rule_results/{rr_pass.id}",
         json={"updated_at": live_2["updated_at"], "final_status": "fail"},
         headers=headers,
     )
@@ -134,7 +134,7 @@ def test_finalize_blocked_while_uncertain_result_remains(client, db_session, see
     patient = db_session.get(Patient, version.patient_id)
 
     resp = client.post(
-        f"/uploads/{upload.id}/finalize",
+        f"/api/uploads/{upload.id}/finalize",
         json={"reference_id": patient.reference_id},
         headers=headers,
     )
@@ -153,7 +153,7 @@ def test_finalize_rejects_reference_id_mismatch(client, db_session, seeded_basel
     _add_rule_result(db_session, upload, rules[0], status="pass")
 
     resp = client.post(
-        f"/uploads/{upload.id}/finalize",
+        f"/api/uploads/{upload.id}/finalize",
         json={"reference_id": f"WRONG-{uuid.uuid4().hex[:8]}"},
         headers=headers,
     )

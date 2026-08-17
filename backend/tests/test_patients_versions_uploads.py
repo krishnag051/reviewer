@@ -32,7 +32,7 @@ def _pdf_bytes() -> bytes:
 
 def _create_patient(client, headers, reference_id: str | None = None) -> dict:
     resp = client.post(
-        "/patients",
+        "/api/patients",
         json={
             "reference_id": reference_id or f"TP-TEST-{uuid.uuid4().hex[:8]}",
             "name": "Test Patient",
@@ -45,7 +45,7 @@ def _create_patient(client, headers, reference_id: str | None = None) -> dict:
 
 
 def _create_version(client, headers, patient_id: str) -> dict:
-    resp = client.post(f"/patients/{patient_id}/versions", json={}, headers=headers)
+    resp = client.post(f"/api/patients/{patient_id}/versions", json={}, headers=headers)
     assert resp.status_code == 201, resp.text
     return resp.json()
 
@@ -53,7 +53,7 @@ def _create_version(client, headers, patient_id: str) -> dict:
 def _create_upload(client, headers, version_id: str, content: bytes = None, filename: str = "tp.pdf") -> dict:
     content = content if content is not None else _pdf_bytes()
     resp = client.post(
-        f"/versions/{version_id}/uploads",
+        f"/api/versions/{version_id}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": (filename, content, "application/pdf"),
@@ -90,7 +90,7 @@ def test_create_patient_duplicate_reference_id_409(client, seeded_baseline):
     ref = f"TP-TEST-{uuid.uuid4().hex[:8]}"
     _create_patient(client, headers, reference_id=ref)
 
-    resp = client.post("/patients", json={"reference_id": ref, "name": "Someone Else"}, headers=headers)
+    resp = client.post("/api/patients", json={"reference_id": ref, "name": "Someone Else"}, headers=headers)
     assert resp.status_code == 409
 
 
@@ -98,7 +98,7 @@ def test_patch_patient_name_only(client, db_session, seeded_baseline):
     headers = login_headers(client, "m.chen@brightpath-aba.com")
     patient = _create_patient(client, headers)
 
-    resp = client.patch(f"/patients/{patient['id']}", json={"name": "Corrected Name"}, headers=headers)
+    resp = client.patch(f"/api/patients/{patient['id']}", json={"name": "Corrected Name"}, headers=headers)
     assert resp.status_code == 200
     assert resp.json()["name"] == "Corrected Name"
     assert resp.json()["reference_id"] == patient["reference_id"]
@@ -116,7 +116,7 @@ def test_patch_patient_rejects_reference_id_change(client, db_session, seeded_ba
     patient = _create_patient(client, headers)
 
     resp = client.patch(
-        f"/patients/{patient['id']}",
+        f"/api/patients/{patient['id']}",
         json={"name": "New Name", "reference_id": "TP-SOMETHING-ELSE"},
         headers=headers,
     )
@@ -133,7 +133,7 @@ def test_patch_patient_echoing_same_reference_id_is_allowed(client, seeded_basel
     patient = _create_patient(client, headers)
 
     resp = client.patch(
-        f"/patients/{patient['id']}",
+        f"/api/patients/{patient['id']}",
         json={"name": "New Name", "reference_id": patient["reference_id"]},
         headers=headers,
     )
@@ -147,7 +147,7 @@ def test_list_patients_includes_latest_version_fields(client, seeded_baseline):
     _create_version(client, headers, patient["id"])
     v2 = _create_version(client, headers, patient["id"])
 
-    resp = client.get("/patients", headers=headers)
+    resp = client.get("/api/patients", headers=headers)
     assert resp.status_code == 200
     item = next(p for p in resp.json() if p["id"] == patient["id"])
     assert item["latest_version_number"] == v2["version_number"] == 2
@@ -234,7 +234,7 @@ def test_get_version_detail_includes_uploads(client, seeded_baseline):
     version = _create_version(client, headers, patient["id"])
     upload = _create_upload(client, headers, version["id"])
 
-    resp = client.get(f"/versions/{version['id']}", headers=headers)
+    resp = client.get(f"/api/versions/{version['id']}", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["uploads"]) == 1
@@ -248,7 +248,7 @@ def test_patch_version_reviewer_and_assessment_date(client, db_session, seeded_b
     version = _create_version(client, headers, patient["id"])
 
     resp = client.patch(
-        f"/versions/{version['id']}",
+        f"/api/versions/{version['id']}",
         json={"reviewer_id": str(reviewer_id), "assessment_date": "2026-01-15"},
         headers=headers,
     )
@@ -354,7 +354,7 @@ def test_pipeline_success_produces_one_real_result_per_pinned_rule(client, db_se
     version = _create_version(client, headers, patient["id"])
     upload = _create_upload(client, headers, version["id"])
 
-    resp = client.get(f"/uploads/{upload['id']}", headers=headers)
+    resp = client.get(f"/api/uploads/{upload['id']}", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready", body
@@ -380,7 +380,7 @@ def test_pipeline_failure_leaves_nothing_partial_status_error(client, db_session
     version = _create_version(client, headers, patient["id"])
     upload = _create_upload(client, headers, version["id"], content=b"not a pdf at all, just garbage bytes", filename="garbage.pdf")
 
-    resp = client.get(f"/uploads/{upload['id']}", headers=headers)
+    resp = client.get(f"/api/uploads/{upload['id']}", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "error", body
@@ -401,15 +401,15 @@ def test_uploading_sibling_upload_does_not_touch_other_uploads(client, db_sessio
     version = _create_version(client, headers, patient["id"])
 
     u1 = _create_upload(client, headers, version["id"])
-    resp1_before = client.get(f"/uploads/{u1['id']}", headers=headers).json()
+    resp1_before = client.get(f"/api/uploads/{u1['id']}", headers=headers).json()
     assert resp1_before["status"] == "ready"
     u1_result_ids = sorted(r["id"] for r in resp1_before["rule_results"])
 
     u2 = _create_upload(client, headers, version["id"])
-    resp2 = client.get(f"/uploads/{u2['id']}", headers=headers).json()
+    resp2 = client.get(f"/api/uploads/{u2['id']}", headers=headers).json()
     assert resp2["status"] == "ready"
 
-    resp1_after = client.get(f"/uploads/{u1['id']}", headers=headers).json()
+    resp1_after = client.get(f"/api/uploads/{u1['id']}", headers=headers).json()
     assert resp1_after["status"] == "ready"
     assert sorted(r["id"] for r in resp1_after["rule_results"]) == u1_result_ids
     assert resp1_after["rules_snapshot_id"] == resp1_before["rules_snapshot_id"]

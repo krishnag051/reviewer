@@ -91,9 +91,21 @@ export function AppShell() {
         <header className="h-16 shrink-0 border-b border-slate-200 bg-white flex items-center justify-between px-8 gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
             {currentNavItem && <currentNavItem.icon className="h-4 w-4 text-slate-400 shrink-0" />}
-            <h1 className="text-base font-semibold text-slate-900 truncate">
+            {/* Deployment round: this was an <h1> -- a real markup bug, not
+                just a test artifact. Every route's own content renders its
+                own real <h1> via PageHeader (components/tp/ui.tsx), whose
+                title text is usually identical to this shared chrome's
+                currentNavItem label (e.g. both say "Dashboard" on "/") --
+                two <h1> elements with the same name on one page, confirmed
+                via a real failing test (`getByRole("heading", {name:
+                "Dashboard"})` found both). This element is global nav
+                chrome, not a page's real title (see Round 74's own comment
+                above -- "this wasn't even A page's title, it was global
+                chrome"), so it's demoted to a <p>, same visual styling,
+                no longer competing with the page's own real heading. */}
+            <p className="text-base font-semibold text-slate-900 truncate">
               {currentNavItem?.label ?? "BrightPath ABA"}
-            </h1>
+            </p>
           </div>
           <div className="flex items-center gap-5">
             <div className="flex items-center gap-2.5">

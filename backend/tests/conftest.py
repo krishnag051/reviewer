@@ -344,7 +344,7 @@ def auth_headers(user_id: uuid.UUID, role: str) -> dict:
 
 
 def login(client, email: str, password: str = DEV_PASSWORD):
-    return client.post("/auth/login", data={"username": email, "password": password})
+    return client.post("/api/auth/login", data={"username": email, "password": password})
 
 
 def login_headers(client, email: str, password: str = DEV_PASSWORD) -> dict:

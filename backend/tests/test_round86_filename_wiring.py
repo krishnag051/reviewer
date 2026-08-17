@@ -32,7 +32,7 @@ def _pdf_with_text(text: str) -> bytes:
 
 
 def _ppi03_finding(client, headers, upload: dict) -> dict:
-    detail = client.get(f"/uploads/{upload['id']}", headers=headers).json()
+    detail = client.get(f"/api/uploads/{upload['id']}", headers=headers).json()
     assert detail["status"] == "ready", detail
     for rr in detail["rule_results"]:
         if rr["rule_code"] == "QA-PPI-03":
@@ -42,7 +42,7 @@ def _ppi03_finding(client, headers, upload: dict) -> dict:
 
 def _upload_tp(client, headers, version_id: str, tp_filename: str, tp_text: str) -> dict:
     return client.post(
-        f"/versions/{version_id}/uploads",
+        f"/api/versions/{version_id}/uploads",
         data=ROUND56_QA_FORM_DATA,
         files={
             "file": (tp_filename, _pdf_with_text(tp_text), "application/pdf"),
@@ -55,8 +55,8 @@ def _upload_tp(client, headers, version_id: str, tp_filename: str, tp_text: str)
 
 def _new_patient_and_version(client, headers) -> str:
     ref = f"TP-R86-{uuid.uuid4().hex[:8]}"
-    patient = client.post("/patients", json={"reference_id": ref, "name": "Round 86 Test"}, headers=headers).json()
-    version = client.post(f"/patients/{patient['id']}/versions", json={}, headers=headers).json()
+    patient = client.post("/api/patients", json={"reference_id": ref, "name": "Round 86 Test"}, headers=headers).json()
+    version = client.post(f"/api/patients/{patient['id']}/versions", json={}, headers=headers).json()
     return version["id"]
 
 
