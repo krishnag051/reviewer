@@ -53,6 +53,7 @@ def set_notification_settings(
     notif_from_name: str | None,
     notif_from_address: str | None,
     notif_default_cc: str | None,
+    auto_send: bool | None = None,
     actor_user_id: uuid.UUID,
 ) -> AppConfig:
     """Deployment round: the "From" name/address/default-CC a correction
@@ -61,12 +62,23 @@ def set_notification_settings(
     direct DB write -- confirmed via search, no admin endpoint or seed
     default existed for them. Same pattern as set_supporting_doc_mode
     above: per-field no-op check, real audit diff, caller controls the
-    transaction boundary. `None` for any of the three fields means "leave
-    it unchanged" (a PATCH updating only some fields), not "clear it" --
-    matching this endpoint's own PATCH semantics elsewhere in this file.
+    transaction boundary. `None` for any of the three string fields means
+    "leave it unchanged" (a PATCH updating only some fields), not "clear
+    it" -- matching this endpoint's own PATCH semantics elsewhere in this
+    file.
+
+    `auto_send` (deployment round, Part 2): a real, pre-existing column
+    (present since the initial schema migration) with NO reader anywhere
+    else in this codebase -- confirmed via search. Persisting it here is
+    real (survives a reload, shows up in the audit log), but flipping it
+    does not yet change any actual send behavior; no route/service
+    currently checks this column before sending. `None` means "leave
+    unchanged," same convention as the string fields -- distinguished from
+    `False` via the same is-not-None check, so explicitly setting it to
+    False is a real, persisted change, not a no-op.
     """
     config = get_app_config(session)
-    changes: dict[str, dict[str, str | None]] = {}
+    changes: dict[str, dict[str, str | bool | None]] = {}
 
     if notif_from_name is not None and notif_from_name != config.notif_from_name:
         changes["notif_from_name"] = {"from": config.notif_from_name, "to": notif_from_name}
@@ -77,6 +89,9 @@ def set_notification_settings(
     if notif_default_cc is not None and notif_default_cc != config.notif_default_cc:
         changes["notif_default_cc"] = {"from": config.notif_default_cc, "to": notif_default_cc}
         config.notif_default_cc = notif_default_cc
+    if auto_send is not None and auto_send != config.auto_send:
+        changes["auto_send"] = {"from": config.auto_send, "to": auto_send}
+        config.auto_send = auto_send
 
     if not changes:
         return config  # no-op, same convention as set_supporting_doc_mode above

@@ -112,6 +112,12 @@ class AppConfigOut(BaseModel):
     notif_from_name: str | None
     notif_from_address: str | None
     notif_default_cc: str | None
+    # Deployment round, Part 2: a real, pre-existing column with no other
+    # reader in this codebase yet -- see set_notification_settings' own
+    # docstring. Surfaced so the "Require manual review before sending"
+    # toggle has a real value to load/persist, even though flipping it
+    # doesn't yet gate any actual send behavior.
+    auto_send: bool
 
 
 class SupportingDocModeUpdate(BaseModel):
@@ -124,6 +130,7 @@ class NotificationSettingsUpdate(BaseModel):
     notif_from_name: str | None = None
     notif_from_address: str | None = None
     notif_default_cc: str | None = None
+    auto_send: bool | None = None
 
 
 @config_router.get("/app-config", response_model=AppConfigOut)
@@ -164,6 +171,7 @@ def update_notification_settings_route(
         notif_from_name=body.notif_from_name,
         notif_from_address=body.notif_from_address,
         notif_default_cc=body.notif_default_cc,
+        auto_send=body.auto_send,
         actor_user_id=current_user.id,
     )
     db.commit()

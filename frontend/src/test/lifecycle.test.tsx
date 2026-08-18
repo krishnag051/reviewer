@@ -814,6 +814,63 @@ describe("Round 50: Rules Studio wired to the real backend", () => {
   }, 15000);
 });
 
+// Deployment round, Part 2: Admin Settings -> Notifications tab, real GET/
+// PATCH wiring replacing what was a fully hardcoded mockup (static
+// defaultValue strings, a "Save" button with no onClick at all -- see
+// admin.tsx's own comment on the still-unwired Company Info tab for what
+// this one used to look like too). Zero real Anthropic API calls -- pure
+// AppConfig CRUD. Restores the original values at the end so this test
+// leaves no net change in the dev database.
+describe("Deployment round: Admin Settings Notifications tab wired to the real backend", () => {
+  it("loads real current values, saves new ones for real, persists after a fresh render, then restores the original values", async () => {
+    const token = await adminToken();
+    const user = userEvent.setup();
+
+    renderApp("/admin", token);
+    await screen.findByRole("heading", { name: "Admin Settings" });
+    await user.click(screen.getByRole("tab", { name: "Notifications" }));
+
+    const fromNameInput = await screen.findByLabelText('Default "From" name');
+    const fromAddressInput = await screen.findByLabelText('Default "From" address');
+    // Confirmed absent: the OLD hardcoded mock placeholders must never
+    // appear now that this tab reads the real AppConfig row -- proves
+    // this is real data, not a coincidental match with the retired mockup.
+    expect(screen.queryByDisplayValue("BrightPath Compliance")).toBeNull();
+    expect(screen.queryByDisplayValue("notify@brightpath-aba.com")).toBeNull();
+
+    const originalFromName = (fromNameInput as HTMLInputElement).value;
+    const originalFromAddress = (fromAddressInput as HTMLInputElement).value;
+    const testFromName = `${originalFromName} (deployment-round-test-edit)`;
+    console.log(`STEP A: real GET loaded current values -- from_name=${JSON.stringify(originalFromName)} from_address=${JSON.stringify(originalFromAddress)}`);
+
+    await user.clear(fromNameInput);
+    await user.type(fromNameInput, testFromName);
+    await user.click(screen.getByRole("button", { name: "Save notification defaults" }));
+    await screen.findByText("Notification defaults saved.");
+    console.log(`STEP B: real PATCH /admin/app-config/notifications round-tripped -- from_name changed to "${testFromName}"`);
+
+    // Fresh render (not the same component instance) -- proves the save
+    // persisted server-side, not just in this render's local state.
+    cleanup();
+    renderApp("/admin", token);
+    await screen.findByRole("heading", { name: "Admin Settings" });
+    await user.click(screen.getByRole("tab", { name: "Notifications" }));
+    const fromNameAfterReload = await screen.findByDisplayValue(testFromName);
+    expect(fromNameAfterReload).toBeTruthy();
+    console.log("STEP C: a completely fresh render shows the saved value -- real persistence, not optimistic-only UI");
+
+    // Restore the original value -- this test (and the deployment round's
+    // own real from-address, notifications@mail.masterfaster.org, and
+    // from-name, "Master Faster Treatment Plan Review") must not be left
+    // changed by this test run.
+    await user.clear(fromNameAfterReload);
+    await user.type(fromNameAfterReload, originalFromName);
+    await user.click(screen.getByRole("button", { name: "Save notification defaults" }));
+    await screen.findByText("Notification defaults saved.");
+    console.log("STEP D: restored the original from_name -- this test leaves zero net change in the dev database");
+  }, 30000);
+});
+
 // Round 51: the mandatory second ("supporting document") file. Zero real
 // Anthropic API calls -- pure storage/CRUD/display, no pipeline touched.
 //

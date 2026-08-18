@@ -44,6 +44,11 @@ services:
       # 2026-08-13: same fix carried over from local -- absolute path,
       # skips storage.py's own-__file__ resolution ambiguity entirely.
       UPLOAD_STORAGE_DIR: /app/data/uploads
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_USE_TLS: ${SMTP_USE_TLS}
       # Real Anthropic/OpenRouter/JWT/Postgres secrets are deliberately
       # NOT set here -- they live only in the .env file sitting next to
       # this compose file on the server, which is never committed to git.

@@ -7,17 +7,21 @@
 // see api-client.ts's own comment on what editing here does and doesn't
 // affect), and now index.tsx / Dashboard (Round 74 -- real
 // GET /reports/overview + GET /reports/recent-activity, replacing
-// tp-mock.ts's fabricated counts/activity feed entirely). Everything ELSE
-// in the app (the Reports page itself, Admin Settings, correction email,
-// mark-reviewed) still stays on tp-context.tsx's mock data -- see
-// FRONTEND_STATE.md §0.
+// tp-mock.ts's fabricated counts/activity feed entirely), and now Admin
+// Settings' Notifications tab too (deployment round -- real
+// notif_from_name/notif_from_address/notif_default_cc/auto_send, replacing
+// that tab's own hardcoded defaultValue mockup). Everything ELSE in the
+// app (the Reports page itself, Admin Settings' OTHER tabs -- Organization/
+// Company Info specifically has no real backing endpoint at all, flagged
+// not built rather than invented -- correction email, mark-reviewed)
+// still stays on tp-context.tsx's mock data -- see FRONTEND_STATE.md §0.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createPatient, createRule, createSimulatedUpload, createUpload, createVersion, finalizeUpload, getAppConfig,
   getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getSessionNoteExtraction, getUpload, getVersion,
   listPatientVersions, listPatients, listRules, listSessionNotes, overrideRuleResult, setRuleActive,
-  setSupportingDocMode, updateRule,
-  type IntakeAnswers, type RulePayor, type RuleType, type SupportingDocMode,
+  setNotificationSettings, setSupportingDocMode, updateRule,
+  type IntakeAnswers, type NotificationSettingsUpdate, type RulePayor, type RuleType, type SupportingDocMode,
 } from "./api-client";
 
 export function usePatients() {
@@ -204,6 +208,17 @@ export function useSetSupportingDocMode() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (mode: SupportingDocMode) => setSupportingDocMode(mode),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["app-config"] }),
+  });
+}
+
+// Deployment round: real notification defaults (Admin Settings ->
+// Notifications tab) -- was fully hardcoded mock UI with no query/mutation
+// at all before this round; see admin.tsx's own comment on the same tab.
+export function useSetNotificationSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: NotificationSettingsUpdate) => setNotificationSettings(body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["app-config"] }),
   });
 }

@@ -1,3 +1,4 @@
+import html
 import uuid
 from datetime import datetime, timezone
 
@@ -80,6 +81,113 @@ def _build_body(
     return "\n".join(lines)
 
 
+def _finding_text(finding) -> str:
+    """Same rendering `_build_body` already implicitly relies on
+    (str(r.final_finding)) -- a rule_result's finding is either a plain
+    string or the {page, detail} list form judge.py can produce for a
+    multi-page issue. Kept as its own function so both the plain-text and
+    HTML body builders render this exact shape identically, rather than
+    inlining str()/escaping logic twice.
+    """
+    if isinstance(finding, list):
+        return "; ".join(
+            f"[Page {item.get('page')}] {item.get('detail')}" if isinstance(item, dict) else str(item)
+            for item in finding
+        )
+    return str(finding)
+
+
+def _build_html_body(
+    patient: Patient, version: Version, upload: Upload, results_by_status: dict[str, list[RuleResult]],
+    statuses: list[str], rules_by_id: dict,
+) -> str:
+    """Deployment round: real HTML formatting for the same content
+    _build_body produces -- same category headers/order, same per-rule
+    Finding/Reference text, same overall structure -- styling only, no
+    content change. Plain inline CSS throughout (style="..." attributes,
+    no <style> block/external stylesheet) since real email clients
+    (Outlook, Gmail) are notoriously inconsistent about honoring anything
+    else. `<b>` for the rule ID/title per Part 1's own spec (not
+    `<strong>` -- both render identically in every real client that
+    matters here; `<b>` is what the task named explicitly) with a light
+    `<hr>` divider after each rule entry for real visual separation,
+    replacing the wall-of-text single-indent-level look the plain version
+    has no way to avoid.
+
+    Every user-controlled/model-generated string (patient name, rule
+    title, finding text) is passed through html.escape() before being
+    embedded -- a finding can legitimately contain '<', '>', or '&' (e.g.
+    quoting document text), and this is real HTML now, not a plain-text
+    body where that was never a concern.
+    """
+    included = [s for s in STATUS_ORDER if s in statuses]
+    total = sum(len(results_by_status.get(s, [])) for s in included)
+
+    esc_patient_name = html.escape(patient.name)
+    esc_ref_id = html.escape(patient.reference_id)
+    esc_status_list = html.escape(", ".join(STATUS_LABELS[s] for s in included))
+
+    parts = [
+        '<div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #1e293b; line-height: 1.5;">',
+        f'<h2 style="margin: 0 0 4px 0; font-size: 18px;">Treatment Plan Review — {esc_patient_name} ({esc_ref_id})</h2>',
+        f'<p style="margin: 0 0 16px 0; color: #64748b;">Version {version.version_number}, Upload U{upload.upload_number}</p>',
+        (
+            f'<p style="margin: 0 0 20px 0;">This email contains the {esc_status_list} result(s) from this '
+            f"treatment plan's rule-check review — {total} item(s) total. The treatment plan itself is attached, "
+            f"along with any supporting document, session notes, or intake Q&A on file for this upload.</p>"
+        ),
+    ]
+
+    for s in included:
+        items = results_by_status.get(s, [])
+        if not items:
+            continue
+        parts.append(f'<h3 style="margin: 24px 0 12px 0; font-size: 15px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">{html.escape(STATUS_LABELS[s])} ({len(items)})</h3>')
+        for r in items:
+            rule = rules_by_id[r.rule_id]
+            esc_rule_code = html.escape(rule.rule_code)
+            esc_title = html.escape(rule.question_text)
+            esc_finding = html.escape(_finding_text(r.final_finding))
+            parts.append('<div style="margin: 0 0 14px 0;">')
+            parts.append(f'<p style="margin: 0 0 4px 0;"><b>[{esc_rule_code}] {esc_title}</b></p>')
+            parts.append(f'<p style="margin: 0 0 4px 0;">Finding: {esc_finding}</p>')
+            if r.final_pages:
+                esc_pages = html.escape(", ".join(str(p) for p in r.final_pages))
+                parts.append(f'<p style="margin: 0; color: #64748b; font-size: 13px;">Reference: p.{esc_pages}</p>')
+            parts.append("</div>")
+            # The visual separator Part 1 explicitly asked for -- a real
+            # break between one rule entry and the next, not everything
+            # packed together with no breathing room.
+            parts.append('<hr style="border: none; border-top: 1px solid #e2e8f0; margin: 0 0 14px 0;">')
+
+    parts.append('<p style="margin: 20px 0 0 0;">Please review the items above and reach out with any questions.</p>')
+    parts.append('<p style="margin: 16px 0 0 0; color: #64748b;">— Sent from the TP Review system</p>')
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _gather_results_by_status(
+    session: Session, upload_id: uuid.UUID, statuses: list[str],
+) -> tuple[dict[str, list[RuleResult]], dict]:
+    """Shared by generate_correction_email (builds the plain-text body
+    that gets persisted) and send_generated_email (rebuilds the HTML body
+    fresh at send time, below) -- same query, same shape, factored out so
+    the two can never drift into computing "the same rule results" two
+    different ways.
+    """
+    all_results = session.execute(select(RuleResult).where(RuleResult.upload_id == upload_id)).scalars().all()
+    results_by_status: dict[str, list[RuleResult]] = {}
+    for r in all_results:
+        if r.final_status in statuses:
+            results_by_status.setdefault(r.final_status, []).append(r)
+    included_results = [r for bucket in results_by_status.values() for r in bucket]
+    rules_by_id = {
+        r.id: r
+        for r in session.execute(select(Rule).where(Rule.id.in_([res.rule_id for res in included_results]))).scalars().all()
+    }
+    return results_by_status, rules_by_id
+
+
 def generate_correction_email(
     session: Session,
     version_id: uuid.UUID,
@@ -148,16 +256,7 @@ def generate_correction_email(
 
     patient = session.get(Patient, version.patient_id)
 
-    all_results = session.execute(select(RuleResult).where(RuleResult.upload_id == upload.id)).scalars().all()
-    results_by_status: dict[str, list[RuleResult]] = {}
-    for r in all_results:
-        if r.final_status in statuses:
-            results_by_status.setdefault(r.final_status, []).append(r)
-    included_results = [r for bucket in results_by_status.values() for r in bucket]
-    rules_by_id = {
-        r.id: r
-        for r in session.execute(select(Rule).where(Rule.id.in_([res.rule_id for res in included_results]))).scalars().all()
-    }
+    results_by_status, rules_by_id = _gather_results_by_status(session, upload.id, statuses)
 
     subject = f"Treatment Plan Review — {patient.name} ({patient.reference_id}) — v{version.version_number} U{upload.upload_number}"
     body = _build_body(patient, version, upload, results_by_status, statuses, rules_by_id)
@@ -267,6 +366,18 @@ def send_generated_email(session: Session, email_id: uuid.UUID, *, actor_user_id
     document attached to an upload changes between generate and send, but
     this keeps the two concerns cleanly separated regardless).
 
+    Deployment round: the real HTML body (bold rule ID/title + a visual
+    divider per entry, see _build_html_body's own docstring) is ALSO built
+    fresh here, at send time -- same reasoning as attachments above, and
+    the only option that didn't need a schema migration: GeneratedEmail's
+    persisted `body` column stays exactly what it always was (the plain-
+    text version, unchanged, still the real fallback for a plain-text-only
+    mail client), and the HTML alternative is derived from the SAME
+    `email.upload_id` + `email.statuses` this row already persists,
+    through the exact same _gather_results_by_status query
+    generate_correction_email itself uses -- never a second, differently-
+    computed picture of "what results are in this email."
+
     Returns None if the email row doesn't exist. Raises HTTPException(422)
     if there's no recipient. On a real SMTP failure, persists send_error
     on the row (so the failure is visible in the audit trail/UI) and
@@ -288,6 +399,9 @@ def send_generated_email(session: Session, email_id: uuid.UUID, *, actor_user_id
     patient = session.get(Patient, version.patient_id)
     attachments = _gather_attachments(upload)
 
+    results_by_status, rules_by_id = _gather_results_by_status(session, email.upload_id, email.statuses)
+    html_body = _build_html_body(patient, version, upload, results_by_status, email.statuses, rules_by_id)
+
     app_config = session.execute(select(AppConfig)).scalar_one()
 
     try:
@@ -297,6 +411,7 @@ def send_generated_email(session: Session, email_id: uuid.UUID, *, actor_user_id
             bcc=email.bcc,
             subject=email.subject,
             body=email.body,
+            html_body=html_body,
             from_addr=app_config.notif_from_address,
             from_name=app_config.notif_from_name,
             attachments=attachments,

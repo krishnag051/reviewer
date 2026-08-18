@@ -553,6 +553,18 @@ export type AppConfigOut = {
   id: string;
   supporting_doc_mode: SupportingDocMode;
   retention_days: number;
+  // Deployment round: real outbound-email defaults -- see
+  // backend/app/routers/admin.py's own AppConfigOut for the exact same
+  // shape. null for the 3 string fields means genuinely unset in the DB
+  // (never defaulted client-side to some placeholder string).
+  notif_from_name: string | null;
+  notif_from_address: string | null;
+  notif_default_cc: string | null;
+  // Real column, but nothing else in the backend reads it yet to gate
+  // actual auto-send behavior -- see set_notification_settings' own
+  // docstring. Persisting/loading it here is still real (survives a
+  // reload), just doesn't yet drive any send behavior on its own.
+  auto_send: boolean;
 };
 
 export async function getAppConfig(): Promise<AppConfigOut> {
@@ -564,6 +576,21 @@ export async function setSupportingDocMode(mode: SupportingDocMode): Promise<App
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ supporting_doc_mode: mode }),
+  });
+}
+
+export type NotificationSettingsUpdate = {
+  notif_from_name?: string | null;
+  notif_from_address?: string | null;
+  notif_default_cc?: string | null;
+  auto_send?: boolean | null;
+};
+
+export async function setNotificationSettings(body: NotificationSettingsUpdate): Promise<AppConfigOut> {
+  return request("/admin/app-config/notifications", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 }
 

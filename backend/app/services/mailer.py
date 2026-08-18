@@ -46,6 +46,7 @@ def send_email(
     to_addr: str,
     subject: str,
     body: str,
+    html_body: str | None = None,
     cc: str | None = None,
     bcc: str | None = None,
     from_addr: str | None = None,
@@ -62,6 +63,16 @@ def send_email(
     `to_addr` is required and must be non-empty -- there is nobody to
     reject as a recipient at the SMTP layer if it's blank, which would
     otherwise look like a successful send of nothing to nobody.
+
+    `html_body` (deployment round): optional real HTML alternative.
+    `body` (plain text) is ALWAYS sent regardless -- `None` here just
+    means "plain-text only," the exact behavior every pre-existing caller
+    still gets unchanged. When given, `EmailMessage.add_alternative`
+    turns this into a real multipart/alternative message (plain text +
+    HTML, same content, client picks whichever it can render) -- every
+    real email client honors this standard MIME structure; there's no
+    plain-text-only client left that would be worse off than before,
+    since the plain part is identical to what was already being sent.
     """
     if not settings.smtp_host:
         raise MailerNotConfigured(
@@ -79,6 +90,12 @@ def send_email(
     if cc:
         msg["Cc"] = cc
     msg.set_content(body)
+    if html_body:
+        # Must come AFTER set_content and BEFORE any add_attachment calls
+        # below -- this is what makes the message multipart/alternative
+        # (plain + HTML) with attachments layered on top as multipart/mixed,
+        # the standard MIME shape every real client expects.
+        msg.add_alternative(html_body, subtype="html")
 
     for att in attachments or []:
         maintype, _, subtype = att.mime_type.partition("/")
