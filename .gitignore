@@ -61,6 +61,12 @@ agent-making/agent/rules/straight_medicaid.json
 
 .env
 
+# Fix Round: the real staging secrets file -- .env.staging.example (the
+# template, blank/placeholder values only) IS committed.
+.env.staging
+
 docker-compose.yml
 
 docker compose/
+
+changes/

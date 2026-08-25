@@ -951,7 +951,7 @@ describe("Round 51: mandatory supporting document (storage + display only)", () 
 
     renderApp("/upload", token);
     await screen.findByRole("heading", { name: "Upload Treatment Plan" });
-    await user.click(screen.getByRole("button", { name: "Existing Patient" }));
+    await user.click(screen.getByRole("button", { name: "Re-upload" })); // renamed from "Existing Patient", same mode
     await user.type(screen.getByPlaceholderText("Name or reference ID"), refId);
     await user.click(await screen.findByText("Round51 Existing Test Patient", {}, { timeout: 8000 }));
     await screen.findByText(/Supporting Document/, {}, { timeout: 8000 });
@@ -1058,4 +1058,109 @@ describe("Round 51: mandatory supporting document (storage + display only)", () 
 
     openSpy.mockRestore();
   }, 20000);
+});
+
+// Fix Round, Item 2 verification: end-to-end, through the REAL /upload UI --
+// pick a Payor from the dedicated dropdown, fill out the rest of the real
+// form, submit through the real submit button, and inspect the REAL
+// FormData object the app's own createUpload() (api-client.ts) built from
+// that real component state and was about to send. This proves the whole
+// real chain -- Select onValueChange -> payor state -> submitUpload's
+// qaWithPayor -> formData.append("client_insurance", ...) -- without
+// depending on the actual multipart request completing over the wire:
+// confirmed separately (see the note logged as STEP A below) that jsdom's
+// FormData/fetch pairing in THIS vitest environment silently drops the file
+// part of a real multipart POST, the same interop gap the Stage 2 (Round 42)
+// test's own comment already documents and works around by hand-building
+// its multipart body instead of using FormData -- that gap is specific to
+// this test environment's fetch/FormData interop, not to any app code this
+// round touched. Intercepting at the fetch boundary sidesteps it and, as a
+// side effect, means this test makes zero real network calls for the upload
+// step itself -- not even the pre-flight-rejected kind Stage 2 relies on.
+describe("Fix Round, Item 2: Payor dropdown is the single source of truth for client_insurance", () => {
+  it("new-patient flow: the Payor selected in the dropdown -- not typed anywhere else -- is exactly what createUpload() sends as client_insurance", async () => {
+    const token = await adminToken();
+    const user = userEvent.setup();
+    const refId = `TP-TEST-fixround-payor-${crypto.randomUUID().slice(0, 8)}`;
+
+    renderApp("/upload", token);
+    await screen.findByRole("heading", { name: "Upload Treatment Plan" });
+    // Item 4's renamed label -- also confirms structured_form mode is the
+    // live default this test relies on (Q&A text fields, no document zone).
+    await screen.findByText(/Patient Central Reach Information/);
+    // Item 2: "Client Insurance" must not appear anywhere in this list any more.
+    expect(screen.queryByText(/Client Insurance/)).toBeNull();
+
+    await user.type(screen.getByPlaceholderText("e.g., Jordan Nakamura"), "FixRound Payor Test Patient");
+    await user.type(screen.getByPlaceholderText("e.g., TP-2026-0500"), refId);
+
+    // The Payor dropdown -- deliberately NOT the default (PAYORS[0] ==
+    // "Aetna") so a pass here can't be a coincidence of an unchanged default.
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Cigna" }));
+
+    await user.type(screen.getByPlaceholderText(/Jane Smith, BCBA-D/), "Jane Smith, BCBA-D - NPI 1234567890");
+    await user.type(screen.getByPlaceholderText(/01\/15\/2026/), "01/15/2026 - 07/15/2026");
+    await user.type(screen.getByPlaceholderText(/Home, Mon–Fri/), "Home, Mon-Fri 5-8pm, 15 hrs/week requested");
+    await user.type(screen.getByPlaceholderText("e.g., 15 hrs/week"), "15 hrs/week");
+
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    expect(fileInputs.length).toBe(2); // TP zone + Session Notes zone (structured_form mode)
+    // Real drag-and-drop's own validateFiles() is unit/component-tested
+    // directly in file-drop-zone.test.tsx (Item 1); this end-to-end pass
+    // drives the same hidden <input> both paths share, via userEvent.upload
+    // -- the point here is the payor wiring, not re-proving validation.
+    await user.upload(fileInputs[0] as HTMLElement, new File(["not a real pdf, wiring only"], "tp.pdf", { type: "application/pdf" }));
+    await user.upload(fileInputs[1] as HTMLElement, new File(["session note content"], "note.txt", { type: "text/plain" }));
+
+    // Intercept only the one POST this test cares about; every other real
+    // request this page makes (app-config, patients list, the real
+    // createPatient/createVersion JSON calls) passes straight through to
+    // the real backend, unmodified.
+    const realFetch = window.fetch.bind(window);
+    let capturedFormData: FormData | null = null;
+    const fetchSpy = vi.spyOn(window, "fetch").mockImplementation(async (url, init) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.href : (url as Request).url;
+      if (init?.method === "POST" && /\/versions\/[^/]+\/uploads$/.test(href)) {
+        capturedFormData = init.body as FormData;
+        return new Response(
+          JSON.stringify({ id: "mock-upload-id", version_id: "mock-version-id", upload_number: 1, is_final: false, voided: false, status: "processing" }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return realFetch(url as never, init);
+    });
+
+    try {
+      const submitButton = () => screen.getByRole("button", { name: /Create Upload 1/ }) as HTMLButtonElement;
+      expect(submitButton().disabled).toBe(false);
+      await user.click(submitButton());
+
+      await vi.waitFor(() => { if (!capturedFormData) throw new Error("upload POST not captured yet"); }, { timeout: 8000 });
+      console.log("STEP A: real patient + version created for real against the real backend; the real createUpload() call itself was intercepted at the fetch boundary (see comment above this describe block for why: a jsdom FormData/fetch interop gap in this test env, not an app bug -- same class of gap Stage 2's own comment documents working around by hand-building multipart instead of using FormData)");
+
+      const fd = capturedFormData!;
+      expect(fd.get("client_insurance")).toBe("Cigna");
+      expect(fd.get("bcba_name_credentials_npi")).toBe("Jane Smith, BCBA-D - NPI 1234567890");
+      expect(fd.get("authorization_dates")).toBe("01/15/2026 - 07/15/2026");
+      expect(fd.get("pos_schedule_vs_97153_hours")).toBe("Home, Mon-Fri 5-8pm, 15 hrs/week requested");
+      expect(fd.get("hours_requesting")).toBe("15 hrs/week");
+      console.log(
+        `STEP B: the real FormData createUpload() built from real component state has client_insurance="${fd.get("client_insurance")}" -- ` +
+        "exactly the dropdown's Payor selection, injected automatically by submitUpload()'s qaWithPayor, never a separate typed answer",
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    // Real, no-mock confirmation that the patient itself was created with
+    // the same Payor value, via the plain-JSON createPatient call this test
+    // never intercepted.
+    const patientsResp = await fetch(`${API_BASE}/patients`, { headers: { Authorization: `Bearer ${token}` } });
+    const patients = await patientsResp.json();
+    const created = patients.find((p: { reference_id: string }) => p.reference_id === refId);
+    expect(created).toBeTruthy();
+    expect(created.payor).toBe("Cigna");
+    console.log(`STEP C: real GET /patients confirms the created patient's stored payor is "${created.payor}" -- the same single value used for both the patient record and the intake answer`);
+  }, 25000);
 });

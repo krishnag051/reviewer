@@ -21,6 +21,21 @@ const BADGE_STATUS: Record<RuleResultOut["final_status"], "Pass" | "Fail" | "N/A
   pass: "Pass", fail: "Fail", na: "N/A", uncertain: "N/A", not_checkable: "N/A",
 };
 
+// Fix Round: colored card border keyed to final_status, for at-a-glance
+// scanability -- border color ONLY, badge/pill styling above is untouched.
+// Pass -> green, Fail -> red, Uncertain -> blue, N/A -> gray. `not_checkable`
+// was gray (matching N/A's BADGE_STATUS collapse) until explicitly
+// corrected: it now gets its own blue, same as Uncertain -- a real
+// distinguishing color rather than folding into N/A's gray, per direct
+// user instruction.
+const STATUS_BORDER_CLASS: Record<RuleResultOut["final_status"], string> = {
+  pass: "border-green-400",
+  fail: "border-red-400",
+  uncertain: "border-blue-400",
+  na: "border-slate-300",
+  not_checkable: "border-blue-400",
+};
+
 /** Round 72, Item 2 -- REAL BUG FOUND AND FIXED: Round 70 only ever
  * rendered a link per entry in `res.final_pages` (the structured column).
  * Confirmed live: QA-TEMP-03's own evidence text is a Python-repr-style
@@ -303,7 +318,7 @@ export function RuleResultCard({
     // toggle for keyboard users, matching what a real <button> gets for
     // free but a plain <div onClick> does not.
     <div
-      className="rounded-lg border border-slate-200 bg-white px-3 py-3.5 shadow-sm hover:border-slate-300 transition-colors cursor-pointer"
+      className={`rounded-lg border-2 ${STATUS_BORDER_CLASS[res.final_status]} bg-white px-3 py-3.5 shadow-sm hover:shadow-md transition-shadow cursor-pointer`}
       onClick={() => setExpanded(e => !e)}
       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded(x => !x); } }}
       role="button"

@@ -27,6 +27,20 @@ const STATUS_LABELS: Record<RuleResultOut["final_status"], string> = {
   pass: "Pass", fail: "Fail", na: "N/A", uncertain: "Uncertain", not_checkable: "Not checkable",
 };
 
+// Fix Round: the filter-tab headings get the same colored-border treatment
+// as the result cards themselves (RuleResultCard.tsx's own
+// STATUS_BORDER_CLASS) -- Pass green, Fail red, Uncertain blue, N/A gray,
+// Not checkable blue (matching Uncertain, per direct instruction, not
+// folded into N/A's gray). "All" isn't a status, so it gets no color here
+// -- it's still made bold/thick below, just without a status color.
+const TAB_BORDER_CLASS: Record<RuleResultOut["final_status"], string> = {
+  pass: "border-green-400",
+  fail: "border-red-400",
+  uncertain: "border-blue-400",
+  na: "border-slate-300",
+  not_checkable: "border-blue-400",
+};
+
 // Fix Round, item 3 (2026-08-12): the FIXED order every "Escalate to BCBA"
 // surface uses -- the checkbox row, and the email body's own section
 // order -- matches the results tab bar's own order exactly (`counts`/the
@@ -361,7 +375,7 @@ function PlanDetail() {
                   // modal instead, using data already fetched by
                   // uploadDetailQuery above -- no separate request.
                   <Button variant="outline" onClick={() => setQaModalOpen(true)}>
-                    <FileText className="h-4 w-4 mr-1.5" />Intake Q&A
+                    <FileText className="h-4 w-4 mr-1.5" />Patient Central Reach Information
                   </Button>
                 ) : (
                   <Button variant="outline" onClick={handleOpenSupportingDocument} disabled={openingSupportingDoc}>
@@ -442,7 +456,7 @@ function PlanDetail() {
       <Dialog open={qaModalOpen} onOpenChange={setQaModalOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Intake Q&A</DialogTitle>
+            <DialogTitle>Patient Central Reach Information</DialogTitle>
             <DialogDescription>
               The 5 structured answers submitted with this specific upload (U{finalUpload?.upload_number}) — not
               necessarily the patient's most recent answers if this is an older draft or finalized version.
@@ -454,7 +468,7 @@ function PlanDetail() {
                 ["Client Insurance", intakeAnswers.client_insurance],
                 ["BCBA Name, Credentials & NPI", intakeAnswers.bcba_name_credentials_npi],
                 ["Authorization Dates", intakeAnswers.authorization_dates],
-                ["POS/Schedule vs. 97153 Hours Requesting", intakeAnswers.pos_schedule_vs_97153_hours],
+                ["Schedule and POS", intakeAnswers.pos_schedule_vs_97153_hours],
                 ["Hours Requesting", intakeAnswers.hours_requesting],
               ] as const).map(([label, value]) => (
                 <div key={label}>
@@ -659,7 +673,18 @@ function PlanDetail() {
                         <button
                           key={f.key}
                           onClick={() => setFilter(f.key)}
-                          className={`flex-1 rounded-md border px-2 py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${filter === f.key ? "border-slate-400 bg-slate-100" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                          // Fix Round: every tab border is now border-2 (as
+                          // thick as RuleResultCard's own card border) --
+                          // "All" included, so it stays visually consistent
+                          // with the colored ones even though it has no
+                          // status color of its own. "All" gets font-bold
+                          // (fully bold); the status tabs get font-semibold
+                          // ("a bit bold", one step lighter than "All").
+                          className={`flex-1 rounded-md border-2 px-2 py-2 text-xs transition-colors flex items-center justify-center gap-1.5 ${
+                            f.key === "all"
+                              ? `font-bold ${filter === "all" ? "border-slate-400 bg-slate-100" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`
+                              : `font-semibold ${TAB_BORDER_CLASS[f.key]} ${filter === f.key ? "bg-slate-100" : "bg-white text-slate-600 hover:bg-slate-50"}`
+                          }`}
                         >
                           <span>{f.label}</span>
                           <span className="rounded bg-slate-900/10 px-1.5 py-0.5 tabular-nums">{f.count}</span>

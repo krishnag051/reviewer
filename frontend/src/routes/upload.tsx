@@ -8,6 +8,7 @@ import { ApiError, type IntakeAnswers } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { PAYORS, pendingSlotLabel, type Payor } from "@/lib/tp-mock";
 import { PageHeader } from "@/components/tp/ui";
+import { FileDropZone } from "@/components/tp/FileDropZone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +17,10 @@ import { Upload as UploadIcon, FileCheck2, Loader2, FlaskConical, X } from "luci
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/upload")({ component: UploadPage });
+
+// Fix Round, Item 1: the real, enforced limit -- matches the "max 25 MB"
+// text already shown in the UI, which was decorative only until now.
+const TP_MAX_SIZE_BYTES = 25 * 1024 * 1024;
 
 // Round 42, Stage 2: real upload creation, wired to the real backend --
 // POST /patients (new-patient mode only) -> POST /patients/:id/versions
@@ -44,11 +49,18 @@ const EMPTY_ANSWERS: IntakeAnswers = {
   pos_schedule_vs_97153_hours: "", hours_requesting: "",
 };
 
+// Fix Round: client_insurance dropped from this list entirely -- Payor is
+// asked once, via the dedicated dropdown below, not typed in twice. The
+// dropdown's own selected value is written into client_insurance
+// automatically at submit time (see buildAnswersWithPayor below) -- the
+// backend's own Form field still expects this exact key non-empty
+// (api-client.ts's IntakeAnswers type comment: "matching the backend Form
+// fields 1:1... a typo/rename 422s clearly"), so the key itself is NOT
+// removed from the type/payload, only the separate user-facing input for it.
 const QA_FIELDS: { key: keyof IntakeAnswers; label: string; placeholder: string }[] = [
-  { key: "client_insurance", label: "Client Insurance", placeholder: "e.g., Aetna" },
   { key: "bcba_name_credentials_npi", label: "BCBA Name, Credentials & NPI", placeholder: "e.g., Jane Smith, BCBA-D — NPI 1234567890" },
   { key: "authorization_dates", label: "Authorization Dates", placeholder: "e.g., 01/15/2026 – 07/15/2026" },
-  { key: "pos_schedule_vs_97153_hours", label: "POS/Schedule vs. 97153 Hours Requesting", placeholder: "e.g., Home, Mon–Fri 5–8pm, 15 hrs/week requested" },
+  { key: "pos_schedule_vs_97153_hours", label: "Schedule and POS", placeholder: "e.g., Home, Mon–Fri 5–8pm, 15 hrs/week requested" },
   { key: "hours_requesting", label: "Hours Requesting", placeholder: "e.g., 15 hrs/week" },
 ];
 
@@ -72,7 +84,7 @@ function IntakeQAFields({
   return (
     <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 h-full">
       <div>
-        <div className="text-sm font-medium text-slate-900">Intake Q&A <span className="text-slate-400 font-normal">(required, 5 fields)</span></div>
+        <div className="text-sm font-medium text-slate-900">Patient Central Reach Information <span className="text-slate-400 font-normal">(required, 4 fields)</span></div>
         <div className="text-xs text-slate-500 mt-0.5">Plain text — no document upload needed for these.</div>
       </div>
       <div className="grid grid-cols-1 gap-3">
@@ -119,17 +131,18 @@ function SupportingUploads({
   return (
     <div className="space-y-1.5">
       <Label>Session Notes <span className="text-slate-400">(required, one or more files)</span></Label>
-      <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-white py-8 cursor-pointer hover:bg-slate-50 transition-colors">
-        <UploadIcon className="h-6 w-6 text-slate-400" />
+      {/* Fix Round, Item 1: real drag-and-drop -- multiple files dropped at
+          once are appended to the existing list, matching exactly how
+          selecting multiple via browse already worked. Any file type, no
+          size limit, per this round's own spec for this zone. */}
+      <FileDropZone
+        multiple
+        onFiles={newFiles => setSessionNotes([...sessionNotes, ...newFiles])}
+        className="py-8 bg-white hover:bg-slate-50"
+      >
         <div className="text-sm text-slate-700">Drop session note files here, or click to browse</div>
         <div className="text-xs text-slate-500">Any file type · select multiple at once</div>
-        <input
-          type="file"
-          multiple
-          className="hidden"
-          onChange={e => setSessionNotes([...sessionNotes, ...Array.from(e.target.files ?? [])])}
-        />
-      </label>
+      </FileDropZone>
       {sessionNotes.length > 0 && (
         <ul className="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
           {sessionNotes.map((f, i) => (
@@ -218,11 +231,21 @@ function UploadPage() {
     return QA_FIELDS.some(f => !qa[f.key].trim()) || notes.length === 0;
   }
 
-  async function submitUpload(versionId: string, file: File, doc: File | null, qa: IntakeAnswers, notes: File[]) {
+  // Fix Round: client_insurance no longer has its own user-facing input --
+  // the Payor dropdown (or, for an existing patient, that patient's
+  // already-stored payor) is the single source of truth, fed in here at
+  // the one point every submit path already goes through. `payorValue`
+  // is whatever the caller's own real payor value is; `?? ""` only
+  // covers the genuine edge case of an existing patient with no payor
+  // ever recorded (not something this round invents a UI for).
+  async function submitUpload(
+    versionId: string, file: File, doc: File | null, qa: IntakeAnswers, notes: File[], payorValue: string | null,
+  ) {
+    const qaWithPayor: IntakeAnswers = { ...qa, client_insurance: payorValue ?? "" };
     if (isDeveloper && useSimulated) {
       await createSimulatedUploadMutation.mutateAsync({ versionId, file });
     } else {
-      await createUploadMutation.mutateAsync({ versionId, file, payload: buildPayload(doc, qa, notes) });
+      await createUploadMutation.mutateAsync({ versionId, file, payload: buildPayload(doc, qaWithPayor, notes) });
     }
   }
 
@@ -233,13 +256,13 @@ function UploadPage() {
       toast.error("A supporting document is required."); return;
     }
     if (requiresSupportingInfo && supportingDocMode === "structured_form" && structuredInfoMissing(qaAnswers, sessionNotes)) {
-      toast.error("All 5 intake Q&A fields and at least one session note file are required."); return;
+      toast.error("All 4 Patient Central Reach Information fields and at least one session note file are required."); return;
     }
     setSubmitting(true);
     try {
       const patient = await createPatientMutation.mutateAsync({ reference_id: refId, name, payor });
       const version = await createVersionMutation.mutateAsync({ patientId: patient.id, payor });
-      await submitUpload(version.id, file, supportingDocument, qaAnswers, sessionNotes);
+      await submitUpload(version.id, file, supportingDocument, qaAnswers, sessionNotes, payor);
       toast.success(
         isDeveloper && useSimulated
           ? `Upload 1 created for ${name} — SIMULATED completion in ~5s (dev-only, not the real agent).`
@@ -259,14 +282,14 @@ function UploadPage() {
       toast.error("A supporting document is required."); return;
     }
     if (requiresSupportingInfo && supportingDocMode === "structured_form" && structuredInfoMissing(existingQaAnswers, existingSessionNotes)) {
-      toast.error("All 5 intake Q&A fields and at least one session note file are required."); return;
+      toast.error("All 4 Patient Central Reach Information fields and at least one session note file are required."); return;
     }
     setSubmitting(true);
     try {
       const versionId = existingLatestIsDraft
         ? existingLatestVersion!.id
         : (await createVersionMutation.mutateAsync({ patientId: selectedExisting.id })).id;
-      await submitUpload(versionId, file, existingSupportingDocument, existingQaAnswers, existingSessionNotes);
+      await submitUpload(versionId, file, existingSupportingDocument, existingQaAnswers, existingSessionNotes, selectedExisting.payor);
       toast.success(
         isDeveloper && useSimulated
           ? `Upload created for ${selectedExisting.name} — SIMULATED completion in ~5s (dev-only, not the real agent).`
@@ -300,7 +323,12 @@ function UploadPage() {
               onClick={() => { setMode(m); setSelectedRef(null); setSearch(""); }}
               className={`px-4 py-1.5 rounded ${mode === m ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
             >
-              {m === "new" ? "New Patient" : "Existing Patient"}
+              {/* Copy-only rename: mode key itself ("new"/"existing") is
+                  untouched, only the button label changed -- "new" mode is
+                  still a brand-new patient's first-ever upload, "existing"
+                  is still a later upload against an already-existing
+                  patient. */}
+              {m === "new" ? "Initial Upload" : "Re-upload"}
             </button>
           ))}
         </div>
@@ -337,13 +365,22 @@ function UploadPage() {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label>Treatment Plan PDF</Label>
-                    <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-10 cursor-pointer hover:bg-slate-100 transition-colors">
-                      <UploadIcon className="h-6 w-6 text-slate-400" />
+                    <Label>Treatment Plan</Label>
+                    {/* Fix Round, Item 1: real drag-and-drop, same
+                        validation as browse (PDF only, 25 MB max, single
+                        file -- extras dropped together are rejected with
+                        a clear message, not silently discarded). */}
+                    <FileDropZone
+                      accept="application/pdf"
+                      acceptLabel="PDF"
+                      maxSizeBytes={TP_MAX_SIZE_BYTES}
+                      multiple={false}
+                      onFiles={files => setFile(files[0] ?? null)}
+                      className="py-10 bg-slate-50 hover:bg-slate-100"
+                    >
                       <div className="text-sm text-slate-700">{file ? file.name : "Drop your PDF here, or click to browse"}</div>
                       <div className="text-xs text-slate-500">PDF only · max 25 MB</div>
-                      <input type="file" accept="application/pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
-                    </label>
+                    </FileDropZone>
                   </div>
                   {requiresSupportingInfo && (
                     <SupportingUploads
@@ -412,7 +449,7 @@ function UploadPage() {
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div className="space-y-5">
                       <div className="space-y-1.5">
-                        <Label>Treatment Plan PDF</Label>
+                        <Label>Treatment Plan</Label>
                         <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-10 cursor-pointer hover:bg-slate-100 transition-colors">
                           <UploadIcon className="h-6 w-6 text-slate-400" />
                           <div className="text-sm text-slate-700">{file ? file.name : "Drop your PDF here, or click to browse"}</div>

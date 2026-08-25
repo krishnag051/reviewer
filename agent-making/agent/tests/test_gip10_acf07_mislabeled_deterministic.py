@@ -161,8 +161,19 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_forty_seven_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...forty_four..." (2026-08-14, Round 92) -- three more
+def test_exactly_fifty_one_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...forty_seven..." (documentation pass, 2026-08-14) --
+    found while syncing AGENT_STATE.md to current reality: this function's
+    own name said 47, but its actual asserted `matched` set already had 51
+    entries (confirmed by running the test and separately re-deriving the
+    same 51-id intersection directly against rules.json/DET_CHECKS) -- the
+    body was correct and already passing, only the name had drifted out of
+    sync with it at some point after the "...forty_seven..." rename below,
+    with no docstring entry recording what added the other 4. Renaming to
+    match reality now rather than leaving the same silent-drift shape this
+    test exists to catch present in the test's own name.
+
+    Renamed from "...forty_four..." (2026-08-14, Round 92) -- three more
     joined this set this round: QA-HRS-05 and QA-GIP-23 (both converted
     from judgment to deterministic PRECONDITION checkers -- resolve the
     easy structural case, still escalate to judgment when the precondition

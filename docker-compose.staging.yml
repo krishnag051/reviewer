@@ -1,0 +1,128 @@
+# Fix Round: staging/local instance, entirely separate from production.
+# Standalone file (not merged with docker-compose.yml) -- production pulls
+# prebuilt `:latest` images from Docker Hub, staging builds fresh from
+# whatever's checked out locally right now, so the two service definitions
+# are structurally different in a way an override file can't cleanly
+# express (you can't "unset" `image:` by layering a `build:` on top of it).
+#
+# Usage:
+#   docker compose -f docker-compose.staging.yml -p reviewer-staging up -d --build
+# (No --env-file flag needed -- nothing in this file uses ${VAR}
+# interpolation; the backend service's own `env_file: .env.staging` below
+# is what actually injects OPENROUTER_API_KEY into that one container.)
+#
+# -p reviewer-staging gives this its own Compose project namespace, so its
+# containers/networks/volumes never collide with production's (which run
+# unnamed / under whatever project name the server's own `docker compose`
+# invocation uses). The volume names below are ALSO explicitly suffixed
+# with _staging, as a second, belt-and-suspenders guarantee: even if this
+# is ever accidentally run without -p on the same Docker host as
+# production, it still cannot reach production's tp_postgres_data /
+# tp_uploads_data volumes -- there is no name it could collide with.
+#
+# Real-key parity update: ANTHROPIC_API_KEY and OPENROUTER_API_KEY now come
+# from .env.staging (added directly by whoever's using this, not baked in
+# here) -- .env.staging.example still documents leaving them unset as the
+# SAFE DEFAULT for anyone who hasn't explicitly opted into real spend.
+# Nothing in this compose file itself makes any API call; a real charge
+# only happens when a real (non-simulated) upload is actually submitted
+# through the running stack. agent-making's own pipeline/api.py has no
+# other path to a real key -- confirmed the image never copies
+# agent-making/.env (only agent-making/agent/pipeline and rules/rules.json,
+# per backend/Dockerfile), so a real key sitting in that file on the host
+# machine can't leak into this container by accident; the only way a real
+# key reaches this container is the explicit env_file below.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tpuser_staging
+      POSTGRES_PASSWORD: tppass_staging
+      POSTGRES_DB: tpreview_staging
+    # Local-only convenience port (psql from the host) -- staging never
+    # runs anywhere zero-trust rules apply, unlike production's postgres,
+    # which stays unpublished on purpose (see docker-compose.yml).
+    ports:
+      - "5433:5432"
+    volumes:
+      - tp_postgres_data_staging:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tpuser_staging -d tpreview_staging"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      # Repo root, same reason as production's build (see backend/Dockerfile's
+      # own top comment) -- it COPYs agent-making/ from outside ./backend.
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      # Only the two possibly-real-secret values (OPENROUTER_API_KEY, and
+      # optionally SMTP_* if you ever want a staging test to actually send
+      # mail) come from here -- see .env.staging.example. Everything else
+      # below is hardcoded directly since none of it is a real secret for
+      # a local-only staging instance.
+      - .env.staging
+    environment:
+      DATABASE_URL: postgresql+psycopg2://tpuser_staging:tppass_staging@postgres:5432/tpreview_staging
+      JWT_SECRET: staging-secret-not-for-production
+      # The ONE fixed staging frontend address -- exact-match, not a
+      # wildcard -- per this round's own decision to skip the Cloudflare
+      # Pages regex problem entirely by using a single known local origin.
+      CORS_ALLOW_ORIGINS: "http://localhost:3001"
+      UPLOAD_STORAGE_DIR: /app/data/uploads
+      # Real backend uploads always go through the real, billed Anthropic
+      # path (agent-making/agent/pipeline/judge.py's own documented, Round
+      # 61 decision -- OpenRouter's free tier is only ever used by the
+      # separate Streamlit tool, never this integration). Without a real
+      # ANTHROPIC_API_KEY, a real upload fails closed with an auth error --
+      # correct, not a bug. This flag gives staging a real, zero-cost way
+      # to exercise the FULL draft/override/finalize workflow anyway: same
+      # dev-only path Round 49 built for exactly this, double-gated behind
+      # BOTH this flag AND the `developer` role (see
+      # app/routers/versions.py::create_simulated_upload) -- and
+      # simulated_pipeline.py has no import path to the real Anthropic
+      # client at all, so this can never become a real call even if
+      # misconfigured. See document/BrightPath_Deployment_Playbook.md
+      # section 6.5 for the developer-role staging user needed to use it.
+      ALLOW_SIMULATED_COMPLETION: "true"
+      # ANTHROPIC_API_KEY / OPENROUTER_API_KEY: intentionally NOT hardcoded
+      # here -- they come from `env_file: .env.staging` above instead, so
+      # the real value never sits in a file this repo would ever commit.
+      # Whether that file currently has a real key or is left blank is a
+      # per-instance decision (see CLAUDE.md); this compose file works
+      # correctly either way -- unset means real uploads fail closed (the
+      # safe default), a real key means they run for real.
+    ports:
+      - "8001:8000"
+    volumes:
+      - tp_uploads_data_staging:/app/data/uploads
+      - tp_session_note_cache_staging:/agent-making/agent/.cache/session_note_extractions
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # Baked in at build time (Vite), not read at container start --
+        # points at the staging backend's own published port, never
+        # production's. Backend routes all live under /api (see
+        # BrightPath_Deployment_Playbook.md).
+        VITE_API_BASE_URL: "http://localhost:8001/api"
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3001:80"
+
+volumes:
+  tp_postgres_data_staging:
+  tp_uploads_data_staging:
+  tp_session_note_cache_staging:

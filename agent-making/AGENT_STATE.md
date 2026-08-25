@@ -86,24 +86,30 @@ sequence below and is what `app.py` (the Streamlit UI) and every test call.
    **production path**: it calls `_run_judgment_checks_once` (one real
    `claude-sonnet-5` call, tool-forced structured output via the
    `record_findings` tool, `thinking` disabled) **exactly twice** with
-   identical input, then `_reconcile_consistency_check` compares the two —
-   agreement keeps the result, disagreement downgrades to `"uncertain"`
-   rather than silently picking one. This 2-call self-consistency check is
-   the actual current production behavior for every judgment rule.
-9. **Scoped 3-way majority vote (built, NOT wired into production)** —
-   `judge.py::run_judgment_checks_majority_vote` makes 3 calls instead of 2
-   and takes a 2-of-3 majority (unanimous disagreement still falls back to
-   `"uncertain"`). `judge.MAJORITY_VOTE_RULE_IDS` is a small, explicitly
-   tracked allow-list of rule_ids with *confirmed* real self-consistency
-   instability across rounds — currently `QA-GIP-06`, `QA-HRS-07`,
-   `QA-HRS-09`, `QA-GIP-07`, `QA-PROB-01` (see the comment above that set in
-   `judge.py` for the specific evidence behind each one).
-   `judge.should_use_majority_vote(rule_id)` exists as a lookup helper, but
-   **nothing in the actual pipeline calls it yet** — `run_full_pipeline`
-   still runs every judgment rule through the plain 2-call path,
-   `MAJORITY_VOTE_RULE_IDS` included. Wiring this in is a deliberate,
-   not-yet-made decision (real, permanent 1.5x cost increase for the rules
-   on the list).
+   identical input; where both agree, that result is kept.
+9. **Best-of-3 tie-breaker on disagreement — NOW WIRED INTO PRODUCTION
+   (2026-08-14, Round 93 item 1)**, superseding this section's own earlier
+   "built, NOT wired in" framing. Where the two calls disagree on a
+   rule_id, `run_judgment_checks` sends ONE additional batched 3rd call
+   scoped to only the disagreeing rule_id(s) (never the rule_ids that
+   already agreed — zero extra cost on those), then majority-votes the 3
+   answers for each (`_three_way_majority_finding`); a rule_id the 3rd
+   call fails to answer falls back to the exact same two-call `"uncertain"`
+   this section used to describe as the only behavior
+   (`_two_way_uncertain_finding`). This applies to **every** judgment
+   rule, not just a small allow-list — confirmed live via a real
+   3-patient ground-truth comparison that a large share of disagreements
+   had one of the two calls already matching ground truth. Cost: +1 real
+   call per document, only if at least one rule_id in that batch's two
+   calls disagreed (not one extra call per disagreeing rule_id — all
+   disagreeing rule_ids for a document share the one 3rd call). The
+   separate, still-unwired `run_judgment_checks_majority_vote` function
+   (3 calls unconditionally, no disagreement-gating) is a different,
+   costlier experiment that predates this fix and remains unused;
+   `judge.MAJORITY_VOTE_RULE_IDS` (`QA-GIP-06`, `QA-HRS-07`, `QA-HRS-09`,
+   `QA-GIP-07`, `QA-PROB-01`) is that OLDER experiment's own allow-list,
+   now superseded in practice by the production tie-breaker applying to
+   every judgment rule — it's read nowhere in the current production path.
 10. **Integrity check** — `pipeline/integrity.py::run_judgment_with_integrity_check`
     diffs the rule_ids the judgment layer was asked about against what it
     actually returned. A missing rule_id triggers a retry (up to
@@ -129,63 +135,103 @@ updated by hand if that changes).
 
 ## 2. Rule coverage
 
-**120 total rules** in `rules/rules.json` (the single source of truth —
-never hand-duplicated elsewhere). Of those:
+**Updated 2026-08-14 (deployment round) — the count/breakdown below was
+stale at 120 rules since a "Fix Round" 2026-08-12 snapshot; the 169-rule
+reconciliation (Round 91) and Rounds 92-94's fixes on top of it moved this
+substantially. This section now reflects the real current state, re-read
+directly from `rules.json`/`fields.DET_CHECKS`, not carried forward from
+the prior snapshot.**
 
-- **51 labeled `check_type: "deterministic"`**, but only **35 have a real
-  checker function** registered in `fields.DET_CHECKS`. The other 16
-  (`QA-ACF-01`, `QA-COC-03`, `QA-COC-05`, `QA-GIP-13`, `QA-HRS-08`,
-  `QA-MAST-01`, `QA-MAST-02`, `QA-RPT-04`, `QA-RPT-05`, `QA-SCH-01`,
-  `QA-SCH-03`, `QA-SCH-05`, `QA-SCH-06`, `QA-SCH-07`, `QA-SIG-06`,
-  `EMP-02`) are **deliberately left unbuilt** — each blocked on something
-  concrete (backend-stored prior-TP data, an unconfirmed document field, a
-  CPT billing reference table that doesn't exist yet, or schedule-table
-  parsing too fragile for `pypdf`'s raw text to be trusted without much
-  more engineering). Each carries its own `blocked_status` note explaining
-  why. `tests/test_gip10_acf07_mislabeled_deterministic.py` pins this exact
-  set — it fails loudly if the count drifts without a deliberate update.
-- **69 are `check_type: "judgment"`** (fully model-driven, no code
-  checker). Of these:
-  - **9 have a concrete, real-evidence-grounded example** in their notes
-    (`QA-HRS-07`, `QA-PROB-01`, `QA-PAR-01`, `QA-TRANS-01`, `QA-TRANS-02`,
-    `QA-DISC-02`, `QA-BIP-05`, `QA-GIP-11`, `QA-GIP-17`).
-  - **18 got a concrete example written in this round** (`QA-BIO-08`,
-    `QA-BIO-09`, `QA-OBS-02`, `QA-OBS-04`, `QA-ACF-06`, `QA-CI-01`,
-    `QA-BAR-01`, `QA-BIP-04`, `QA-BIP-06`, `QA-PREF-01`, `QA-GIP-08`,
-    `QA-GIP-09`, `QA-GIP-12`, `QA-COC-01`, `QA-COC-06`, `QA-DISC-01`,
-    `QA-SIG-01`, `QA-SIG-05`) — these were "Quick" per a full backlog
-    triage: constructable from the rule's own logic or already-known real
-    document text, no new live document check needed.
-  - **~19 remain description-only, classified "needs a real document
-    reference"** before a good example can responsibly be written —
-    notably `QA-GIP-06` (a confirmed real miss on both test documents,
-    still no example) and `QA-GIP-14` (literally named in the original
-    build scope as "the canonical LLM-judgment example," still doesn't
-    have one). Not guessed at; left for a future round.
-  - **1 is genuinely unclear**, not a documentation gap: `QA-PROB-03`, whose
-    own notes already say *"Hardest rule in the whole checklist... expect
-    frequent Uncertain"* — this needs a real answer from Ms. Yachnes or
-    Mr. Ungar, not an invented example.
-  - The rest are GAP/out-of-scope (need data this POC doesn't have — a
-    prior TP version, a session-notes upload, Central Reach integration,
-    an unresolved pre-upload field) or already have an adequate decision
-    rule in their notes even without a worked example (e.g. `QA-SCH-08`,
-    `QA-OBS-03`, `QA-BIP-02`).
+**173 total active rules** in `rules/rules.json` (the single source of
+truth — never hand-duplicated elsewhere). Of those:
 
-**Payors**: 9 official payors per the locked project scope
-(`Project1_Full_Build_Scope.docx`) — Healthfirst, Aetna, Anthem, Cigna,
-Emblem, Empire, Molina, MVP, Straight Medicaid — plus New York Medicaid as
-a real, working bonus payor outside that official 9. Payor-specific rules:
-Healthfirst (`HF-01`, `HF-02`, `HF-03`), Straight Medicaid (`SM-01`,
-`SM-02`), Empire (`EMP-01`, `EMP-02` — unbuilt, scope ambiguity, see its
-`blocked_status`, `EMP-03`), Emblem (`EMB-01`), Aetna (`AET-01`). Anthem,
-Cigna, Molina, MVP, and New York Medicaid have **no** payor-specific rules
-— confirmed zero diff against the reference checklist, universal rules
-only. `rules/generate_payor_rules.py` regenerates each payor's reference
-export (`rules/*.json`) from `rules.json` — **never hand-edit those
-exports**, edit `rules.json` and re-run the script. Healthfirst has no
-generated export file (the master `rules.json` already reads naturally
+- **64 labeled `check_type: "deterministic"`**, of which **51 have a real
+  checker function** registered in `fields.DET_CHECKS`. The other 13
+  (`EMP-02`, `QA-ACF-01`, `QA-COC-03`, `QA-COC-05`, `QA-GIP-13`,
+  `QA-HRS-08`, `QA-MAST-01`, `QA-MAST-02`, `QA-RPT-04`, `QA-SCH-03`,
+  `QA-SCH-05`, `QA-SCH-06`, `QA-SIG-06`) are **deliberately left
+  unbuilt** — each blocked on something concrete (backend-stored prior-TP
+  data, an unconfirmed document field, a CPT billing reference table that
+  doesn't exist yet, or schedule-table parsing too fragile for `pypdf`'s
+  raw text to be trusted without much more engineering); each carries its
+  own `blocked_status` note explaining why. `QA-RPT-04` specifically: its
+  own scoping was broadened from "Initial only" to "Both" this round
+  (Round 94) so a Reassessment TP reaches this rule's real blocked
+  `not_checkable` state instead of being short-circuited to
+  `not_applicable` before ever getting there — it's still unbuilt, this
+  only changed which documents reach that unbuilt state. Several rules
+  named unbuilt in the prior snapshot (`QA-SCH-01`, `QA-SCH-07`) now DO
+  have real checkers and are no longer on this list.
+  `tests/test_gip10_acf07_mislabeled_deterministic.py` pins the exact
+  deterministic-with-real-checker set — it fails loudly if the count
+  drifts without a deliberate update (currently asserts 51).
+- **109 are `check_type: "judgment"`** (fully model-driven, no code
+  checker) — up from the prior snapshot's 69, driven mostly by the 49 new
+  judgment-only rule_ids added in the 169-rule reconciliation (Round 91).
+  All of them now go through the best-of-3 tie-breaker described in §1
+  item 9 above, not just a 5-rule allow-list.
+
+**Categories: 29**, not the 26 this section used to describe — the
+increase is mostly new payor-specific category names (see below) plus
+`AI-Generated Content & Template Artifacts`, a category that didn't exist
+before the reconciliation. See `report.md` (repo root) for the full rule
+list organized by these 29 categories.
+
+**Payors**: payor-specific rule content now exists for 7 payors —
+Healthfirst (`HF-01` through `HF-07`, `HF-09` — 8 rules, up from 3),
+Empire (`EMP-01` through `EMP-04` — 4, up from 3, `EMP-02` still unbuilt),
+Straight Medicaid (`SM-01`, `SM-02`), Emblem (`EMB-01`, `EMB-02` — up from
+1), Aetna (`AET-01`), and two payors that had **zero** payor-specific
+rules as of the prior snapshot but now have their first one each:
+**Cigna** (`CIG-01`) and **Molina** (`MOL-01`). Anthem, MVP, and New York
+Medicaid still have no payor-specific rules — confirmed universal-only.
+19 payor-specific rules total, 154 universal (`applies_to_payor: "ALL"`).
+`rules/generate_payor_rules.py` regenerates each payor's reference export
+(`rules/*.json`) from `rules.json` — **never hand-edit those exports**,
+edit `rules.json` and re-run the script. Healthfirst has no generated
+export file (the master `rules.json` already reads naturally
 payor-agnostic for it — see the script's own docstring).
+
+**Five other checker mechanisms worth naming explicitly (documentation
+pass, 2026-08-14)** — all real, all currently live, none previously
+summarized anywhere in this document:
+
+- **Filename-vs-document-name check** (part of `QA-PPI-03`'s deterministic
+  checker, `fields.py::_check_PPI03` / `_name_filename_score`) — once the
+  document's own "Patient Name:" mentions are confirmed internally
+  consistent, also compares that confirmed name against the real uploaded
+  filename via `rapidfuzz`'s `fuzz.token_set_ratio` (replaced an earlier
+  `difflib.SequenceMatcher` attempt that couldn't tolerate real
+  word-order/subset variation) — a real, previously-caught miss was a
+  document reading "Zohan Hossain" throughout while the uploaded file was
+  named "Zohran Hossain TP.pdf".
+- **Cross-rule contradiction check** (`fields.py::find_cross_rule_contradictions`)
+  — a shared, general mechanism for catching a same-document numeric/
+  factual contradiction between two goal-block mentions of the same
+  value (e.g. a Mastered Goal restated elsewhere with a conflicting
+  count) — flags only the objective, same-document contradiction case,
+  not the broader subjective question a rule might also be asking.
+- **Adjacent-context expansion** (`fields.py::_nearby_block_explanation`)
+  — originally built for `QA-BIP-06` (does a nearby field in the same
+  goal block explain an otherwise-bare N/A), now also used by `QA-BIP-04`
+  for the same shape: a value that looks like a violation on its own but
+  has a real explanation sitting in an adjacent field of the same block
+  downgrades to `"uncertain"` for human confirmation rather than a
+  confident fail.
+- **Vision-based extraction for embedded-image content** — `pipeline/fields.py`'s
+  `VISION_ELIGIBLE_RULE_SECTIONS`/`vision_eligible_pages` mechanism
+  (rendering specific pages to PNG so the judgment layer can see
+  grid/legend/graph content that never existed as extractable text) is
+  now verified live on `QA-ACF-03` (the grid-with-legend presence check)
+  — confirmed the relevant page range renders and reaches the judgment
+  prompt as real image content, not just a designed-but-unverified code
+  path.
+- **`QA-GIP-16` broadened** — the zero/near-zero Mastery Criteria check
+  (e.g. banning a literal "0%" endpoint, requiring "fewer than one
+  instance" phrasing instead) now also treats a genuinely **blank**
+  Mastery Criteria field the same way as an explicit zero-endpoint
+  violation, closing a gap where a goal with no stated criteria at all
+  slipped through neither this rule nor `QA-GIP-10`'s own coverage.
 
 **Archived**: `rules/archive/learning_tree_deprecated_rules.json` — rules
 built around comparing against "the Learning Tree" (a prior-system
@@ -204,10 +250,15 @@ Learning-Tree logic.
   flip on borderline cases, confirmed live, more than once, on the exact
   same document with zero code change in between (`QA-GIP-06` and
   `QA-PROB-01` both flipped between `"fail"` and `"uncertain"` across
-  reruns this engagement). The scoped majority-vote list (§1, item 9)
-  measurably improves catch rate on the 5 rule_ids it's built for, but
-  isn't wired into production, and doesn't eliminate the underlying
-  problem — it narrows it for 5 out of 69 judgment rules.
+  reruns this engagement). **Updated (documentation pass, 2026-08-14)**:
+  §1 item 9's best-of-3 tie-breaker is now wired into production for
+  **every** judgment rule (109, not a 5-rule allow-list) — confirmed via a
+  real 3-patient ground-truth comparison that this recovers a real share
+  of the disagreements this bullet describes. It narrows the problem, it
+  does not eliminate it: a 2-of-3 majority is more-likely-correct, not
+  guaranteed-correct, so some cases that used to land safely on
+  `"uncertain"` now land confidently on a wrong `pass`/`fail` instead —
+  a real, accepted trade-off, not a solved problem.
 - **Confirmed-wrong rules, currently open, not resolved:**
   - `QA-BIP-05` (Reeda) — comes back `pass` under every fix attempted so
     far (a notes rewrite, a system-level "lean toward flagging" posture
@@ -281,10 +332,23 @@ Learning-Tree logic.
   confirmed field-order variants. None of these were fixed — they're
   flagged as real, known exposure ahead of more documents arriving, not
   quietly left unflagged.
-- **`QA-PPI-06` (narrative name-contamination, Fix Round 2026-08-12) has
-  two known, accepted-for-now NER noise sources** — approved to ship live
-  anyway because neither produces a false confident `"fail"`, only
-  `"uncertain"`, which a human reviewer can dismiss quickly:
+- **`QA-PPI-06` (narrative name-contamination, Fix Round 2026-08-12,
+  real deterministic checker: `fields.py::_check_narrative_name_contamination`)
+  has two known, accepted-for-now NER noise sources — CORRECTED
+  (documentation pass, 2026-08-14): this bullet used to claim the noise
+  sources below never produce a confident false `"fail"`, only
+  `"uncertain"` — that's not what the current code does. Read
+  `_check_narrative_name_contamination` directly: a single, unambiguous
+  contaminating candidate name returns a real, confident `"fail"` (0.6
+  confidence — at the escalation threshold, so it is NOT re-escalated to
+  judgment); only the *multiple-candidate* case returns `"uncertain"`
+  (0.4 confidence, which does re-escalate). So a medication name or the
+  practice's own letterhead being misread as a PERSON entity CAN produce
+  a confident false `"fail"` today, if it's the only contaminating
+  candidate spaCy finds in that document's narrative sections — this is
+  a real, live risk, not a theoretical one, and this section was wrong to
+  describe it as impossible. The two noise sources themselves are still
+  real and still unresolved (unchanged from before):**
   - spaCy's `en_core_web_sm` occasionally misreads a **medication name**
     (confirmed real case: "Prozac," Charny's document) as a PERSON entity.
   - spaCy occasionally misreads this project's own **practice letterhead**
@@ -297,7 +361,10 @@ Learning-Tree logic.
     check or RxNorm-style list), and a check that excludes the practice's
     own letterhead/organization name from being treated as a candidate
     person-name. See `pipeline/fields.py::_looks_like_clinical_noise`'s
-    own docstring for where this was first disclosed.
+    own docstring for where this was first disclosed. Given the false-fail
+    risk just corrected above, this backlog item is more urgent than this
+    section previously implied — flagging that explicitly rather than
+    letting the old "it's harmless, just uncertain" framing stand.
 
 ---
 
@@ -372,7 +439,7 @@ the machine running the suite).
 - **Judgment tier** (`REEDA_JUDGMENT_GROUND_TRUTH`,
   `CHARNY_JUDGMENT_GROUND_TRUTH`): runs the real `run_full_pipeline`
   against the real documents, scoped to just the rule_ids with confirmed
-  ground truth (not all 120 rules). **Costs a real, billed API call-batch
+  ground truth (not all 173 rules). **Costs a real, billed API call-batch
   per document every time it runs** — order of $0.05–$0.15 per document at
   current Sonnet 5 pricing. Skipped automatically
   (`@pytest.mark.skipif`) when `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`
