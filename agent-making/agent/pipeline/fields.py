@@ -977,6 +977,34 @@ def _check_HF02(rule: dict, fields: dict) -> tuple:
     return "fail", f"{cpt_code} hours requested: {hours}, exceeds the {max_hours}-hour cap.", None, 0.7
 
 
+def _check_HRS11(rule: dict, fields: dict) -> tuple:
+    """Fix Round (2026-08-26) -- QA-HRS-11, the default 97151-hour-cap
+    bucket ma'am asked for: every payor that isn't Healthfirst (HF-02, 5
+    hrs) or Emblem (EMB-01, 3 hrs) gets an 8-hr default cap.
+
+    applies_to_payor is "ALL" at the rules.json metadata level (this
+    schema has no payor-EXCLUSION value -- confirmed in
+    partition_rules_by_scope, which always matches "ALL" regardless of
+    detected payor). Without a self-exclusion here, a Healthfirst or
+    Emblem patient would see TWO findings for the same real-world 97151
+    cap concept -- this one (8 hrs) and their own payor-specific one (5 or
+    3 hrs) -- which could look directly contradictory (e.g. 6 requested
+    hours passing this rule's 8-hr cap while failing HF-02's real 5-hr
+    cap). Excluding those two payors here, deferring entirely to their own
+    dedicated rules, avoids that.
+    """
+    excluded_payors = rule["params"]["excluded_payors"]
+    detected_payor = fields.get("payor")
+    if detected_payor in excluded_payors:
+        return (
+            "not_applicable",
+            f"Payor detected as '{detected_payor}', which has its own dedicated 97151-hour-cap rule "
+            f"(not this default bucket).",
+            None, 0.9,
+        )
+    return _check_HF02(rule, fields)
+
+
 def _check_OBS01(rule: dict, fields: dict) -> tuple:
     if re.search(r"observation", fields["full_text"], re.IGNORECASE):
         return "pass", "An observation section is present in the document.", None, 0.5
@@ -989,10 +1017,25 @@ def _check_HF01(rule: dict, fields: dict) -> tuple:
     so it always fell through to the not_checkable/0.0 escalation fallback
     and every finding came from the judgment layer re-deriving age/date-math
     from scratch. Both inputs (Patient Age, Authorization Dates Requested)
-    are printed on page 1 in every sample TP seen so far."""
+    are printed on page 1 in every sample TP seen so far.
+
+    Fix Round (2026-08-26): a SECOND, separate root cause found on top of
+    the above -- the rule's own DESCRIPTION never disclosed this
+    age-conditional split at all (it just said a flat "3-month range"),
+    even though this function and the rule's own pre-existing `notes` field
+    always implemented the age split. A reviewer going only by the
+    description would expect one flat range regardless of age and see a
+    correct fail (for the "other" age bracket) as inexplicable. The
+    description is now explicit about the split (see rules.json) -- fixing
+    the description alone would NOT have been enough on its own, since the
+    code's month-based math (`_add_months` + a +/-10 day tolerance for
+    calendar-month length variance) was also imprecise by design; switched
+    to exact `timedelta(weeks=...)` math below, which needs no tolerance
+    window at all since a week-count has no variable length.
+    """
     age_threshold = rule["params"]["age_threshold"]
-    short_months = rule["params"]["short_range_months"]
-    long_months = rule["params"]["long_range_months"]
+    short_weeks = rule["params"]["short_range_weeks"]
+    long_weeks = rule["params"]["long_range_weeks"]
 
     age_m = re.search(r"Patient Age:\s*(\d+)", fields["full_text"], re.IGNORECASE)
     auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
@@ -1008,23 +1051,25 @@ def _check_HF01(rule: dict, fields: dict) -> tuple:
     end = datetime.strptime(auth_range[1], "%m/%d/%Y")
     range_days = (end - start).days
 
-    expected_months = short_months if age > age_threshold else long_months
-    expected_end = _add_months(start, expected_months)
-    # +/- 10 days tolerance for month-length variation and "approximately"
-    # wording in the rule itself — not a precise calendar-day requirement.
-    tolerance_days = 10
+    expected_weeks = short_weeks if age > age_threshold else long_weeks
+    expected_end = start + timedelta(weeks=expected_weeks)
+    # Exact week arithmetic -- no calendar-length tolerance needed (unlike
+    # the old month-based version), but a real TP's auth end date can still
+    # be off by a day or two from the requested start due to how the date
+    # itself is worded/rounded on the document, so a small tolerance stays.
+    tolerance_days = 3
     if abs((end - expected_end).days) <= tolerance_days:
         return (
             "pass",
             f"Patient age {age}; authorization range {auth_range[0]} to {auth_range[1]} "
-            f"({range_days} days) matches the expected ~{expected_months}-month range "
+            f"({range_days} days) matches the expected {expected_weeks}-week range "
             f"for age {'>' if age > age_threshold else '<='} {age_threshold}.",
             None, 0.85,
         )
     return (
         "fail",
         f"Patient age {age}; authorization range {auth_range[0]} to {auth_range[1]} "
-        f"({range_days} days) does not match the expected ~{expected_months}-month range "
+        f"({range_days} days) does not match the expected {expected_weeks}-week range "
         f"for age {'>' if age > age_threshold else '<='} {age_threshold} "
         f"(expected end ~{expected_end.strftime('%m/%d/%Y')}).",
         None, 0.85,
@@ -4258,6 +4303,10 @@ DET_CHECKS = {
     "QA-SIG-04": _check_SIG04,
     "QA-HRS-02": _check_HRS02,
     "QA-HRS-03": _check_HRS03,
+    # Fix Round (2026-08-26): QA-HRS-11 is the new "every other payor"
+    # default bucket -- see _check_HRS11's own docstring for the
+    # self-exclusion reasoning.
+    "QA-HRS-11": _check_HRS11,
     # Round 63, item 3: real deterministic schedule-table arithmetic,
     # replacing the judgment layer's eyeballed (and confirmed wrong) totals
     # -- see pipeline/schedule_hours.py and _check_SCH01/_check_SCH07's own
@@ -4290,6 +4339,12 @@ DET_CHECKS = {
     # real documents.
     "EMP-01": _check_EMP01,
     "EMP-03": _check_EMP03,
+    # Fix Round (2026-08-26): Anthem siblings of EMP-01/03, same checker
+    # code -- both are payor-agnostic already (read only rule["params"],
+    # never hardcode "Empire"), so no new function was needed. ANT-02
+    # deliberately NOT registered, matching EMP-02's own unbuilt state.
+    "ANT-01": _check_EMP01,
+    "ANT-03": _check_EMP03,
     "EMB-01": _check_HF02,  # generic CPT-hour-cap check, reused via params
     "AET-01": _check_AET01,
     # QA-BIO-03 relabeled from judgment to deterministic this round -- see

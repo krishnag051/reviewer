@@ -161,8 +161,13 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_fifty_one_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...forty_seven..." (documentation pass, 2026-08-14) --
+def test_exactly_fifty_four_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...fifty_one..." (Fix Round, 2026-08-26) -- three more
+    joined this set this round: QA-HRS-11, ANT-01, ANT-03. See this test's
+    own docstring further down and the new-entries comment right above the
+    closing brace for the full detail.
+
+    Renamed from "...forty_seven..." (documentation pass, 2026-08-14) --
     found while syncing AGENT_STATE.md to current reality: this function's
     own name said 47, but its actual asserted `matched` set already had 51
     entries (confirmed by running the test and separately re-deriving the
@@ -324,6 +329,16 @@ def test_exactly_fifty_one_deterministic_labeled_rules_have_real_checkers():
         # QA-ACF-12 (assessment date within report range) didn't exist
         # before this round -- see fields._check_ACF12's own docstring.
         "QA-ACF-12",
+        # Fix Round (2026-08-26): three more genuinely NEW rule_ids, not
+        # relabelings. QA-HRS-11 -- the missing "every other payor" default
+        # 97151-hour-cap bucket ma'am asked for, self-excluding
+        # Healthfirst/Emblem (see fields._check_HRS11's own docstring).
+        # ANT-01/ANT-03 -- Anthem siblings of EMP-01/EMP-03, reusing the
+        # exact same checker functions (both are payor-agnostic already,
+        # so no new code was needed for these two, just new DET_CHECKS
+        # registrations and new rules.json entries). ANT-02 deliberately
+        # NOT added here, matching EMP-02's own unbuilt state.
+        "QA-HRS-11", "ANT-01", "ANT-03",
     }
 
 

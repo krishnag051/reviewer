@@ -177,6 +177,15 @@ function UploadPage() {
   // new
   const [name, setName] = useState("");
   const [refId, setRefId] = useState("");
+  // Fix Round: Reference ID auto-fills from the typed Patient Name as
+  // "{name} {month}-{year}" (ma'am's exact example: "Aaron Gross 8-2026")
+  // -- real current date, computed fresh each time, never hardcoded.
+  // `refIdTouched` tracks whether the USER has directly edited the
+  // Reference ID field themselves; once true, typing in Patient Name never
+  // overwrites it again. Goes back to false (auto-fill resumes) only if
+  // the user clears Reference ID back to empty -- "reset only if the
+  // Reference ID field is still empty/untouched" per the round's own spec.
+  const [refIdTouched, setRefIdTouched] = useState(false);
   const [payor, setPayor] = useState<Payor>(PAYORS[0]);
   const [file, setFile] = useState<File | null>(null);
   const [supportingDocument, setSupportingDocument] = useState<File | null>(null);
@@ -218,6 +227,23 @@ function UploadPage() {
 
   function errorMessage(err: unknown): string {
     return err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Something went wrong.";
+  }
+
+  // Fix Round: real current date at the moment of typing -- never a
+  // hardcoded/stale value. Matches ma'am's exact example format: no
+  // leading zero on the month, no dashes inside the name, a plain space
+  // before "{month}-{year}" (e.g. "Aaron Gross 8-2026").
+  function handleNameChange(value: string) {
+    setName(value);
+    if (!refIdTouched) {
+      const now = new Date();
+      setRefId(value ? `${value} ${now.getMonth() + 1}-${now.getFullYear()}` : "");
+    }
+  }
+
+  function handleRefIdChange(value: string) {
+    setRefId(value);
+    setRefIdTouched(value !== "");
   }
 
   function buildPayload(
@@ -355,8 +381,8 @@ function UploadPage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="space-y-5">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5"><Label>Patient Name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Jordan Nakamura" /></div>
-                    <div className="space-y-1.5"><Label>Reference ID (permanent)</Label><Input value={refId} onChange={e => setRefId(e.target.value)} placeholder="e.g., TP-2026-0500" /></div>
+                    <div className="space-y-1.5"><Label>Patient Name</Label><Input value={name} onChange={e => handleNameChange(e.target.value)} placeholder="e.g., Jordan Nakamura" /></div>
+                    <div className="space-y-1.5"><Label>Reference ID (permanent)</Label><Input value={refId} onChange={e => handleRefIdChange(e.target.value)} placeholder="e.g., Jordan Nakamura 8-2026" /></div>
                   </div>
                   <div className="space-y-1.5"><Label>Payor</Label>
                     <Select value={payor} onValueChange={v => setPayor(v as Payor)}>

@@ -42,12 +42,22 @@ EMPIRE_ONLY_IDS = {"EMP-01", "EMP-02", "EMP-03", "EMP-04"}
 # detection that was already there, not new detection work.
 CIGNA_ONLY_IDS = {"CIG-01"}
 MOLINA_ONLY_IDS = {"MOL-01"}
+# Fix Round (2026-08-26): Anthem's first-ever payor-specific rules --
+# "Anthem" was ALREADY a recognized KNOWN_PAYORS keyword before this round
+# (detection was there, it just had nothing payor-specific to scope to
+# yet), same situation Cigna/Molina were in during the Round 91
+# reconciliation. Siblings of EMP-01/02/03 (same checks, Empire's own
+# rules unchanged) -- see rules.json's own notes on EMP-01/02/03 and
+# ANT-01/02/03 for why this had to be new rules rather than a multi-payor
+# edit to the existing Empire ones (this schema has no list-valued
+# applies_to_payor).
+ANTHEM_ONLY_IDS = {"ANT-01", "ANT-02", "ANT-03"}
 # Every payor-specific rule id, regardless of which payor it belongs to —
 # this is what gets excluded (not_applicable) for any OTHER known payor.
 ALL_PAYOR_SPECIFIC_IDS = (
     HEALTHFIRST_ONLY_IDS | STRAIGHT_MEDICAID_ONLY_IDS
     | AETNA_ONLY_IDS | EMBLEM_ONLY_IDS | EMPIRE_ONLY_IDS
-    | CIGNA_ONLY_IDS | MOLINA_ONLY_IDS
+    | CIGNA_ONLY_IDS | MOLINA_ONLY_IDS | ANTHEM_ONLY_IDS
 )
 assert N_ACTIVE == N_UNIVERSAL + len(ALL_PAYOR_SPECIFIC_IDS), (
     "a new payor-specific rule was added without updating this test file's "
@@ -204,12 +214,22 @@ def test_straight_medicaid_labeled_doc_gets_universal_plus_its_own_two_rules():
         assert "Straight Medicaid" in finding["evidence"]
 
 
-def test_anthem_labeled_doc_same_shape_as_mvp():
+def test_anthem_labeled_doc_gets_universal_plus_its_own_rules():
+    """Fix Round (2026-08-26): Anthem now has real payor-specific rules
+    (ANT-01/02/03, siblings of Empire's EMP-01/02/03) -- was universal-only
+    before (same shape MVP/New York Medicaid still have), same kind of
+    change Cigna/Molina went through in Round 91."""
     fields = {"plan_type": None, "payor": "Anthem"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
-    assert len(applicable) == N_UNIVERSAL
-    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS
-    assert all(f["result"] == "not_applicable" for f in excluded.values())
+    applicable_ids = {r["rule_id"] for r in applicable}
+
+    assert ANTHEM_ONLY_IDS <= applicable_ids
+    assert len(applicable) == N_UNIVERSAL + len(ANTHEM_ONLY_IDS)
+
+    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - ANTHEM_ONLY_IDS
+    for rule_id, finding in excluded.items():
+        assert finding["result"] == "not_applicable"
+        assert "Anthem" in finding["evidence"]
 
 
 def test_cigna_labeled_doc_gets_universal_plus_its_own_rule():

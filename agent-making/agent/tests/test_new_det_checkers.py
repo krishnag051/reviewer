@@ -17,7 +17,9 @@ def _rule(rule_id, params=None):
 
 # --- HF-01: age/date-range math ---
 
-HF01_PARAMS = {"age_threshold": 13, "short_range_months": 3, "long_range_months": 6}
+# Fix Round (2026-08-26): months -> exact weeks -- see fields.py::_check_HF01's
+# own docstring.
+HF01_PARAMS = {"age_threshold": 13, "short_range_weeks": 13, "long_range_weeks": 26}
 
 
 def test_hf01_pass_over_threshold_with_3_month_range():

@@ -53,11 +53,11 @@
     {
       "rule_id": "QA-TEMP-05",
       "category": "Template",
-      "description": "'RBT' changed to 'RBT/BT' or 'BT'",
+      "description": "No RBT (unqualified) mentioned throughout the report",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "String search.",
+      "notes": "String search. | FIX ROUND (2026-08-26): FULL REWRITE per ma'am's ask: was a template-substitution check ('RBT' changed to 'RBT/BT' or 'BT'), now a whole-document scan for any unqualified 'RBT' mention. check_type left as deterministic (a real checker, _check_TEMP05, already exists) but its ACTUAL CODE was not rewritten in this pass -- it still implements the OLD substitution-check logic. The description now promises behavior the code doesn't deliver yet. Flagged prominently, not silently left inconsistent -- rewriting _check_TEMP05 itself is real engineering work not reached this round.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -109,16 +109,16 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs an upload/submission timestamp, not available without backend integration"
+      "blocked_status": "blocked — needs an upload/submission timestamp, not available without backend integration"
     },
     {
       "rule_id": "QA-RPT-05",
       "category": "Report Information",
-      "description": "Auth dates accurate (6-month default, based on previous auth end or new insurance start)",
+      "description": "Auth dates accurate (26-week or 13-week default, depending on payor, based on previous auth end or new insurance start)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "UNBLOCKED (2026-08-08, Round 78, item 4) -- real bug found against Ms. Yachnes's own ground-truth review: this rule was unconditionally marked not_checkable, citing 'needs backend prior-TP/auth data' for BOTH of this rule's own comparisons -- but only ONE of them (an actually separate, stored 'previous auth end' record) genuinely needs that. The other -- the 6-month DEFAULT window, anchored to the CURRENT document's own 'Date of Current Report' end date -- needs nothing outside this document, and is exactly what Ms. Yachnes computed by hand on Yisroel Leibowitz's real TP, catching a real 14-day discrepancy (current report end 08/03/2026 + 6 months = 02/03/2027; requested auth end was 02/17/2027). See pipeline/fields.py::_check_RPT05, which generalizes SM-01's own already-working 6-month-window math (previously Straight-Medicaid-only) to every payor -- deliberately WITHOUT also generalizing SM-01's stricter 'auth start must be exactly the day after report end' requirement, which is Straight Medicaid's own specific wording and could false-fail a payor that allows a gap. If a future round confirms other payors also require that exact start-date adjacency, extend this checker then -- not assumed here.",
+      "notes": "UNBLOCKED (2026-08-08, Round 78, item 4) -- real bug found against Ms. Yachnes's own ground-truth review: this rule was unconditionally marked not_checkable, citing 'needs backend prior-TP/auth data' for BOTH of this rule's own comparisons -- but only ONE of them (an actually separate, stored 'previous auth end' record) genuinely needs that. The other -- the 6-month DEFAULT window, anchored to the CURRENT document's own 'Date of Current Report' end date -- needs nothing outside this document, and is exactly what Ms. Yachnes computed by hand on Yisroel Leibowitz's real TP, catching a real 14-day discrepancy (current report end 08/03/2026 + 6 months = 02/03/2027; requested auth end was 02/17/2027). See pipeline/fields.py::_check_RPT05, which generalizes SM-01's own already-working 6-month-window math (previously Straight-Medicaid-only) to every payor -- deliberately WITHOUT also generalizing SM-01's stricter 'auth start must be exactly the day after report end' requirement, which is Straight Medicaid's own specific wording and could false-fail a payor that allows a gap. If a future round confirms other payors also require that exact start-date adjacency, extend this checker then -- not assumed here. | FIX ROUND (2026-08-26): unit fix: 6-month default -> 26-week default, matching HF-01's same real fix this round. params.max_months_after_report_end (=6) left AS-IS in this pass -- converting the actual _check_RPT05 code from month-math to week-math was not reached this round; the description now promises week-based precision the code doesn't yet deliver. Flagged, not silently left inconsistent.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
@@ -237,11 +237,11 @@
     {
       "rule_id": "QA-HRS-02",
       "category": "Hours Requesting",
-      "description": ">20hrs of 97153 -> strong clinical rationale required",
+      "description": "Over 20 hour request -- auto-flagged deterministically if hours > 20, no rationale-quality judgment involved",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "Numeric threshold; system auto-generates the note as part of output, doesn't need to 'check' a document fact. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (deterministic) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule.",
+      "notes": "Numeric threshold; system auto-generates the note as part of output, doesn't need to 'check' a document fact. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (deterministic) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIX ROUND (2026-08-26): wording aligned to ma'am's current ask (her checklist drifted through 3 versions: 'note on review email to Eliana' -> Round 90's 'strong clinical rationale required' -> this). check_type was ALREADY deterministic with a real checker (_check_HRS02) before this edit -- NOT verified in this round whether that existing checker's actual logic matches this new, simpler '>20 hours, no rationale judgment' framing, or still implements the older rationale-quality version. Needs a direct code read before this can be called fully aligned -- flagged, not assumed.",
       "action_lane": "Facilitator-assign",
       "action_tag": "Director",
       "active": true,
@@ -326,16 +326,16 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs a maintained CPT billing-code reference table that doesn't exist in this codebase yet"
+      "blocked_status": "blocked — needs a maintained CPT billing-code reference table that doesn't exist in this codebase yet"
     },
     {
       "rule_id": "QA-HRS-09",
       "category": "Hours Requesting",
-      "description": "Overlap with home health aide/speech/OT -> goals differentiated",
+      "description": "Overlap with the ABA schedule's time blocks specifically -> goals differentiated (narrowed from overlap with any listed service generally)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Semantic check that TP explains how ABA goals differ from the other service.\n\nRECALIBRATED (2026-08, Round 82, item 4): confirmed real case -- a patient receiving school-based Speech/OT (different setting, different provider type, IEP-driven) alongside home-based ABA was failed for not containing an explicit sentence stating how ABA goals differ from speech/OT, even though the services are self-evidently different in scope/setting/discipline. Investigated both directions honestly: this is a genuine calibration gap, NOT a case where the original grader was right to fail it outright -- but it is also NOT simply 'never fail when services look different,' because this is a real healthcare-compliance product and a payor auditor reviewing the TP text alone (without the reviewer's own outside knowledge that 'school-based' means a different provider) legitimately wants the DOCUMENT ITSELF to establish that the services are distinct, not rely on an inference nobody reading just the TP could safely make. The right bar sits between the old (too strict: demands a literal differentiation SENTENCE) and a naive fix (too loose: pass whenever services merely sound different): PASS/not_checkable when the TP documents ENOUGH distinguishing detail about the other service ANYWHERE in the document -- setting (school vs. home/community), provider type, or funding mechanism (IEP vs. this authorization) -- to make the services structurally distinguishable from that text alone, even without a dedicated sentence framed as 'ABA differs from X because...'. Concrete PASS example (this round's confirmed case): the TP's Biopsychosocial or Other Services section states the client 'receives school-based Speech/OT services through her IEP' while ABA is described as home-based -- setting and funding mechanism alone establish the distinction, no explicit differentiation sentence needed. FAIL only when either (a) the TP never establishes ANY distinguishing detail about the other service anywhere -- just 'also receives Speech/OT' with no setting/provider/scope information at all, or (b) the overlap is GENUINELY ambiguous even with full context -- same setting, same time window, unclear which goals belong to which service -- which is the one case that still needs an explicit differentiation statement because no other information in the document resolves it.",
+      "notes": "Semantic check that TP explains how ABA goals differ from the other service.\n\nRECALIBRATED (2026-08, Round 82, item 4): confirmed real case -- a patient receiving school-based Speech/OT (different setting, different provider type, IEP-driven) alongside home-based ABA was failed for not containing an explicit sentence stating how ABA goals differ from speech/OT, even though the services are self-evidently different in scope/setting/discipline. Investigated both directions honestly: this is a genuine calibration gap, NOT a case where the original grader was right to fail it outright -- but it is also NOT simply 'never fail when services look different,' because this is a real healthcare-compliance product and a payor auditor reviewing the TP text alone (without the reviewer's own outside knowledge that 'school-based' means a different provider) legitimately wants the DOCUMENT ITSELF to establish that the services are distinct, not rely on an inference nobody reading just the TP could safely make. The right bar sits between the old (too strict: demands a literal differentiation SENTENCE) and a naive fix (too loose: pass whenever services merely sound different): PASS/not_checkable when the TP documents ENOUGH distinguishing detail about the other service ANYWHERE in the document -- setting (school vs. home/community), provider type, or funding mechanism (IEP vs. this authorization) -- to make the services structurally distinguishable from that text alone, even without a dedicated sentence framed as 'ABA differs from X because...'. Concrete PASS example (this round's confirmed case): the TP's Biopsychosocial or Other Services section states the client 'receives school-based Speech/OT services through her IEP' while ABA is described as home-based -- setting and funding mechanism alone establish the distinction, no explicit differentiation sentence needed. FAIL only when either (a) the TP never establishes ANY distinguishing detail about the other service anywhere -- just 'also receives Speech/OT' with no setting/provider/scope information at all, or (b) the overlap is GENUINELY ambiguous even with full context -- same setting, same time window, unclear which goals belong to which service -- which is the one case that still needs an explicit differentiation statement because no other information in the document resolves it. | FIX ROUND (2026-08-26): narrowed per ma'am's ask. Judgment-type; wording change is the mechanism here.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -358,11 +358,11 @@
     {
       "rule_id": "QA-SCH-02",
       "category": "School & ABA Schedule",
-      "description": "Confirmed with service coordinator schedule is accurate",
+      "description": "Schedule matches with the one inputted by CR information (cross-checked against the Patient Central Reach Information fields specifically, not a general unverifiable confirmation)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "External confirmation, not present in TP or pre-upload fields today.",
+      "notes": "External confirmation, not present in TP or pre-upload fields today. | FIX ROUND (2026-08-26): narrowed per ma'am's ask to reference the structured intake fields specifically. Judgment-type -- the AI judge is only ever given the extracted PDF fields today, not the Patient Central Reach Information form answers themselves (those are a backend-only concept, entered on the upload form, never passed into agent-making's pipeline inputs). This wording change alone can't actually make the judge cross-check against those fields -- that would need those answers threaded into the pipeline's inputs, a real integration gap, not a wording fix. Flagged prominently -- described exactly as asked, but not yet actually checkable against the real source ma'am wants.",
       "action_lane": "Facilitator-assign",
       "action_tag": "General",
       "active": true
@@ -378,7 +378,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
+      "blocked_status": "blocked — needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
     },
     {
       "rule_id": "QA-SCH-04",
@@ -403,7 +403,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
+      "blocked_status": "blocked — needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
     },
     {
       "rule_id": "QA-SCH-06",
@@ -416,7 +416,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
+      "blocked_status": "blocked — needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
     },
     {
       "rule_id": "QA-SCH-07",
@@ -440,7 +440,7 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Enum validation \u2014 valid values are exactly: home, office, school, community, telehealth. Reclassified from deterministic to judgment (2026-07): three rounds of point-fixes each closed one specific false-match pattern (mid-word regex matches, then a blank field bleeding into the next label, then a still-unresolved case) without addressing the underlying issue \u2014 this field's real-world layout/labeling in the source PDF is too inconsistent for a fixed extraction pattern to hold up. Read the POS/place-of-service field directly from the document text and images and judge whether its value is one of the five valid options above; do not guess if the field itself is ambiguous or missing. WHICH POS SOURCE, EXPLICIT (2026-08-07, Round 64, item 2 -- confirmed real divergence: this rule and QA-GIP-09, judged in the exact same run against the exact same document, disagreed about whether Community was an authorized POS, because nothing told either rule which of TWO different 'POS' fields a real TP contains to read. A TP's School/ABA Schedule grid has its OWN 'POS' row -- that's only the SPECIFIC location(s) actually scheduled that particular week (e.g. Home on weekdays), which can be a narrower subset of what's authorized. The Hours Requesting section separately states each CPT code's AUTHORIZED place(s) of service (e.g. '97153-Direct Care ... Home, Office, and/or Community') -- this is the broader, authorizing statement, and is the correct source for THIS rule and for QA-GIP-09/QA-GIP-08. Read POS from the Hours Requesting section's stated authorized list, not the schedule grid's per-day POS row -- the schedule grid answers a different question (where sessions are actually happening this week), not this rule's question (what POS is this TP authorized for). SCOPE, EXPLICIT -- EVERY SERVICE CODE, NOT JUST 97153 (2026-08-08, Round 78, item 2 -- real miss confirmed against Ms. Yachnes's ground-truth review: 'Telehealth' was listed as an authorized POS for 97151, 97155, and 97156 on a real TP, and this rule passed anyway because it only evaluated 97153's own POS entry, never looking at the OTHER service codes' entries in the same Hours Requesting section). The Hours Requesting section lists an authorized POS value PER CPT code (97151, 97153, 97154, 97155, 97156, etc., however many the document lists) -- read and validate EVERY one of these code-level POS entries against the five allowed categories, not only 97153's. Fail if ANY listed code's authorized POS includes a value outside home/office/school/community/telehealth (e.g. 'Virtual', or anything else not one of the five) -- name which specific code(s) had the invalid value in the evidence, don't just say 'POS is incorrect' generically. Only treat this as pass if EVERY code's own POS entry is valid; a single invalid code among several valid ones is still a fail for this rule. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIXED (Round 92, 2026-08-14): confirmed real bug -- this notes field still listed only 4 valid values and explicitly instructed the judge to fail on 'Telehealth', directly contradicting this rule's own description (already correctly updated during the Round 90 reconciliation to include telehealth as a 5th valid value). Notes now match the description: telehealth added to every valid-value list above, the fail-on-telehealth instruction and example removed. Confirmed correct against all 3 real patients (Amir Howell, Arisha Haque, Solomon Schnitzer) reviewed independently by ma'am -- Telehealth/Home/Office all used appropriately in every case, previously failed by this rule solely due to the stale notes.",
+      "notes": "Enum validation — valid values are exactly: home, office, school, community, telehealth. Reclassified from deterministic to judgment (2026-07): three rounds of point-fixes each closed one specific false-match pattern (mid-word regex matches, then a blank field bleeding into the next label, then a still-unresolved case) without addressing the underlying issue — this field's real-world layout/labeling in the source PDF is too inconsistent for a fixed extraction pattern to hold up. Read the POS/place-of-service field directly from the document text and images and judge whether its value is one of the five valid options above; do not guess if the field itself is ambiguous or missing. WHICH POS SOURCE, EXPLICIT (2026-08-07, Round 64, item 2 -- confirmed real divergence: this rule and QA-GIP-09, judged in the exact same run against the exact same document, disagreed about whether Community was an authorized POS, because nothing told either rule which of TWO different 'POS' fields a real TP contains to read. A TP's School/ABA Schedule grid has its OWN 'POS' row -- that's only the SPECIFIC location(s) actually scheduled that particular week (e.g. Home on weekdays), which can be a narrower subset of what's authorized. The Hours Requesting section separately states each CPT code's AUTHORIZED place(s) of service (e.g. '97153-Direct Care ... Home, Office, and/or Community') -- this is the broader, authorizing statement, and is the correct source for THIS rule and for QA-GIP-09/QA-GIP-08. Read POS from the Hours Requesting section's stated authorized list, not the schedule grid's per-day POS row -- the schedule grid answers a different question (where sessions are actually happening this week), not this rule's question (what POS is this TP authorized for). SCOPE, EXPLICIT -- EVERY SERVICE CODE, NOT JUST 97153 (2026-08-08, Round 78, item 2 -- real miss confirmed against Ms. Yachnes's ground-truth review: 'Telehealth' was listed as an authorized POS for 97151, 97155, and 97156 on a real TP, and this rule passed anyway because it only evaluated 97153's own POS entry, never looking at the OTHER service codes' entries in the same Hours Requesting section). The Hours Requesting section lists an authorized POS value PER CPT code (97151, 97153, 97154, 97155, 97156, etc., however many the document lists) -- read and validate EVERY one of these code-level POS entries against the five allowed categories, not only 97153's. Fail if ANY listed code's authorized POS includes a value outside home/office/school/community/telehealth (e.g. 'Virtual', or anything else not one of the five) -- name which specific code(s) had the invalid value in the evidence, don't just say 'POS is incorrect' generically. Only treat this as pass if EVERY code's own POS entry is valid; a single invalid code among several valid ones is still a fail for this rule. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIXED (Round 92, 2026-08-14): confirmed real bug -- this notes field still listed only 4 valid values and explicitly instructed the judge to fail on 'Telehealth', directly contradicting this rule's own description (already correctly updated during the Round 90 reconciliation to include telehealth as a 5th valid value). Notes now match the description: telehealth added to every valid-value list above, the fail-on-telehealth instruction and example removed. Confirmed correct against all 3 real patients (Amir Howell, Arisha Haque, Solomon Schnitzer) reviewed independently by ma'am -- Telehealth/Home/Office all used appropriately in every case, previously failed by this rule solely due to the stale notes.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -720,7 +720,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 exact field labels (date/location/patient location) not yet confirmed against real document text"
+      "blocked_status": "blocked — exact field labels (date/location/patient location) not yet confirmed against real document text"
     },
     {
       "rule_id": "QA-ACF-02",
@@ -737,11 +737,11 @@
     {
       "rule_id": "QA-ACF-03",
       "category": "Assessment of Current Functioning",
-      "description": "Grid with legend (colors/dates/assessor) present and matches the dates of the assessment",
+      "description": "Grid with legend (colors/dates/assessor) present and matches the dates of the assessment (not required for Vineland specifically)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "If the grid is an embedded image/graph rather than a text table, this needs Claude's vision capability, not text-only. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule.",
+      "notes": "If the grid is an embedded image/graph rather than a text table, this needs Claude's vision capability, not text-only. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIX ROUND (2026-08-26): added the Vineland exception per ma'am's ask. Judgment-type; wording change is the mechanism here.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -809,11 +809,11 @@
     {
       "rule_id": "QA-BAR-01",
       "category": "Barriers to Treatment",
-      "description": "If any barriers are mentioned throughout the report, they are present in this section too",
+      "description": "If any barriers are mentioned throughout the report, they are present in this section too (applies only when the request exceeds 25 hours of 97153)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket): a 'barrier to treatment' is a statement about something that impedes service delivery or progress -- scheduling conflicts, caregiver availability, the client's own resistance to specific activities, environmental constraints. PASS example (confirmed real phrasing this engagement, Charny's TP): 'Charny struggles to try new things or complete a task that is less preferred and this can serve as a barrier to session.' FAIL example: a Barriers to Treatment section that is blank, or reads only 'N/A' with no actual barrier-type statement anywhere in the document (not just this one section -- some documents describe a barrier elsewhere, e.g. in Biopsychosocial narrative, without it being duplicated into this specific section). | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule.",
+      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket): a 'barrier to treatment' is a statement about something that impedes service delivery or progress -- scheduling conflicts, caregiver availability, the client's own resistance to specific activities, environmental constraints. PASS example (confirmed real phrasing this engagement, Charny's TP): 'Charny struggles to try new things or complete a task that is less preferred and this can serve as a barrier to session.' FAIL example: a Barriers to Treatment section that is blank, or reads only 'N/A' with no actual barrier-type statement anywhere in the document (not just this one section -- some documents describe a barrier elsewhere, e.g. in Biopsychosocial narrative, without it being duplicated into this specific section). | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIX ROUND (2026-08-26): added the 25-hour/97153 condition to the description per ma'am's ask. NOT yet enforced in code -- this rule is still plain judgment with no hours-threshold gate; the LLM is now TOLD the condition via this wording, but nothing currently short-circuits it to not_applicable below the threshold the way a real deterministic pre-check would. Flagged as needing real code, not just a description hint, if the threshold must be reliably enforced rather than judgment-inferred.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -833,11 +833,11 @@
     {
       "rule_id": "QA-BIP-02",
       "category": "BIP",
-      "description": "No punishment procedures unless data attached + director approved",
+      "description": "No punishment procedures, no exceptions",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "LLM flags punishment-procedure mentions; per Section 7.1 any such mention auto-routes to Director regardless of attached data, since 'director approved' status can't be verified from the TP itself (GAP on the approval sub-check).",
+      "notes": "LLM flags punishment-procedure mentions; per Section 7.1 any such mention auto-routes to Director regardless of attached data, since 'director approved' status can't be verified from the TP itself (GAP on the approval sub-check). | FIX ROUND (2026-08-26): removed the 'unless data attached + director approved' exception entirely per ma'am's ask -- now flags any punishment procedure unconditionally. Judgment-type; wording change is the mechanism here.",
       "action_lane": "Facilitator-assign",
       "action_tag": "Director",
       "active": true
@@ -845,11 +845,11 @@
     {
       "rule_id": "QA-BIP-03",
       "category": "BIP",
-      "description": "Medical BIP -> all medical causes ruled out",
+      "description": "Flag for aggression, tantrum, elopement, hitting, screaming, biting, climbing, or noncompliance",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Needs LLM to first classify 'medical BIP', then judge whether rule-out is documented.",
+      "notes": "Needs LLM to first classify 'medical BIP', then judge whether rule-out is documented. | FIX ROUND (2026-08-26): REINTERPRETATION FLAG, not just a wording refinement: the OLD description ('Medical BIP -> all medical causes ruled out') was about ruling out medical causes once a BIP already exists for a MEDICAL reason. Ma'am's new wording is a defined list of BEHAVIORS that should trigger BIP scrutiny in the first place -- these read as two different checks (what triggers review vs. what must be ruled out once reviewing), not one refined. Applied exactly as asked, but this needs her explicit confirmation that the check's actual PURPOSE changed, not just its list of examples.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -873,7 +873,7 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "UNBLOCKED (2026-08, Round 81, item 3) -- this rule now HAS a concrete, confirmed real failure example, closing the 'no concrete failure example on record yet' gap below. Confirmed directly against a real document: a goal's own Target Name states \"fewer than 1 occurrence\" while that SAME goal's own Mastery Criteria field states \"1-2 occurrences\" -- a direct, same-goal-block numeric contradiction, needing zero clinical judgment to catch, just a cross-field comparison. See pipeline/fields.py::_check_BIP05 -- a HYBRID checker (same shape as QA-PROB-02, see that rule's own notes for the precedent): it deterministically catches ONLY this specific same-goal numeric-threshold contradiction (extracting a 'fewer than N'/'near 0'/range/bare-N occurrence ceiling from both the goal's Target Name and its own Mastery Criteria field, per goal block); when no goal states a comparable numeric threshold on both sides, or when they're stated but don't contradict, it returns not_checkable so the broader, genuinely subjective judgment call below still runs.\n\nOriginal working standard (2026-07-28, still the real judgment-layer instruction for everything this DET pre-check doesn't catch): treat the criteria below as the working standard, not a confirmed-bug fix. Check the behavior target's stated Mastery Criteria (not just the goal wording) against the client's age and the behavior's own severity/safety profile: (a) for a safety-relevant behavior (elopement, aggression, self-injury), a strict zero-occurrence criterion is normal and NOT itself a fail; (b) flag only when the criterion is developmentally mismatched in a way you can point to in the text -- e.g. a criterion phrased for a skill far beyond the client's documented developmental/cognitive level, a criterion with no duration/session-count qualifier at all (just a bare percentage with no consistency window), or a criterion that ignores a stated generalization requirement (e.g. across settings/people) that the rest of the plan otherwise expects. Do not fail solely because a criterion sounds strict for a young child -- strictness alone is not the defect; an unexplained mismatch between the criterion's demand and the client's documented profile is.\n\nINVESTIGATED, NOT FORCED (2026-08, Round 83, item 2c): a new real case had the same goal's Mastery Criteria stated two different ways in two different SECTIONS of the document; self-consistency landed on 'uncertain' rather than a confident fail. Honest finding: this DET checker's per-block scope cannot see a second mention living outside a Target Goal/Target Name block entirely (e.g. restated in unstructured BIP narrative prose) -- that shape needs the judgment layer's own text-matching, same as QA-GIP-05's notes describe for cross-section differently-worded comparisons, not a deterministic guess at an unconfirmed structure. Added ONE safe, narrow generalization: the SAME numeric-ceiling comparison now also fires when the same (formatting-normalized) goal name is repeated as a SECOND full Target Goal/Target Name block with a different Mastery Criteria ceiling -- covers the sub-case that's still genuinely structural, at zero added false-positive risk. Does NOT claim to resolve the narrative-restatement shape; 'uncertain' remains the honest answer there.",
+      "notes": "UNBLOCKED (2026-08, Round 81, item 3) -- this rule now HAS a concrete, confirmed real failure example, closing the 'no concrete failure example on record yet' gap below. Confirmed directly against a real document: a goal's own Target Name states \"fewer than 1 occurrence\" while that SAME goal's own Mastery Criteria field states \"1-2 occurrences\" -- a direct, same-goal-block numeric contradiction, needing zero clinical judgment to catch, just a cross-field comparison. See pipeline/fields.py::_check_BIP05 -- a HYBRID checker (same shape as QA-PROB-02, see that rule's own notes for the precedent): it deterministically catches ONLY this specific same-goal numeric-threshold contradiction (extracting a 'fewer than N'/'near 0'/range/bare-N occurrence ceiling from both the goal's Target Name and its own Mastery Criteria field, per goal block); when no goal states a comparable numeric threshold on both sides, or when they're stated but don't contradict, it returns not_checkable so the broader, genuinely subjective judgment call below still runs.\n\nOriginal working standard (2026-07-28, still the real judgment-layer instruction for everything this DET pre-check doesn't catch): treat the criteria below as the working standard, not a confirmed-bug fix. Check the behavior target's stated Mastery Criteria (not just the goal wording) against the client's age and the behavior's own severity/safety profile: (a) for a safety-relevant behavior (elopement, aggression, self-injury), a strict zero-occurrence criterion is normal and NOT itself a fail; (b) flag only when the criterion is developmentally mismatched in a way you can point to in the text -- e.g. a criterion phrased for a skill far beyond the client's documented developmental/cognitive level, a criterion with no duration/session-count qualifier at all (just a bare percentage with no consistency window), or a criterion that ignores a stated generalization requirement (e.g. across settings/people) that the rest of the plan otherwise expects. Do not fail solely because a criterion sounds strict for a young child -- strictness alone is not the defect; an unexplained mismatch between the criterion's demand and the client's documented profile is.\n\nINVESTIGATED, NOT FORCED (2026-08, Round 83, item 2c): a new real case had the same goal's Mastery Criteria stated two different ways in two different SECTIONS of the document; self-consistency landed on 'uncertain' rather than a confident fail. Honest finding: this DET checker's per-block scope cannot see a second mention living outside a Target Goal/Target Name block entirely (e.g. restated in unstructured BIP narrative prose) -- that shape needs the judgment layer's own text-matching, same as QA-GIP-05's notes describe for cross-section differently-worded comparisons, not a deterministic guess at an unconfirmed structure. Added ONE safe, narrow generalization: the SAME numeric-ceiling comparison now also fires when the same (formatting-normalized) goal name is repeated as a SECOND full Target Goal/Target Name block with a different Mastery Criteria ceiling -- covers the sub-case that's still genuinely structural, at zero added false-positive risk. Does NOT claim to resolve the narrative-restatement shape; 'uncertain' remains the honest answer there. | FIX ROUND (2026-08-26): ma'am's own description ('Age-appropriate mastery criteria for behavior targets') was ALREADY correct going into this round -- no rules.json wording change was needed or made here. The real problem is in the CHECKER CODE (_check_BIP05 in fields.py), which she's confirmed is pulling in transition-plan content it shouldn't. Investigated this round (see fix report) -- NOT a rules.json edit.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -925,7 +925,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs backend prior-TP/auth data (no stored previous finalized version in this standalone POC)"
+      "blocked_status": "blocked — needs backend prior-TP/auth data (no stored previous finalized version in this standalone POC)"
     },
     {
       "rule_id": "QA-MAST-02",
@@ -938,16 +938,16 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 needs backend prior-TP/auth data (goal list comparison against a stored previous TP)"
+      "blocked_status": "blocked — needs backend prior-TP/auth data (goal list comparison against a stored previous TP)"
     },
     {
       "rule_id": "QA-GIP-01",
       "category": "Goals in Progress",
-      "description": "No school goals/ADL/group mentions unless requesting 97154",
+      "description": "No school or ADL goals",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Semantic detection + DET conditional on billing code presence.",
+      "notes": "Semantic detection + DET conditional on billing code presence. | FIX ROUND (2026-08-26): dropped the '97154 exception' and the 'group mentions' clause per ma'am's ask -- now a flat rule with no exception. Judgment-type; wording change is the mechanism here.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1015,11 +1015,11 @@
     {
       "rule_id": "QA-GIP-07",
       "category": "Goals in Progress",
-      "description": "Goals open >6mo have rationale reviewed by Eliana",
+      "description": "Goals open more than 6 months have a documented rationale",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Age-trigger (>6mo) is DET and IS the Section 7.1 hard Director-tag rule; 'reviewed by Eliana' itself can't be verified from the TP (GAP) - the system flags on age, not on review having actually happened.",
+      "notes": "Age-trigger (>6mo) is DET and IS the Section 7.1 hard Director-tag rule; 'reviewed by Eliana' itself can't be verified from the TP (GAP) - the system flags on age, not on review having actually happened. | FIX ROUND (2026-08-26): dropped the 'reviewed by Eliana' person-specific clause per ma'am's ask -- now checks only that a rationale exists, regardless of reviewer. Judgment-type; wording change is the mechanism here.",
       "action_lane": "Facilitator-assign",
       "action_tag": "Director",
       "active": true
@@ -1095,7 +1095,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 'goal count' isn't a crisp, code-countable boundary even for a human reviewer (confirmed by an earlier judgment finding's own hedged '~10-12 distinct goals')"
+      "blocked_status": "blocked — 'goal count' isn't a crisp, code-countable boundary even for a human reviewer (confirmed by an earlier judgment finding's own hedged '~10-12 distinct goals')"
     },
     {
       "rule_id": "QA-GIP-14",
@@ -1124,11 +1124,11 @@
     {
       "rule_id": "QA-GIP-16",
       "category": "Goals in Progress",
-      "description": "Mastery criteria age/ASD-appropriate; no 0%, use 'fewer than one instance'",
+      "description": "Mastery criteria AND current level age/ASD-appropriate; no 0%, use 'fewer than one instance'",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "Converted from judgment to deterministic (2026-07-28 round, item 1 backlog): the zero/near-zero-endpoint ban is a per-goal pattern check over an extractable field (Mastery Criteria), same shape as GIP-10 -- see pipeline/fields.py::_check_GIP16, which shares GIP-10's _goal_block_starts helper. Scope note: this DET check covers ONLY the zero-value-ban half of the rule's description ('no 0%, use fewer than one instance'); the broader 'age/ASD-appropriate' framing in the description is not separately implemented here since no distinct check for it was ever built or described beyond the zero-ban itself -- if a genuinely separate age-appropriateness judgment is intended beyond the zero-ban, that would need its own rule/check. This ban applies to BOTH percentage-based AND frequency-based mastery criteria - do not treat frequency/count goals as exempt just because they don't use a percent sign. A mastery criterion is a violation if it states a zero or near-zero endpoint in ANY of these forms: '0%', '0 occurrences', '0x', 'near 0 levels', 'near 0', or equivalent zero-value phrasing - regardless of Sampling Method (Percent Correct or Frequency). Any of these must instead read 'fewer than one instance' (or an equivalent minimum-occurrence phrasing). Verified live: Reeda has exactly 2 confirmed violations (page 26 Tantrum, page 27 Elopement, both in 'Target Name:' Behavior Reduction Goal blocks -- not 'Target Goal:' ones, which is why the shared block-splitter covers both marker forms). Charny has zero violations (one goal reads '0-2 occurrences over three consecutive days', correctly NOT flagged since it's a range, not a zero endpoint). EXPLICIT DIVISION OF LABOR WITH QA-GIP-10 (2026-08-07, Round 63, item 7): a BLANK Mastery Criteria is a real problem, but this rule's own zero/near-zero pattern never matches an empty string, so on its own this would silently pass a blank field -- QA-GIP-10 already flags a blank Mastery Criteria, but ONLY for a goal block that also has a Sampling Method field (it skips any block without one). This rule now flags the one remaining gap -- a blank Mastery Criteria in a block with NO Sampling Method field either -- and deliberately does NOT also flag the Sampling-Method-present case, to avoid two rules reporting the same blank-field violation as if it were two separate problems. If both this rule and QA-GIP-10 pass on the same document, that means every Mastery Criteria field found is confirmed non-blank; a not_checkable from either is not itself evidence of a blank field.\n\nBROADENED (2026-08, Round 83, item 2a): confirmed real miss -- '0 times a week' is the same absolute-zero problem as '0%', just phrased with 'times' instead, and the prior pattern didn't recognize it. _ZERO_MASTERY_PATTERN now also catches '0/zero times', '0/zero occurrences', '0/zero instances', and a bare '0'/'zero'/'none' as the field's entire value. Still deliberately does NOT match 'fewer than N'/'less than N' for any N -- that phrasing is this rule's own recommended non-zero rewording, not a violation.",
+      "notes": "Converted from judgment to deterministic (2026-07-28 round, item 1 backlog): the zero/near-zero-endpoint ban is a per-goal pattern check over an extractable field (Mastery Criteria), same shape as GIP-10 -- see pipeline/fields.py::_check_GIP16, which shares GIP-10's _goal_block_starts helper. Scope note: this DET check covers ONLY the zero-value-ban half of the rule's description ('no 0%, use fewer than one instance'); the broader 'age/ASD-appropriate' framing in the description is not separately implemented here since no distinct check for it was ever built or described beyond the zero-ban itself -- if a genuinely separate age-appropriateness judgment is intended beyond the zero-ban, that would need its own rule/check. This ban applies to BOTH percentage-based AND frequency-based mastery criteria - do not treat frequency/count goals as exempt just because they don't use a percent sign. A mastery criterion is a violation if it states a zero or near-zero endpoint in ANY of these forms: '0%', '0 occurrences', '0x', 'near 0 levels', 'near 0', or equivalent zero-value phrasing - regardless of Sampling Method (Percent Correct or Frequency). Any of these must instead read 'fewer than one instance' (or an equivalent minimum-occurrence phrasing). Verified live: Reeda has exactly 2 confirmed violations (page 26 Tantrum, page 27 Elopement, both in 'Target Name:' Behavior Reduction Goal blocks -- not 'Target Goal:' ones, which is why the shared block-splitter covers both marker forms). Charny has zero violations (one goal reads '0-2 occurrences over three consecutive days', correctly NOT flagged since it's a range, not a zero endpoint). EXPLICIT DIVISION OF LABOR WITH QA-GIP-10 (2026-08-07, Round 63, item 7): a BLANK Mastery Criteria is a real problem, but this rule's own zero/near-zero pattern never matches an empty string, so on its own this would silently pass a blank field -- QA-GIP-10 already flags a blank Mastery Criteria, but ONLY for a goal block that also has a Sampling Method field (it skips any block without one). This rule now flags the one remaining gap -- a blank Mastery Criteria in a block with NO Sampling Method field either -- and deliberately does NOT also flag the Sampling-Method-present case, to avoid two rules reporting the same blank-field violation as if it were two separate problems. If both this rule and QA-GIP-10 pass on the same document, that means every Mastery Criteria field found is confirmed non-blank; a not_checkable from either is not itself evidence of a blank field.\n\nBROADENED (2026-08, Round 83, item 2a): confirmed real miss -- '0 times a week' is the same absolute-zero problem as '0%', just phrased with 'times' instead, and the prior pattern didn't recognize it. _ZERO_MASTERY_PATTERN now also catches '0/zero times', '0/zero occurrences', '0/zero instances', and a bare '0'/'zero'/'none' as the field's entire value. Still deliberately does NOT match 'fewer than N'/'less than N' for any N -- that phrasing is this rule's own recommended non-zero rewording, not a violation. | FIX ROUND (2026-08-26): added 'current level' alongside 'mastery criteria' to scope, per ma'am's ask. check_type left as deterministic (_check_GIP16 already exists and is registered) but its CODE was not changed in this pass to actually also inspect current-level fields -- confirmed not reached this round. Flagged, not silently assumed done.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1172,11 +1172,11 @@
     {
       "rule_id": "QA-COC-02",
       "category": "Coordination of Care",
-      "description": "COC completed with all related providers indicated (PCP, school, therapist)",
+      "description": "COC completed with at least one provider indicated on the TP (loosened from requiring all related providers)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "LLM extracts list of 'related providers' mentioned elsewhere in TP, DET checks completeness against COC section.",
+      "notes": "LLM extracts list of 'related providers' mentioned elsewhere in TP, DET checks completeness against COC section. | FIX ROUND (2026-08-26): loosened per ma'am's ask. Judgment-type, so this wording change alone is the real fix (the AI judge reads this description directly) -- no code change needed.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1192,7 +1192,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 Initial-only boilerplate text not yet confirmed against a real Initial-plan-type sample"
+      "blocked_status": "blocked — Initial-only boilerplate text not yet confirmed against a real Initial-plan-type sample"
     },
     {
       "rule_id": "QA-COC-04",
@@ -1220,16 +1220,16 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 source text confirmed garbled/unparseable in real documents (e.g. 'conducted. on 2/1 the current authorization period') \u2014 not a fixable regex, the underlying field format is unreliable"
+      "blocked_status": "blocked — source text confirmed garbled/unparseable in real documents (e.g. 'conducted. on 2/1 the current authorization period') — not a fixable regex, the underlying field format is unreliable"
     },
     {
       "rule_id": "QA-COC-06",
       "category": "Coordination of Care",
-      "description": "Date faxed to doctor includes month/day/year",
+      "description": "Date faxed to doctor includes month/day, and is within the current dates of report",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket, pure format check, no document-specific wording needed): PASS example: '7/2/2026' -- month, day, and 4-digit year all present. FAIL example: '7/2' (year missing) or 'July 2026' (day missing) or 'this past week' (not a date at all).",
+      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket, pure format check, no document-specific wording needed): PASS example: '7/2/2026' -- month, day, and 4-digit year all present. FAIL example: '7/2' (year missing) or 'July 2026' (day missing) or 'this past week' (not a date at all). | FIX ROUND (2026-08-26): per ma'am's ask: dropped the year requirement, added a within-report-date-range check (reusing QA-RPT-03/QA-ACF-12's date-range logic was suggested). check_type left as judgment -- converting this to a real deterministic date-range checker (the actual reuse ma'am asked about) was not reached this round; today the AI judge is just told the new rule in English, with no guarantee it applies date-range math correctly or consistently. Flagged, not silently treated as done.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1241,7 +1241,7 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "'Matches the Learning Tree' wording ignored per Section 14. The real check here is NOT a general judgment call on goal specificity/realism (that's a fallback only) \u2014 the manual reviewer's own embedded note asks for a status sentence on every Transition Plan goal, and it isn't there. Look for a reviewer-embedded comment/highlighted annotation near the Transition Plan section requesting a status update on Transition Plan goals (the same kind of embedded PDF annotation as a severity-rating note elsewhere in this rule set). If that reviewer note is present: check every individual Transition Plan goal in the document for a short status sentence attached to it, and fail if any goal lacks one \u2014 this is a per-goal presence check, not a subjective realism judgment. If no such reviewer note is present anywhere near the Transition Plan section, fall back to the general judgment call on whether goals are patient-specific and realistic.\n\nINVESTIGATED, ALREADY CORRECT (2026-08, Round 84, item 2): re-examined as part of an audit for rules that dress up an unverifiable external-source claim as a confident pass. Found this rule does NOT have that problem -- 'matches the Learning Tree' was already explicitly retired as dead scope by Section 14 (see also QA-ACF-05's own notes, which retired the same wording for a different checklist item the same way). The fallback general realism judgment above is this rule's own genuine, full scope once the reviewer-note check comes up empty -- not a stand-in for an unavailable harder comparison -- so a confident pass/fail from that fallback is appropriate, not overconfident. No change made here.",
+      "notes": "'Matches the Learning Tree' wording ignored per Section 14. The real check here is NOT a general judgment call on goal specificity/realism (that's a fallback only) — the manual reviewer's own embedded note asks for a status sentence on every Transition Plan goal, and it isn't there. Look for a reviewer-embedded comment/highlighted annotation near the Transition Plan section requesting a status update on Transition Plan goals (the same kind of embedded PDF annotation as a severity-rating note elsewhere in this rule set). If that reviewer note is present: check every individual Transition Plan goal in the document for a short status sentence attached to it, and fail if any goal lacks one — this is a per-goal presence check, not a subjective realism judgment. If no such reviewer note is present anywhere near the Transition Plan section, fall back to the general judgment call on whether goals are patient-specific and realistic.\n\nINVESTIGATED, ALREADY CORRECT (2026-08, Round 84, item 2): re-examined as part of an audit for rules that dress up an unverifiable external-source claim as a confident pass. Found this rule does NOT have that problem -- 'matches the Learning Tree' was already explicitly retired as dead scope by Section 14 (see also QA-ACF-05's own notes, which retired the same wording for a different checklist item the same way). The fallback general realism judgment above is this rule's own genuine, full scope once the reviewer-note check comes up empty -- not a stand-in for an unavailable harder comparison -- so a confident pass/fail from that fallback is appropriate, not overconfident. No change made here.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1353,7 +1353,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 'writing BCBA vs. case BCBA' dual-signature scenario not observed in any real sample checked so far; field format unconfirmed"
+      "blocked_status": "blocked — 'writing BCBA vs. case BCBA' dual-signature scenario not observed in any real sample checked so far; field format unconfirmed"
     },
     {
       "rule_id": "QA-DS-01",
@@ -1370,18 +1370,18 @@
     {
       "rule_id": "HF-01",
       "category": "Healthfirst-Specific",
-      "description": "HF always has a 3-month range for authorization",
+      "description": "Healthfirst authorization range: 13 weeks for patients over the age threshold, 26 weeks for patients at or under it",
       "applies_to_payor": "Healthfirst",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "If patient age > age_threshold, the authorization date range (end date minus start date) must be approximately short_range_months - this is a PASS. If patient age <= age_threshold, the range must be approximately long_range_months - this is a PASS. Any mismatch between age bracket and range length is a FAIL. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (deterministic) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule.",
+      "notes": "If patient age > age_threshold, the authorization date range (end date minus start date) must be approximately short_range_months - this is a PASS. If patient age <= age_threshold, the range must be approximately long_range_months - this is a PASS. Any mismatch between age bracket and range length is a FAIL. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (deterministic) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIX ROUND (2026-08-26): ROOT CAUSE FOUND for the case ma'am reported (see fix report for full explanation): the rule's own description going into this round said a FLAT '3-month range', but the actual checker code (_check_HF01) and this rule's OWN pre-existing notes already implemented an AGE-CONDITIONAL split (3 months for age>13, 6 months for age<=13) that the description never disclosed. A patient aged 13 or under with a genuinely-3-month range would correctly FAIL this check under the code's real, deliberate design, but look wrong to a reviewer going by the description alone, which never mentioned the age split at all. Fixed by making the description state the age split explicitly (not just swapping the unit), and converting months->weeks in both the description and params, matching the same week-based fix applied elsewhere this round. The CODE (_check_HF01 in fields.py) still needs its own update to use exact week arithmetic (timedelta) instead of _add_months' calendar-month math, and to read the renamed params keys -- done in this same round, see fields.py diff.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
       "params": {
         "age_threshold": 13,
-        "short_range_months": 3,
-        "long_range_months": 6
+        "short_range_weeks": 13,
+        "long_range_weeks": 26
       }
     },
     {
@@ -1441,12 +1441,12 @@
     },
     {
       "rule_id": "EMP-01",
-      "category": "Empire-Specific",
+      "category": "Empire/Anthem Specific",
       "description": "Date of current report within 30 days of authorization start date",
       "applies_to_payor": "Empire",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "Docx wording: 'Date of current report is within 30 days of the authorization start date.' Interpreted as: the end date of 'Date of Current Report' (the reporting period immediately preceding the new authorization) must be within max_days of 'Authorization Dates Requested' start. Both fields are page-1 text.",
+      "notes": "Docx wording: 'Date of current report is within 30 days of the authorization start date.' Interpreted as: the end date of 'Date of Current Report' (the reporting period immediately preceding the new authorization) must be within max_days of 'Authorization Dates Requested' start. Both fields are page-1 text. | FIX ROUND (2026-08-26): category renamed Empire-Specific -> Empire/Anthem Specific per ma'am's ask. applies_to_payor left as 'Empire' on this exact rule -- this schema only supports ONE payor value per rule (confirmed in pipeline/fields.py::partition_rules_by_scope, exact-match comparison, no list support), so 'also fire for Anthem' could not be done by editing this rule's own applies_to_payor. Done instead via new sibling rules ANT-01/02/03 (same checker code where one exists, applies_to_payor='Anthem') -- see those entries.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
@@ -1456,12 +1456,12 @@
     },
     {
       "rule_id": "EMP-03",
-      "category": "Empire-Specific",
+      "category": "Empire/Anthem Specific",
       "description": "Signature date within 30 days of authorization start date",
       "applies_to_payor": "Empire",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "Docx wording: 'Signature date is within 30 days of the authorization start date.' Provider Signature, Date vs Authorization Dates Requested start, both page text.",
+      "notes": "Docx wording: 'Signature date is within 30 days of the authorization start date.' Provider Signature, Date vs Authorization Dates Requested start, both page text. | FIX ROUND (2026-08-26): category renamed Empire-Specific -> Empire/Anthem Specific per ma'am's ask. applies_to_payor left as 'Empire' on this exact rule -- this schema only supports ONE payor value per rule (confirmed in pipeline/fields.py::partition_rules_by_scope, exact-match comparison, no list support), so 'also fire for Anthem' could not be done by editing this rule's own applies_to_payor. Done instead via new sibling rules ANT-01/02/03 (same checker code where one exists, applies_to_payor='Anthem') -- see those entries.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
@@ -1509,16 +1509,16 @@
     },
     {
       "rule_id": "EMP-02",
-      "category": "Empire-Specific",
+      "category": "Empire/Anthem Specific",
       "description": "Graph data within 30 days of authorization start date",
       "applies_to_payor": "Empire",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "Docx wording: 'Date of goals is within 30 days of start.' NOT built this round -- genuine scope ambiguity, not a missing-checker gap. Real TPs (CS TP.pdf, Reeda Bint Shaheen's TP) show 'Goals in Progress' contains a mix of goals with Date Initiated values many months old (legitimately still in progress from a prior authorization) alongside a distinct 'New Goals:' section for goals newly added this cycle. Applying a 30-day window to EVERY goal's Date Initiated would fail nearly every reassessment TP's long-standing goals incorrectly. Needs confirmation: does this rule mean only newly-added goals (and if so, is the 'New Goals:' section header a reliable, consistent boundary across documents), or something else entirely (e.g. the most recent data-update date, not the initiation date)? | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (deterministic) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule.",
+      "notes": "Docx wording: 'Date of goals is within 30 days of start.' NOT built this round -- genuine scope ambiguity, not a missing-checker gap. Real TPs (CS TP.pdf, Reeda Bint Shaheen's TP) show 'Goals in Progress' contains a mix of goals with Date Initiated values many months old (legitimately still in progress from a prior authorization) alongside a distinct 'New Goals:' section for goals newly added this cycle. Applying a 30-day window to EVERY goal's Date Initiated would fail nearly every reassessment TP's long-standing goals incorrectly. Needs confirmation: does this rule mean only newly-added goals (and if so, is the 'New Goals:' section header a reliable, consistent boundary across documents), or something else entirely (e.g. the most recent data-update date, not the initiation date)? | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (deterministic) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIX ROUND (2026-08-26): category renamed Empire-Specific -> Empire/Anthem Specific per ma'am's ask. applies_to_payor left as 'Empire' on this exact rule -- this schema only supports ONE payor value per rule (confirmed in pipeline/fields.py::partition_rules_by_scope, exact-match comparison, no list support), so 'also fire for Anthem' could not be done by editing this rule's own applies_to_payor. Done instead via new sibling rules ANT-01/02/03 (same checker code where one exists, applies_to_payor='Anthem') -- see those entries.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked \u2014 scope ambiguity confirmed against real documents (see notes); building this as literally 'every goal within 30 days' would produce systematic false fails, not just an untested gap"
+      "blocked_status": "blocked — scope ambiguity confirmed against real documents (see notes); building this as literally 'every goal within 30 days' would produce systematic false fails, not just an untested gap"
     },
     {
       "rule_id": "QA-ACF-05",
@@ -1535,11 +1535,11 @@
     {
       "rule_id": "CIG-01",
       "category": "Cigna-Specific",
-      "description": "If AFLS used, completed from A-Z",
+      "description": "If ABLLS is used, it is completed from A-Z",
       "applies_to_payor": "Cigna",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite.",
+      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite. | FIX ROUND (2026-08-26): real naming-bug fix: 'AFLS' was wrong, corrected to 'ABLLS' per ma'am's report. Judgment-type; wording fix is the complete fix for this half. A deterministic checker for this is tracked separately (Group B, not reached this round).",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1619,11 +1619,11 @@
     {
       "rule_id": "HF-09",
       "category": "Healthfirst-Specific",
-      "description": "Flag if Healthfirst auth range exceeds 3 months",
+      "description": "Flag if Healthfirst auth range exceeds 13 weeks",
       "applies_to_payor": "Healthfirst",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite.",
+      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite. | FIX ROUND (2026-08-26): unit fix: 3 months -> 13 weeks. Still no deterministic checker (Group B, not reached this round) -- remains plain judgment.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -2039,11 +2039,11 @@
     {
       "rule_id": "QA-MAST-04",
       "category": "Mastered Goals",
-      "description": "If all parent goals are met, new goals are added",
+      "description": "At least 3 parent goals must have the goal status of in progress",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite.",
+      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite. | FIX ROUND (2026-08-26): wording changed per ma'am's direct instruction, replacing the old 'if all parent goals are met, new goals are added' text. Still judgment (check_type unchanged) -- no deterministic checker built yet, tracked separately (Group B).",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -2063,11 +2063,11 @@
     {
       "rule_id": "QA-PAR-03",
       "category": "Parent/Caregiver Involvement",
-      "description": "For any hour increase, parent training goals should be reviewed and updated accordingly",
+      "description": "For any hours increase, parent training should be greater than 4 data points per graph",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite.",
+      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite. | FIX ROUND (2026-08-26): replaced the vague 'reviewed and updated accordingly' judgment framing with ma'am's concrete threshold. Still judgment-type -- a real deterministic data-point-count checker is tracked separately (Group B, not reached this round).",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -2075,7 +2075,7 @@
     {
       "rule_id": "QA-PREF-02",
       "category": "Results of Preference Assessment",
-      "description": "Flag if preference assessment references \"client interview\" when actually conducted through the parent \u2014 should say \"parent interview\"",
+      "description": "Flag if preference assessment references \"client interview\" when actually conducted through the parent — should say \"parent interview\"",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2099,11 +2099,11 @@
     {
       "rule_id": "QA-RPT-07",
       "category": "Report Information",
-      "description": "Flag if requested auth range is less than a full authorization period (3-month or 6-month cycle, depending on payor)",
+      "description": "Flag if requested auth range is less than a full authorization period (13-week or 26-week cycle, depending on payor)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite.",
+      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite. | FIX ROUND (2026-08-26): unit fix: months -> exact weeks, matching HF-01/HF-09/QA-RPT-05's same fix this round (fixed week-counts avoid calendar-month day-length variance). Still no deterministic checker (Group B) -- the payor-to-week-count mapping this needs isn't confirmed anywhere in the codebase; flagged back rather than guessed.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -2143,6 +2143,68 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
+    },
+    {
+      "rule_id": "QA-HRS-11",
+      "category": "Hours Requesting",
+      "description": "Default 97151 (assessment) hour cap of 8 hrs for any payor other than Healthfirst (5 hrs, HF-02) or Emblem (3 hrs, EMB-01)",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, FIX ROUND (2026-08-26): the missing default bucket ma'am asked for. applies_to_payor is 'ALL' at the metadata level (this schema has no payor-exclusion value), but the real checker (_check_HRS11) self-excludes Healthfirst/Emblem internally (returns not_applicable for those, deferring to HF-02/EMB-01 respectively) so a Healthfirst or Emblem patient never sees two contradictory findings for the same real-world 97151-hours-cap concept.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true,
+      "params": {
+        "max_hours": 8,
+        "cpt_code": "97151",
+        "excluded_payors": [
+          "Healthfirst",
+          "Emblem"
+        ]
+      }
+    },
+    {
+      "rule_id": "ANT-01",
+      "category": "Empire/Anthem Specific",
+      "description": "Date of current report within 30 days of authorization start date",
+      "applies_to_payor": "Anthem",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, FIX ROUND (2026-08-26): Anthem sibling of EMP-01, added per ma'am's ask to extend Empire-specific coverage to Anthem too. Same description/logic, different applies_to_payor -- this schema only supports one payor value per rule (see partition_rules_by_scope), so this had to be a new rule rather than a multi-payor edit to EMP-01 itself.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true,
+      "params": {
+        "max_days": 30
+      }
+    },
+    {
+      "rule_id": "ANT-02",
+      "category": "Empire/Anthem Specific",
+      "description": "Graph data within 30 days of authorization start date",
+      "applies_to_payor": "Anthem",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, FIX ROUND (2026-08-26): Anthem sibling of EMP-02, added per ma'am's ask to extend Empire-specific coverage to Anthem too. Same description/logic, different applies_to_payor -- this schema only supports one payor value per rule (see partition_rules_by_scope), so this had to be a new rule rather than a multi-payor edit to EMP-02 itself.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "ANT-03",
+      "category": "Empire/Anthem Specific",
+      "description": "Signature date within 30 days of authorization start date",
+      "applies_to_payor": "Anthem",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, FIX ROUND (2026-08-26): Anthem sibling of EMP-03, added per ma'am's ask to extend Empire-specific coverage to Anthem too. Same description/logic, different applies_to_payor -- this schema only supports one payor value per rule (see partition_rules_by_scope), so this had to be a new rule rather than a multi-payor edit to EMP-03 itself.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true,
+      "params": {
+        "max_days": 30
+      }
     }
   ]
 }

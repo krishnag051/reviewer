@@ -137,10 +137,13 @@ def test_hf01_rule_definition_has_explicit_params_and_criteria_in_notes():
     rules = json.loads(rules_path.read_text(encoding="utf-8"))["rules"]
     hf01 = next(r for r in rules if r["rule_id"] == "HF-01")
 
+    # Fix Round (2026-08-26): months -> exact weeks, see fields.py::_check_HF01's
+    # own docstring for why (calendar-month math needed a +/-10 day tolerance
+    # for month-length variance; a fixed week-count doesn't).
     assert hf01["params"] == {
         "age_threshold": 13,
-        "short_range_months": 3,
-        "long_range_months": 6,
+        "short_range_weeks": 13,
+        "long_range_weeks": 26,
     }
     assert "PASS" in hf01["notes"]
     assert "FAIL" in hf01["notes"]

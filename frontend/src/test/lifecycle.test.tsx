@@ -926,7 +926,12 @@ describe("Round 51: mandatory supporting document (storage + display only)", () 
     await screen.findByText(/Supporting Document/);
 
     await user.type(screen.getByPlaceholderText("e.g., Jordan Nakamura"), "Round51 Test Patient");
-    await user.type(screen.getByPlaceholderText("e.g., TP-2026-0500"), `TP-TEST-round51-${crypto.randomUUID().slice(0, 8)}`);
+    // Fix Round: Reference ID now auto-fills from the typed name -- clear
+    // that auto-filled value before typing this test's own specific one,
+    // or user.type would append onto the end of it instead of replacing it.
+    const refIdInput51 = screen.getByPlaceholderText("e.g., Jordan Nakamura 8-2026");
+    await user.clear(refIdInput51);
+    await user.type(refIdInput51, `TP-TEST-round51-${crypto.randomUUID().slice(0, 8)}`);
 
     const submitButton = () => screen.getByRole("button", { name: /Create Upload 1/ }) as HTMLButtonElement;
     expect(submitButton().disabled).toBe(true);
@@ -1092,7 +1097,11 @@ describe("Fix Round, Item 2: Payor dropdown is the single source of truth for cl
     expect(screen.queryByText(/Client Insurance/)).toBeNull();
 
     await user.type(screen.getByPlaceholderText("e.g., Jordan Nakamura"), "FixRound Payor Test Patient");
-    await user.type(screen.getByPlaceholderText("e.g., TP-2026-0500"), refId);
+    // Fix Round: same clear-before-type reasoning as the Round 51 test above
+    // -- Reference ID auto-filled from the name just typed above.
+    const refIdInputPayor = screen.getByPlaceholderText("e.g., Jordan Nakamura 8-2026");
+    await user.clear(refIdInputPayor);
+    await user.type(refIdInputPayor, refId);
 
     // The Payor dropdown -- deliberately NOT the default (PAYORS[0] ==
     // "Aetna") so a pass here can't be a coincidence of an unchanged default.
@@ -1163,4 +1172,47 @@ describe("Fix Round, Item 2: Payor dropdown is the single source of truth for cl
     expect(created.payor).toBe("Cigna");
     console.log(`STEP C: real GET /patients confirms the created patient's stored payor is "${created.payor}" -- the same single value used for both the patient record and the intake answer`);
   }, 25000);
+});
+
+// Fix Round: Reference ID auto-fill from the typed Patient Name, exactly as
+// specified -- "{name} {month}-{year}", real current date, never a
+// hardcoded one; auto-fills only until the user directly edits Reference
+// ID themselves, after which further name changes never clobber it.
+describe("Fix Round: Reference ID auto-fill from Patient Name", () => {
+  it("auto-fills on typing the name, then a manual edit survives a further name change", async () => {
+    const token = await adminToken();
+    const user = userEvent.setup();
+
+    renderApp("/upload", token);
+    await screen.findByRole("heading", { name: "Upload Treatment Plan" });
+
+    const nameInput = screen.getByPlaceholderText("e.g., Jordan Nakamura");
+    const refIdInput = screen.getByPlaceholderText("e.g., Jordan Nakamura 8-2026") as HTMLInputElement;
+
+    await user.type(nameInput, "Aaron Gross");
+    const now = new Date();
+    const expected = `Aaron Gross ${now.getMonth() + 1}-${now.getFullYear()}`;
+    expect(refIdInput.value).toBe(expected);
+    console.log(`STEP A: typing the Patient Name real-auto-filled Reference ID to "${refIdInput.value}" -- exactly ma'am's requested format, using the real current date`);
+
+    // Manual edit -- the user overwrites the auto-filled value by hand.
+    await user.clear(refIdInput);
+    await user.type(refIdInput, "TP-MANUAL-OVERRIDE-0001");
+    expect(refIdInput.value).toBe("TP-MANUAL-OVERRIDE-0001");
+
+    // Changing the name AGAIN must NOT clobber the manual edit.
+    await user.clear(nameInput);
+    await user.type(nameInput, "Someone Else Entirely");
+    expect(refIdInput.value).toBe("TP-MANUAL-OVERRIDE-0001");
+    console.log("STEP B: after a manual edit, changing Patient Name again left Reference ID exactly as the user typed it -- not clobbered");
+
+    // Clearing Reference ID back to empty resumes auto-fill, per the
+    // round's own "reset only if the Reference ID field is still
+    // empty/untouched" spec.
+    await user.clear(refIdInput);
+    await user.type(nameInput, " Jr.");
+    const expectedAfterResume = `Someone Else Entirely Jr. ${now.getMonth() + 1}-${now.getFullYear()}`;
+    expect(refIdInput.value).toBe(expectedAfterResume);
+    console.log(`STEP C: clearing Reference ID back to empty resumed auto-fill on the next name change -- "${refIdInput.value}"`);
+  }, 15000);
 });
