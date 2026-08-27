@@ -325,6 +325,108 @@ def compare_session_note_to_tp(
     }
 
 
+def check_note_detail_level_across_notes(
+    session_extractions: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Fix Round (2026-08-27): the real, session-note-content-based half of
+    QA-COC-01 ("session note detailed") -- previously never checked at all
+    (confirmed dead-description). Unlike QA-ACF-02/QA-ACF-08, this isn't
+    tied to one specific date-matched note (COC-01's own notes name no
+    such pairing) -- every uploaded, successfully-extracted note counts:
+    if AT LEAST ONE reads as "detailed", that satisfies this half (a
+    reviewer only needs one real, substantive session note on file, not
+    every single one to individually qualify). Fails only if every
+    successfully-extracted note came back "minimal". Uncertain if none
+    extracted with a confident value at all.
+
+    This is the "detailed" half ONLY -- QA-COC-01 is a compound rule (also
+    checks the COC section's own provider name/title/date, from the TP
+    text alone); the caller (app/rule_engine/client.py) combines this with
+    that other half's own result rather than overwriting it wholesale.
+    """
+    ok_extractions = {fn: ext for fn, ext in session_extractions.items() if not _extraction_error(ext)}
+    if not ok_extractions:
+        return _uncertain("No successfully-extracted session note to check for narrative detail.")
+
+    levels_by_file: dict[str, str | None] = {}
+    for filename, extraction in ok_extractions.items():
+        entry = (extraction or {}).get("note_detail_level") or {}
+        levels_by_file[filename] = entry.get("value") if entry.get("confidence") != "none" else None
+
+    if any(level == "detailed" for level in levels_by_file.values()):
+        detailed_files = [fn for fn, level in levels_by_file.items() if level == "detailed"]
+        return _finding(
+            "pass",
+            f"At least one uploaded session note reads as detailed (names real session content): {detailed_files}.",
+            0.8,
+        )
+    if all(level == "minimal" for level in levels_by_file.values()) and levels_by_file:
+        return _finding(
+            "fail",
+            f"Every uploaded session note only confirms contact occurred, without naming real content: "
+            f"{list(levels_by_file.keys())}.",
+            0.8,
+        )
+    return _uncertain(
+        f"Could not confidently determine narrative detail level for the uploaded session note(s): "
+        f"{levels_by_file}."
+    )
+
+
+def combine_compound_rule_result(phase1_result: dict[str, Any] | None, real_data_result: dict[str, Any]) -> dict[str, Any]:
+    """Fix Round (2026-08-27): generic combine policy for a rule that's
+    partly answerable from the TP alone (phase 1's own judgment call,
+    reasoning blind to session-note/intake data) and partly from real
+    session-note/intake data (a separate, later-computed signal) --
+    QA-COC-01 is the first user of this, but it's written generic (plain
+    {result, evidence, confidence} dicts in, same shape out) so any future
+    compound rule can reuse it rather than each caller inventing its own
+    merge policy.
+
+    Policy, same "a real, contradicting signal wins" reasoning as every
+    other override in this pipeline:
+    - Either side "fail" -> combined "fail" (a confirmed problem on either
+      half is a real problem; the other half being fine doesn't cancel it).
+    - Both sides "pass" -> combined "pass".
+    - Real-data side resolves ("pass") what phase 1 couldn't (phase 1 was
+      "uncertain"/"not_checkable", genuinely blind to this half without
+      session-note/intake data) -> combined uses the real-data side's own
+      resolution (phase 1 had nothing to contribute past that point).
+    - Real-data side itself couldn't resolve ("uncertain"/"not_checkable")
+      but phase 1 confidently passed on its own (TP-only) half -> combined
+      stays phase 1's own result; the real-data check simply couldn't add
+      or subtract anything here.
+    - Otherwise (both genuinely unresolved) -> "not_checkable" if BOTH
+      sides are specifically "not_checkable" (both agree it's a real
+      data/infrastructure gap, not ambiguous evidence -- collapsing this
+      into "uncertain" would be a real, wrong status change, confirmed by
+      a real test this round: the unmatched-rule-code fallback path
+      legitimately produces "not_checkable" + "not_checkable" for a rule
+      with zero real findings, and that must stay "not_checkable", not
+      quietly become "uncertain"). "uncertain" otherwise (at least one
+      side is genuinely ambiguous evidence, not just missing data).
+
+    `phase1_result=None` (no draft available for some reason) is treated
+    the same as phase 1 being uncertain.
+    """
+    p1 = phase1_result or _uncertain("No phase 1 result available.")
+    evidence = f"{p1['evidence']} | {real_data_result['evidence']}"
+
+    if p1["result"] == "fail" or real_data_result["result"] == "fail":
+        confidence = max(p1.get("confidence") or 0.0, real_data_result.get("confidence") or 0.0)
+        return _finding("fail", evidence, confidence)
+    if p1["result"] == "pass" and real_data_result["result"] == "pass":
+        confidence = min(p1.get("confidence") or 0.0, real_data_result.get("confidence") or 0.0)
+        return _finding("pass", evidence, confidence)
+    if p1["result"] in ("uncertain", "not_checkable") and real_data_result["result"] == "pass":
+        return _finding("pass", evidence, real_data_result.get("confidence") or 0.0)
+    if real_data_result["result"] in ("uncertain", "not_checkable") and p1["result"] == "pass":
+        return _finding("pass", evidence, p1.get("confidence") or 0.0)
+    if p1["result"] == "not_checkable" and real_data_result["result"] == "not_checkable":
+        return _not_checkable(evidence)
+    return _uncertain(evidence)
+
+
 def select_matching_session_note(
     session_extractions: dict[str, dict[str, dict[str, Any]]],
     tp_assessment_date: str | None,
@@ -479,4 +581,10 @@ def compare_session_notes_to_tp(
         acf02 = matched_result["QA-ACF-02"]
         acf08 = matched_result["QA-ACF-08"]
 
-    return {"QA-RPT-03": rpt03_combined, "QA-ACF-02": acf02, "QA-ACF-08": acf08}
+    # Fix Round (2026-08-27): QA-COC-01's "detailed" half -- checked across
+    # EVERY successfully-extracted note (see check_note_detail_level_across_
+    # notes's own docstring for why this one isn't date-matched to a single
+    # note the way ACF-02/ACF-08 are).
+    coc01_detail = check_note_detail_level_across_notes(ok_extractions)
+
+    return {"QA-RPT-03": rpt03_combined, "QA-ACF-02": acf02, "QA-ACF-08": acf08, "QA-COC-01": coc01_detail}

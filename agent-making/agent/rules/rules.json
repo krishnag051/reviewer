@@ -1,6 +1,6 @@
 {
   "description": "Master cross-payor rule set (111 universal + payor-specific rules). See rules/generate_payor_rules.py for per-payor generated exports.",
-  "rule_count": 171,
+  "rule_count": 188,
   "rules": [
     {
       "rule_id": "QA-TEMP-01",
@@ -105,11 +105,11 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "Date math vs. submission/upload timestamp. | BROADENED (Round 93, 2026-08-14): applies_to_plan_type changed from 'Initial only' to 'Both' -- metadata-only scoping change, no new logic. Confirmed 'Initial only' was ma'am's own original scoping (present in rules/new_rules.json, her own reconciled checklist source, not a pipeline-side assumption), but that same source also flags this rule blocked_status: 'needs an upload/submission timestamp, not available without backend integration' -- meaning this rule cannot be computed on ANY document, Initial or Reassessment, until that real backend integration exists. With plan_type scoped to 'Initial only', a Reassessment TP was short-circuited to not_applicable by partition_rules_by_scope before ever reaching this rule's own blocked/not_checkable state -- confirmed on all 3 real patients this round (Amir Howell, Arisha Haque, Solomon Schnitzer, all Reassessments), ma'am marked unable_to_verify (not not_applicable), meaning she checks/considers this rule regardless of plan type and just usually can't verify it either way. Broadening to 'Both' lets every document reach this rule's real blocked state (not_checkable) instead of being excluded before ever getting there -- does not make this rule newly computable on anything, just changes not_applicable to not_checkable on Reassessments specifically, matching her stated real practice.",
+      "notes": "Date math vs. submission/upload timestamp. | BROADENED (Round 93, 2026-08-14): applies_to_plan_type changed from 'Initial only' to 'Both' -- metadata-only scoping change, no new logic. Confirmed 'Initial only' was ma'am's own original scoping (present in rules/new_rules.json, her own reconciled checklist source, not a pipeline-side assumption), but that same source also flags this rule blocked_status: 'needs an upload/submission timestamp, not available without backend integration' -- meaning this rule cannot be computed on ANY document, Initial or Reassessment, until that real backend integration exists. With plan_type scoped to 'Initial only', a Reassessment TP was short-circuited to not_applicable by partition_rules_by_scope before ever reaching this rule's own blocked/not_checkable state -- confirmed on all 3 real patients this round (Amir Howell, Arisha Haque, Solomon Schnitzer, all Reassessments), ma'am marked unable_to_verify (not not_applicable), meaning she checks/considers this rule regardless of plan type and just usually can't verify it either way. Broadening to 'Both' lets every document reach this rule's real blocked state (not_checkable) instead of being excluded before ever getting there -- does not make this rule newly computable on anything, just changes not_applicable to not_checkable on Reassessments specifically, matching her stated real practice. | Next Round (2026-08-27), Part 1: deactivated per this round's explicit list -- kept in the file, ID permanently retired, never reused.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
-      "active": true,
-      "blocked_status": "blocked — needs an upload/submission timestamp, not available without backend integration"
+      "active": false,
+      "blocked_status": "blocked â€” needs an upload/submission timestamp, not available without backend integration"
     },
     {
       "rule_id": "QA-RPT-05",
@@ -286,10 +286,10 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "'Approved' status lives outside the TP/system. Needs a pre-upload confirmation checkbox or is not checkable. | FIXED (Round 92, 2026-08-14): converted from judgment to a deterministic PRECONDITION check -- confirmed real bug across all 3 real patients this round (Amir Howell, Arisha Haque, Solomon Schnitzer): this rule's entire premise only applies when 97153 hours requested are under 10/week, but in all 3 real cases the actual number (17, 15, 31.5) was stated plainly in the Hours Requesting table and nowhere close to the threshold -- the rule still reached judgment every time and produced 'uncertain' regardless. See pipeline/fields.py::_check_HRS05: reads the 97153 hours-requested number directly (reusing the already-proven _find_weekly_hours_for_code helper); if >= 10, resolves to not_applicable immediately with zero judgment call. Only when hours are genuinely < 10 does this still escalate (returns not_checkable) to the judgment layer for the 'confirm approved' half, which genuinely needs external confirmation this pipeline doesn't have -- that part of the rule's premise is unchanged, only the >= 10 short-circuit is new.",
+      "notes": "'Approved' status lives outside the TP/system. Needs a pre-upload confirmation checkbox or is not checkable. | FIXED (Round 92, 2026-08-14): converted from judgment to a deterministic PRECONDITION check -- confirmed real bug across all 3 real patients this round (Amir Howell, Arisha Haque, Solomon Schnitzer): this rule's entire premise only applies when 97153 hours requested are under 10/week, but in all 3 real cases the actual number (17, 15, 31.5) was stated plainly in the Hours Requesting table and nowhere close to the threshold -- the rule still reached judgment every time and produced 'uncertain' regardless. See pipeline/fields.py::_check_HRS05: reads the 97153 hours-requested number directly (reusing the already-proven _find_weekly_hours_for_code helper); if >= 10, resolves to not_applicable immediately with zero judgment call. Only when hours are genuinely < 10 does this still escalate (returns not_checkable) to the judgment layer for the 'confirm approved' half, which genuinely needs external confirmation this pipeline doesn't have -- that part of the rule's premise is unchanged, only the >= 10 short-circuit is new. | Next Round (2026-08-27), Part 1: deactivated per this round's explicit list -- kept in the file, ID permanently retired, never reused.",
       "action_lane": "Facilitator-assign",
       "action_tag": "General",
-      "active": true
+      "active": false
     },
     {
       "rule_id": "QA-HRS-06",
@@ -326,7 +326,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — needs a maintained CPT billing-code reference table that doesn't exist in this codebase yet"
+      "blocked_status": "blocked â€” needs a maintained CPT billing-code reference table that doesn't exist in this codebase yet"
     },
     {
       "rule_id": "QA-HRS-09",
@@ -378,7 +378,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
+      "blocked_status": "blocked â€” needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
     },
     {
       "rule_id": "QA-SCH-04",
@@ -403,7 +403,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
+      "blocked_status": "blocked â€” needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
     },
     {
       "rule_id": "QA-SCH-06",
@@ -416,7 +416,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
+      "blocked_status": "blocked â€” needs robust weekly-schedule-table extraction for this specific check; QA-SCH-01/QA-SCH-07 were unblocked in Round 63 (see pipeline/schedule_hours.py) but this rule's own additional logic (overlap detection / payor exception flag / numeric compare of a second field) isn't built yet"
     },
     {
       "rule_id": "QA-SCH-07",
@@ -440,7 +440,7 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Enum validation — valid values are exactly: home, office, school, community, telehealth. Reclassified from deterministic to judgment (2026-07): three rounds of point-fixes each closed one specific false-match pattern (mid-word regex matches, then a blank field bleeding into the next label, then a still-unresolved case) without addressing the underlying issue — this field's real-world layout/labeling in the source PDF is too inconsistent for a fixed extraction pattern to hold up. Read the POS/place-of-service field directly from the document text and images and judge whether its value is one of the five valid options above; do not guess if the field itself is ambiguous or missing. WHICH POS SOURCE, EXPLICIT (2026-08-07, Round 64, item 2 -- confirmed real divergence: this rule and QA-GIP-09, judged in the exact same run against the exact same document, disagreed about whether Community was an authorized POS, because nothing told either rule which of TWO different 'POS' fields a real TP contains to read. A TP's School/ABA Schedule grid has its OWN 'POS' row -- that's only the SPECIFIC location(s) actually scheduled that particular week (e.g. Home on weekdays), which can be a narrower subset of what's authorized. The Hours Requesting section separately states each CPT code's AUTHORIZED place(s) of service (e.g. '97153-Direct Care ... Home, Office, and/or Community') -- this is the broader, authorizing statement, and is the correct source for THIS rule and for QA-GIP-09/QA-GIP-08. Read POS from the Hours Requesting section's stated authorized list, not the schedule grid's per-day POS row -- the schedule grid answers a different question (where sessions are actually happening this week), not this rule's question (what POS is this TP authorized for). SCOPE, EXPLICIT -- EVERY SERVICE CODE, NOT JUST 97153 (2026-08-08, Round 78, item 2 -- real miss confirmed against Ms. Yachnes's ground-truth review: 'Telehealth' was listed as an authorized POS for 97151, 97155, and 97156 on a real TP, and this rule passed anyway because it only evaluated 97153's own POS entry, never looking at the OTHER service codes' entries in the same Hours Requesting section). The Hours Requesting section lists an authorized POS value PER CPT code (97151, 97153, 97154, 97155, 97156, etc., however many the document lists) -- read and validate EVERY one of these code-level POS entries against the five allowed categories, not only 97153's. Fail if ANY listed code's authorized POS includes a value outside home/office/school/community/telehealth (e.g. 'Virtual', or anything else not one of the five) -- name which specific code(s) had the invalid value in the evidence, don't just say 'POS is incorrect' generically. Only treat this as pass if EVERY code's own POS entry is valid; a single invalid code among several valid ones is still a fail for this rule. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIXED (Round 92, 2026-08-14): confirmed real bug -- this notes field still listed only 4 valid values and explicitly instructed the judge to fail on 'Telehealth', directly contradicting this rule's own description (already correctly updated during the Round 90 reconciliation to include telehealth as a 5th valid value). Notes now match the description: telehealth added to every valid-value list above, the fail-on-telehealth instruction and example removed. Confirmed correct against all 3 real patients (Amir Howell, Arisha Haque, Solomon Schnitzer) reviewed independently by ma'am -- Telehealth/Home/Office all used appropriately in every case, previously failed by this rule solely due to the stale notes.",
+      "notes": "Enum validation â€” valid values are exactly: home, office, school, community, telehealth. Reclassified from deterministic to judgment (2026-07): three rounds of point-fixes each closed one specific false-match pattern (mid-word regex matches, then a blank field bleeding into the next label, then a still-unresolved case) without addressing the underlying issue â€” this field's real-world layout/labeling in the source PDF is too inconsistent for a fixed extraction pattern to hold up. Read the POS/place-of-service field directly from the document text and images and judge whether its value is one of the five valid options above; do not guess if the field itself is ambiguous or missing. WHICH POS SOURCE, EXPLICIT (2026-08-07, Round 64, item 2 -- confirmed real divergence: this rule and QA-GIP-09, judged in the exact same run against the exact same document, disagreed about whether Community was an authorized POS, because nothing told either rule which of TWO different 'POS' fields a real TP contains to read. A TP's School/ABA Schedule grid has its OWN 'POS' row -- that's only the SPECIFIC location(s) actually scheduled that particular week (e.g. Home on weekdays), which can be a narrower subset of what's authorized. The Hours Requesting section separately states each CPT code's AUTHORIZED place(s) of service (e.g. '97153-Direct Care ... Home, Office, and/or Community') -- this is the broader, authorizing statement, and is the correct source for THIS rule and for QA-GIP-09/QA-GIP-08. Read POS from the Hours Requesting section's stated authorized list, not the schedule grid's per-day POS row -- the schedule grid answers a different question (where sessions are actually happening this week), not this rule's question (what POS is this TP authorized for). SCOPE, EXPLICIT -- EVERY SERVICE CODE, NOT JUST 97153 (2026-08-08, Round 78, item 2 -- real miss confirmed against Ms. Yachnes's ground-truth review: 'Telehealth' was listed as an authorized POS for 97151, 97155, and 97156 on a real TP, and this rule passed anyway because it only evaluated 97153's own POS entry, never looking at the OTHER service codes' entries in the same Hours Requesting section). The Hours Requesting section lists an authorized POS value PER CPT code (97151, 97153, 97154, 97155, 97156, etc., however many the document lists) -- read and validate EVERY one of these code-level POS entries against the five allowed categories, not only 97153's. Fail if ANY listed code's authorized POS includes a value outside home/office/school/community/telehealth (e.g. 'Virtual', or anything else not one of the five) -- name which specific code(s) had the invalid value in the evidence, don't just say 'POS is incorrect' generically. Only treat this as pass if EVERY code's own POS entry is valid; a single invalid code among several valid ones is still a fail for this rule. | UPDATED (Round 90 reconciliation, 2026-08-14): description wording changed from ma'am's checklist. Old check_type/logic kept as-is (judgment) -- verify the existing implementation still matches the new wording's intent before trusting results, especially if this was a deterministic rule. | FIXED (Round 92, 2026-08-14): confirmed real bug -- this notes field still listed only 4 valid values and explicitly instructed the judge to fail on 'Telehealth', directly contradicting this rule's own description (already correctly updated during the Round 90 reconciliation to include telehealth as a 5th valid value). Notes now match the description: telehealth added to every valid-value list above, the fail-on-telehealth instruction and example removed. Confirmed correct against all 3 real patients (Amir Howell, Arisha Haque, Solomon Schnitzer) reviewed independently by ma'am -- Telehealth/Home/Office all used appropriately in every case, previously failed by this rule solely due to the stale notes.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -452,10 +452,10 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Needs the diagnostic report as a supporting upload; not checkable against TP alone.",
+      "notes": "Needs the diagnostic report as a supporting upload; not checkable against TP alone. | Next Round (2026-08-27), Part 1: deactivated per this round's explicit list -- kept in the file, ID permanently retired, never reused.",
       "action_lane": "Facilitator-assign",
       "action_tag": "General",
-      "active": true
+      "active": false
     },
     {
       "rule_id": "QA-BIO-02",
@@ -524,10 +524,10 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket, no live check needed, criteria fully determined by the rule's own conditional logic): applies ONLY when the patient is under 5 AND the community/daytime hours condition is met. PASS example: a 3-year-old's TP whose community-hours narrative reads 'client attends a community daycare program' or 'preschool setting.' FAIL example: the same 3-year-old's TP still using 'school' for that context (e.g. 'client attends school in the mornings') when the patient is too young for the term to be accurate. If the patient is 5+, or the community/daytime-hours condition isn't met, this is not_applicable -- do not apply the substitution rule outside its stated condition.",
+      "notes": "Concrete example added (2026-07-28 follow-up round, item 3 -- 'Quick' bucket, no live check needed, criteria fully determined by the rule's own conditional logic): applies ONLY when the patient is under 5 AND the community/daytime hours condition is met. PASS example: a 3-year-old's TP whose community-hours narrative reads 'client attends a community daycare program' or 'preschool setting.' FAIL example: the same 3-year-old's TP still using 'school' for that context (e.g. 'client attends school in the mornings') when the patient is too young for the term to be accurate. If the patient is 5+, or the community/daytime-hours condition isn't met, this is not_applicable -- do not apply the substitution rule outside its stated condition. | Next Round (2026-08-27), Part 1: deactivated per this round's explicit list -- kept in the file, ID permanently retired, never reused.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
-      "active": true
+      "active": false
     },
     {
       "rule_id": "QA-BIO-09",
@@ -620,10 +620,10 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "Out of scope - no live Central Reach integration in V1. | CORRECTED (Round 94, 2026-08-14): confirmed real disagreement across all 3 real patients this round -- ma'am marks this 'unable to verify' (not not_applicable), meaning she treats this as a real question that genuinely applies to every document; she just usually can't confirm it without her own separate Central Reach access. The 'out of scope' language above was being read by the judgment layer as grounds for not_applicable ('this doesn't apply'), which is the wrong terminal state -- this rule's question DOES apply to this document, the pipeline simply lacks the external system needed to answer it. CORRECT STANDARD: report not_checkable, not not_applicable, for this rule's actual Central-Reach-comparison claim -- state plainly in the evidence that no live Central Reach connection is available to check the school name against, without implying the question itself doesn't apply. This does not affect any other outcome this rule might reach from the document's own text alone (e.g. if the document is internally inconsistent about the school name across its own pages, that's still a real, checkable fail on this document's own terms, separate from the Central-Reach-comparison claim).",
+      "notes": "Out of scope - no live Central Reach integration in V1. | CORRECTED (Round 94, 2026-08-14): confirmed real disagreement across all 3 real patients this round -- ma'am marks this 'unable to verify' (not not_applicable), meaning she treats this as a real question that genuinely applies to every document; she just usually can't confirm it without her own separate Central Reach access. The 'out of scope' language above was being read by the judgment layer as grounds for not_applicable ('this doesn't apply'), which is the wrong terminal state -- this rule's question DOES apply to this document, the pipeline simply lacks the external system needed to answer it. CORRECT STANDARD: report not_checkable, not not_applicable, for this rule's actual Central-Reach-comparison claim -- state plainly in the evidence that no live Central Reach connection is available to check the school name against, without implying the question itself doesn't apply. This does not affect any other outcome this rule might reach from the document's own text alone (e.g. if the document is internally inconsistent about the school name across its own pages, that's still a real, checkable fail on this document's own terms, separate from the Central-Reach-comparison claim). | Next Round (2026-08-27), Part 1: deactivated per this round's explicit list -- kept in the file, ID permanently retired, never reused.",
       "action_lane": "Facilitator-assign",
       "action_tag": "General",
-      "active": true
+      "active": false
     },
     {
       "rule_id": "QA-PROB-01",
@@ -720,7 +720,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — exact field labels (date/location/patient location) not yet confirmed against real document text"
+      "blocked_status": "blocked â€” exact field labels (date/location/patient location) not yet confirmed against real document text"
     },
     {
       "rule_id": "QA-ACF-02",
@@ -925,7 +925,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — needs backend prior-TP/auth data (no stored previous finalized version in this standalone POC)"
+      "blocked_status": "blocked â€” needs backend prior-TP/auth data (no stored previous finalized version in this standalone POC)"
     },
     {
       "rule_id": "QA-MAST-02",
@@ -938,7 +938,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — needs backend prior-TP/auth data (goal list comparison against a stored previous TP)"
+      "blocked_status": "blocked â€” needs backend prior-TP/auth data (goal list comparison against a stored previous TP)"
     },
     {
       "rule_id": "QA-GIP-01",
@@ -1095,7 +1095,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — 'goal count' isn't a crisp, code-countable boundary even for a human reviewer (confirmed by an earlier judgment finding's own hedged '~10-12 distinct goals')"
+      "blocked_status": "blocked â€” 'goal count' isn't a crisp, code-countable boundary even for a human reviewer (confirmed by an earlier judgment finding's own hedged '~10-12 distinct goals')"
     },
     {
       "rule_id": "QA-GIP-14",
@@ -1192,7 +1192,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — Initial-only boilerplate text not yet confirmed against a real Initial-plan-type sample"
+      "blocked_status": "blocked â€” Initial-only boilerplate text not yet confirmed against a real Initial-plan-type sample"
     },
     {
       "rule_id": "QA-COC-04",
@@ -1220,7 +1220,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — source text confirmed garbled/unparseable in real documents (e.g. 'conducted. on 2/1 the current authorization period') — not a fixable regex, the underlying field format is unreliable"
+      "blocked_status": "blocked â€” source text confirmed garbled/unparseable in real documents (e.g. 'conducted. on 2/1 the current authorization period') â€” not a fixable regex, the underlying field format is unreliable"
     },
     {
       "rule_id": "QA-COC-06",
@@ -1241,7 +1241,7 @@
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "'Matches the Learning Tree' wording ignored per Section 14. The real check here is NOT a general judgment call on goal specificity/realism (that's a fallback only) — the manual reviewer's own embedded note asks for a status sentence on every Transition Plan goal, and it isn't there. Look for a reviewer-embedded comment/highlighted annotation near the Transition Plan section requesting a status update on Transition Plan goals (the same kind of embedded PDF annotation as a severity-rating note elsewhere in this rule set). If that reviewer note is present: check every individual Transition Plan goal in the document for a short status sentence attached to it, and fail if any goal lacks one — this is a per-goal presence check, not a subjective realism judgment. If no such reviewer note is present anywhere near the Transition Plan section, fall back to the general judgment call on whether goals are patient-specific and realistic.\n\nINVESTIGATED, ALREADY CORRECT (2026-08, Round 84, item 2): re-examined as part of an audit for rules that dress up an unverifiable external-source claim as a confident pass. Found this rule does NOT have that problem -- 'matches the Learning Tree' was already explicitly retired as dead scope by Section 14 (see also QA-ACF-05's own notes, which retired the same wording for a different checklist item the same way). The fallback general realism judgment above is this rule's own genuine, full scope once the reviewer-note check comes up empty -- not a stand-in for an unavailable harder comparison -- so a confident pass/fail from that fallback is appropriate, not overconfident. No change made here.",
+      "notes": "'Matches the Learning Tree' wording ignored per Section 14. The real check here is NOT a general judgment call on goal specificity/realism (that's a fallback only) â€” the manual reviewer's own embedded note asks for a status sentence on every Transition Plan goal, and it isn't there. Look for a reviewer-embedded comment/highlighted annotation near the Transition Plan section requesting a status update on Transition Plan goals (the same kind of embedded PDF annotation as a severity-rating note elsewhere in this rule set). If that reviewer note is present: check every individual Transition Plan goal in the document for a short status sentence attached to it, and fail if any goal lacks one â€” this is a per-goal presence check, not a subjective realism judgment. If no such reviewer note is present anywhere near the Transition Plan section, fall back to the general judgment call on whether goals are patient-specific and realistic.\n\nINVESTIGATED, ALREADY CORRECT (2026-08, Round 84, item 2): re-examined as part of an audit for rules that dress up an unverifiable external-source claim as a confident pass. Found this rule does NOT have that problem -- 'matches the Learning Tree' was already explicitly retired as dead scope by Section 14 (see also QA-ACF-05's own notes, which retired the same wording for a different checklist item the same way). The fallback general realism judgment above is this rule's own genuine, full scope once the reviewer-note check comes up empty -- not a stand-in for an unavailable harder comparison -- so a confident pass/fail from that fallback is appropriate, not overconfident. No change made here.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true
@@ -1353,7 +1353,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — 'writing BCBA vs. case BCBA' dual-signature scenario not observed in any real sample checked so far; field format unconfirmed"
+      "blocked_status": "blocked â€” 'writing BCBA vs. case BCBA' dual-signature scenario not observed in any real sample checked so far; field format unconfirmed"
     },
     {
       "rule_id": "QA-DS-01",
@@ -1518,7 +1518,7 @@
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
-      "blocked_status": "blocked — scope ambiguity confirmed against real documents (see notes); building this as literally 'every goal within 30 days' would produce systematic false fails, not just an untested gap"
+      "blocked_status": "blocked â€” scope ambiguity confirmed against real documents (see notes); building this as literally 'every goal within 30 days' would produce systematic false fails, not just an untested gap"
     },
     {
       "rule_id": "QA-ACF-05",
@@ -1575,10 +1575,10 @@
       "applies_to_payor": "Healthfirst",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
-      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite.",
+      "notes": "NEW rule added in Round 90 reconciliation (2026-08-14), sourced from ma'am's 169-item checklist. Defaulted to check_type=judgment -- no custom deterministic detector written yet, relies entirely on the AI judge reading this description. NOT YET VERIFIED against any real document. Test against ma'am's example sets before trusting results; if judgment proves unreliable for this specific check, flag for a deterministic rewrite. | Next Round (2026-08-27), Part 2, item 5 overlap resolution (confirmed with the user): deactivated in favor of the new universal QA-GIP-32, which covers the identical 'fewer than 4 data points' check for every payor, not just Healthfirst -- avoids the same real-world check running twice (once here, once as QA-GIP-32) for every Healthfirst patient. HF-04 itself was never actually implemented as deterministic (pure judgment, never verified against a real document) -- QA-GIP-32 replaces it with a real, vision-eligible-registered rule instead. ID permanently retired, never reused.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
-      "active": true
+      "active": false
     },
     {
       "rule_id": "HF-05",
@@ -2075,7 +2075,7 @@
     {
       "rule_id": "QA-PREF-02",
       "category": "Results of Preference Assessment",
-      "description": "Flag if preference assessment references \"client interview\" when actually conducted through the parent — should say \"parent interview\"",
+      "description": "Flag if preference assessment references \"client interview\" when actually conducted through the parent â€” should say \"parent interview\"",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2204,6 +2204,145 @@
       "active": true,
       "params": {
         "max_days": 30
+      }
+    },
+    {
+      "rule_id": "QA-BIP-15",
+      "category": "BIP",
+      "description": "Medical BIP -> all medical causes ruled out",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, Part 2 (2026-08-27): restored QA-BIP-03's OLD check as its own rule_id, per direct instruction, since both the old (rule out medical causes once a BIP already exists for a medical reason) and new (flag a defined list of triggering behaviors) checks are genuinely useful and different -- neither should have replaced the other. Needs LLM to first classify 'medical BIP', then judge whether rule-out is documented -- same mechanism QA-BIP-03 used to have.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-SCH-10",
+      "category": "School & ABA Schedule",
+      "description": "POS = School should be flagged",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 1. Deliberately check_type=\"judgment\", NOT deterministic despite this round's own suggestion -- confirmed real reason: this reads the exact same per-CPT-code 'Place of Service' field QA-SCH-08 already gave up parsing deterministically after three rounds of point-fixes (see QA-SCH-08's own notes: 'this field's real-world layout/labeling in the source PDF is too inconsistent for a fixed extraction pattern to hold up'). Building a second brittle regex against the identical field would repeat a documented failure. Flags any case where a CPT code's authorized Place of Service (read from the Hours Requesting section, same source QA-SCH-08 already uses) is 'School' -- read every listed code's POS entry, not just one.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-GIP-30",
+      "category": "Goals in Progress",
+      "description": "No Group mentions unless 97154 is requested",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 3. Confirmed with the user (2026-08-27): this is a genuinely separate, narrower rule from QA-GIP-01, not a silent duplicate -- QA-GIP-01 deliberately dropped its own 'group mentions'/'97154 exception' clause in the 2026-08-26 fix round (now a flat 'no school or ADL goals' rule with no group logic at all). This rule reintroduces that dropped clause as its own rule. See pipeline/fields.py::_check_GIP30 -- scans each goal's Target Goal/Target Name text for the word 'group' and cross-checks against 97154 hours actually requested (reuses the already-proven _find_weekly_hours_for_code helper).",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-GIP-31",
+      "category": "Goals in Progress",
+      "description": "Recall Goal -- any goal that is a recall goal should be flagged",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 4. Real deterministic checker: pipeline/fields.py::_check_GIP31 -- keyword match ('recall', word-boundary) against each goal's own Target Goal/Target Name text, same shared block-splitting helper as QA-GIP-30.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-GIP-32",
+      "category": "Goals in Progress",
+      "description": "Adequate data points -- flag if fewer than 4 data points per graph/authorization",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 5. Replaces HF-04 (deactivated this round, confirmed with the user) -- same check, universal instead of Healthfirst-only, so it no longer runs twice for a Healthfirst patient. Deliberately check_type=\"judgment\", NOT the plain deterministic count this round's own ask assumed -- confirmed real reason: the actual data points live inside each goal's own embedded 'Graph:' IMAGE (confirmed on the real sample TP), not in extractable text; there is no existing structured graph-value-extraction primitive in this codebase to build a deterministic count on top of. Registered in VISION_ELIGIBLE_RULE_SECTIONS ('gip_graph') so the judgment layer actually sees the graph image instead of guessing blind -- that registration IS the real work done this round; the extraction-then-count primitive itself is new-capability work, flagged back rather than faked.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-BIO-17",
+      "category": "Biopsychosocial",
+      "description": "Includes language that's dangerous or poisonous -- should be flagged",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 6. Category confirmed with the user (Biopsychosocial, not a new dedicated safety category). Deliberately check_type=\"judgment\", NOT a keyword scan despite this round's own ask -- confirmed real, verified reason: a naive keyword scan for 'dangerous'/'poisonous' produces a REAL false positive on the real Zyaan Ullah sample TP's own text ('Zyaan lacks safety awareness. He is unable to communicate if something is dangerous such as sharp, hot or poisonous.') -- that is completely normal, expected clinical description of the patient's OWN safety deficit, not the genuinely alarming/hallucinated content this rule is trying to catch. Telling those two apart needs real contextual understanding a keyword list cannot do; shipping a blind scan here would guarantee false positives on real documents.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-COC-08",
+      "category": "Coordination of Care",
+      "description": "Any mention of a lapse in service should be flagged",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 7. Real deterministic checker: pipeline/fields.py::_check_COC08 -- conservative phrase list ('lapse/gap/break in service/treatment/care', 'service/treatment lapse', 'discontinuation of services'), not a bare 'lapse' substring match (which would also fire on unrelated uses like 'a lapse in judgment' or 'time lapse'). Searches the full document text -- no existing Coordination of Care section-boundary helper exists to scope this to (same reason QA-COC-04 searches full text directly).",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-GIP-33",
+      "category": "Goals in Progress",
+      "description": "Any goal that mentions 'met' should be flagged",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 8. Real deterministic checker: pipeline/fields.py::_check_GIP33 -- reads each goal block's own status field value (matches both 'Goal Status:' and the bare 'Status:' label, both confirmed present on the real sample TP for different goal blocks) for the word 'met', not the whole block's free text -- avoids a false positive from an unrelated narrative sentence like 'mastery criteria were nearly met' elsewhere in the same block.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-GIP-34",
+      "category": "Goals in Progress",
+      "description": "Current data matches the graph -- the final data point on the graph should match the current-data section for each individual goal",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 9. Needs real embedded-image/graph reading, same vision dependency QA-ACF-03/QA-GIP-02 already established. Registered in VISION_ELIGIBLE_RULE_SECTIONS ('gip_graph') so the judgment layer actually renders and sees each goal's own 'Graph:' image. There is no existing structured graph-value-extraction primitive in this codebase to build a deterministic comparison on top of (unlike e.g. session-note extraction, which does have one) -- building one is new-capability work, flagged back rather than faked as a deterministic checker this round.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-GIP-35",
+      "category": "Goals in Progress",
+      "description": "Target name matches the name on the graph's x-axis",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "judgment",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 10. Same vision dependency and same VISION_ELIGIBLE_RULE_SECTIONS ('gip_graph') registration as QA-GIP-34 -- both read the same embedded graph image, built together. Same real-comparison-needs-real-extraction gap as QA-GIP-34's own notes -- flagged back, not faked.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true
+    },
+    {
+      "rule_id": "QA-HRS-12",
+      "category": "Hours Requesting",
+      "description": "Treatment Planning hours requested correctly -- flag if Treatment Planning hours are missing for any payor except 1199SEIU, NY Medicaid, and Molina",
+      "applies_to_payor": "ALL",
+      "applies_to_plan_type": "Both",
+      "check_type": "deterministic",
+      "notes": "NEW rule, Next Round (2026-08-27), Part 2, item 11. Real deterministic checker: pipeline/fields.py::_check_HRS12 -- reads the '97151-Treatment Planning' row in the Hours Requesting section (distinct from the '97151-Assessment' row -- same CPT code, different row/label), verified against the real Zyaan Ullah sample TP's own layout. Payor-exclusion list (1199SEIU/New York Medicaid/Molina) lives in params, same convention as QA-HRS-11's own excluded_payors.",
+      "action_lane": "BCBA-fix",
+      "action_tag": null,
+      "active": true,
+      "params": {
+        "excluded_payors": [
+          "1199SEIU",
+          "New York Medicaid",
+          "Molina"
+        ]
       }
     }
   ]

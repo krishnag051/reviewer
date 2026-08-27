@@ -159,6 +159,25 @@ function SupportingUploads({
   );
 }
 
+/** Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL "prior TP"
+ * slot -- independent of supportingDocMode (shown alongside either the
+ * document or structured_form flow, never gated on it), and never
+ * required -- a first-ever patient genuinely has no prior TP to attach.
+ */
+function PreviousTpUpload({ previousTp, setPreviousTp }: { previousTp: File | null; setPreviousTp: (f: File | null) => void }) {
+  return (
+    <div className="space-y-1.5">
+      <Label>Previous Treatment Plan <span className="text-slate-400">(optional)</span></Label>
+      <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-6 cursor-pointer hover:bg-slate-100 transition-colors">
+        <UploadIcon className="h-5 w-5 text-slate-400" />
+        <div className="text-sm text-slate-700">{previousTp ? previousTp.name : "Drop the patient's prior TP here, or click to browse"}</div>
+        <div className="text-xs text-slate-500">PDF only · optional -- leave blank if there is no prior TP</div>
+        <input type="file" accept="application/pdf" className="hidden" onChange={e => setPreviousTp(e.target.files?.[0] ?? null)} />
+      </label>
+    </div>
+  );
+}
+
 function UploadPage() {
   const nav = useNavigate();
   const { user } = useAuth();
@@ -189,6 +208,9 @@ function UploadPage() {
   const [payor, setPayor] = useState<Payor>(PAYORS[0]);
   const [file, setFile] = useState<File | null>(null);
   const [supportingDocument, setSupportingDocument] = useState<File | null>(null);
+  // Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL "prior TP"
+  // slot -- independent of supportingDocMode, never required.
+  const [previousTp, setPreviousTp] = useState<File | null>(null);
   const [qaAnswers, setQaAnswers] = useState<IntakeAnswers>(EMPTY_ANSWERS);
   const [sessionNotes, setSessionNotes] = useState<File[]>([]);
 
@@ -211,6 +233,7 @@ function UploadPage() {
   const [existingQaAnswers, setExistingQaAnswers] = useState<IntakeAnswers>(EMPTY_ANSWERS);
   const [existingSessionNotes, setExistingSessionNotes] = useState<File[]>([]);
   const [existingSupportingDocument, setExistingSupportingDocument] = useState<File | null>(null);
+  const [existingPreviousTp, setExistingPreviousTp] = useState<File | null>(null);
   const latestAnswersQuery = useLatestIntakeAnswers(selectedExisting?.id);
   useEffect(() => {
     if (latestAnswersQuery.data) setExistingQaAnswers(latestAnswersQuery.data);
@@ -266,12 +289,16 @@ function UploadPage() {
   // ever recorded (not something this round invents a UI for).
   async function submitUpload(
     versionId: string, file: File, doc: File | null, qa: IntakeAnswers, notes: File[], payorValue: string | null,
+    previousTp: File | null,
   ) {
     const qaWithPayor: IntakeAnswers = { ...qa, client_insurance: payorValue ?? "" };
     if (isDeveloper && useSimulated) {
       await createSimulatedUploadMutation.mutateAsync({ versionId, file });
     } else {
-      await createUploadMutation.mutateAsync({ versionId, file, payload: buildPayload(doc, qaWithPayor, notes) });
+      await createUploadMutation.mutateAsync({
+        versionId, file, payload: buildPayload(doc, qaWithPayor, notes),
+        previousTp: previousTp ?? undefined,
+      });
     }
   }
 
@@ -288,7 +315,7 @@ function UploadPage() {
     try {
       const patient = await createPatientMutation.mutateAsync({ reference_id: refId, name, payor });
       const version = await createVersionMutation.mutateAsync({ patientId: patient.id, payor });
-      await submitUpload(version.id, file, supportingDocument, qaAnswers, sessionNotes, payor);
+      await submitUpload(version.id, file, supportingDocument, qaAnswers, sessionNotes, payor, previousTp);
       toast.success(
         isDeveloper && useSimulated
           ? `Upload 1 created for ${name} — SIMULATED completion in ~5s (dev-only, not the real agent).`
@@ -315,7 +342,10 @@ function UploadPage() {
       const versionId = existingLatestIsDraft
         ? existingLatestVersion!.id
         : (await createVersionMutation.mutateAsync({ patientId: selectedExisting.id })).id;
-      await submitUpload(versionId, file, existingSupportingDocument, existingQaAnswers, existingSessionNotes, selectedExisting.payor);
+      await submitUpload(
+        versionId, file, existingSupportingDocument, existingQaAnswers, existingSessionNotes, selectedExisting.payor,
+        existingPreviousTp,
+      );
       toast.success(
         isDeveloper && useSimulated
           ? `Upload created for ${selectedExisting.name} — SIMULATED completion in ~5s (dev-only, not the real agent).`
@@ -415,6 +445,7 @@ function UploadPage() {
                       sessionNotes={sessionNotes} setSessionNotes={setSessionNotes}
                     />
                   )}
+                  <PreviousTpUpload previousTp={previousTp} setPreviousTp={setPreviousTp} />
                 </div>
                 <div>
                   {requiresSupportingInfo && (
@@ -490,6 +521,7 @@ function UploadPage() {
                           sessionNotes={existingSessionNotes} setSessionNotes={setExistingSessionNotes}
                         />
                       )}
+                      <PreviousTpUpload previousTp={existingPreviousTp} setPreviousTp={setExistingPreviousTp} />
                     </div>
                     <div>
                       {requiresSupportingInfo && supportingDocMode === "structured_form" && latestAnswersQuery.data && (

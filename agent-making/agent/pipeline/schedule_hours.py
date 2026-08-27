@@ -198,3 +198,94 @@ def extract_weekly_schedule_day_texts(full_text: str) -> dict[str, str] | None:
     if len(buckets) != 7:
         return None
     return dict(zip(DAYS_OF_WEEK, buckets))
+
+
+# ------------------------------------------------- QA-SCH-02: real cross-check
+# against the upload's own Patient Central Reach Information intake answers
+# (Fix Round, 2026-08-26).
+#
+# Confirmed real gap: QA-SCH-02 ("Schedule matches with the one inputted by
+# CR information") is check_type=judgment, but review_treatment_plan's own
+# signature has no parameter for the intake answers at all -- the AI judge
+# was never given this data to compare against, no matter what the rule's
+# description said. This closes the HOURS half of that gap only, reusing
+# this module's own real schedule-grid arithmetic (same as QA-SCH-01) rather
+# than duplicating it. The narrower, remaining half (does the TP's schedule
+# genuinely match the intake's free-text day/time/POS description, e.g.
+# "Home, Mon-Fri 5-8pm") is NOT attempted here -- comparing a human-typed
+# free-text summary against a structured table is a real semantic judgment
+# call, not something to force into brittle string-matching for a
+# healthcare-compliance tool. That half still falls through to
+# not_checkable/judgment, same hybrid-checker discipline as QA-PROB-02/
+# QA-BIP-05 (deterministic ONLY where the comparison is genuinely
+# objective, defer the rest).
+_HOURS_FREE_TEXT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hrs?|hours?)\b", re.IGNORECASE)
+
+
+def parse_hours_from_free_text(text: str | None) -> float | None:
+    """Pulls the first "N hrs"/"N hours" number out of a free-text intake
+    answer (e.g. "Home, Mon-Fri 5-8pm, 15 hrs/week requested" -> 15.0).
+    Returns None (never a guess) if no such pattern is found."""
+    if not text:
+        return None
+    m = _HOURS_FREE_TEXT_PATTERN.search(text)
+    return float(m.group(1)) if m else None
+
+
+def check_schedule_hours_against_intake(
+    tp_full_text: str, *, pos_schedule_text: str | None, hours_requesting_text: str | None,
+) -> tuple[str, str, list[int] | None, float]:
+    """QA-SCH-02's real, deterministic hours-only cross-check: the TP's own
+    schedule grid total (same real arithmetic as QA-SCH-01) vs. whichever
+    of the two Patient Central Reach Information intake fields actually
+    states a parseable hours number -- "Schedule and POS" is checked
+    first (the field this rule's own description names), falling back to
+    "Hours Requesting" if that field doesn't state one.
+
+    Returns the same (result, evidence, page, confidence) shape as every
+    other checker in this pipeline, so a caller (app/agent_client.py) can
+    wrap this directly into a RuleResult.
+    """
+    day_texts = extract_weekly_schedule_day_texts(tp_full_text)
+    if day_texts is None:
+        return (
+            "not_checkable",
+            "Could not confidently parse the TP's weekly ABA schedule table into 7 distinct days.",
+            None, 0.0,
+        )
+    schedule_total, per_day = compute_weekly_total(day_texts)
+    if schedule_total is None:
+        unparseable_days = [day for day, hours in per_day.items() if hours is None]
+        return (
+            "not_checkable",
+            f"Could not determine the TP's real schedule total -- unparseable day(s): {unparseable_days}.",
+            None, 0.0,
+        )
+
+    intake_hours = parse_hours_from_free_text(pos_schedule_text)
+    intake_source = "Schedule and POS"
+    if intake_hours is None:
+        intake_hours = parse_hours_from_free_text(hours_requesting_text)
+        intake_source = "Hours Requesting"
+    if intake_hours is None:
+        return (
+            "not_checkable",
+            f"Computed a real TP schedule total ({schedule_total} hrs/week), but neither intake field "
+            f"(Schedule and POS: {pos_schedule_text!r}; Hours Requesting: {hours_requesting_text!r}) "
+            f"states a parseable hours number to compare it against.",
+            None, 0.3,
+        )
+
+    if schedule_total == intake_hours:
+        return (
+            "pass",
+            f"TP schedule grid totals {schedule_total} hrs/week, matching the {intake_source} intake "
+            f"answer's stated {intake_hours} hrs/week.",
+            None, 0.85,
+        )
+    return (
+        "fail",
+        f"TP schedule grid totals {schedule_total} hrs/week, but the {intake_source} intake answer "
+        f"states {intake_hours} hrs/week -- these do not match.",
+        None, 0.85,
+    )

@@ -48,6 +48,11 @@ class RuleResultOut(BaseModel):
     model_status: str
     model_finding: str
     model_pages: list[int]
+    # Next Round, Part 2: see app/routers/uploads.py's own RuleResultOut --
+    # same field, same semantics, kept in sync here for the SAME reason
+    # Round 70's comment above already explains for the other model_*
+    # fields.
+    model_finding_raw: str | None = None
 
 
 @router.patch("/{rule_result_id}", response_model=RuleResultOut)

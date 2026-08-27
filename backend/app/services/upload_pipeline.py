@@ -3,7 +3,9 @@ import uuid
 
 from sqlalchemy import select
 
+from app.agent_client import humanize_findings
 from app.audit import record
+from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import RuleResult, RuleSyncState, Upload
 from app.rule_engine.client import run_rule_checks
@@ -59,20 +61,59 @@ def run_upload_pipeline(upload_id: uuid.UUID) -> None:
             # from extract_page_labels as ints.
             page_label_map = {str(k): v for k, v in extract_page_labels(parsed_pages).items()}
 
+            # Next Round, Part 2: real LLM humanize pass, now wired in.
+            # ONE real call per non-empty finding (empty/N-A findings make
+            # no real call at all -- see agent_client.humanize_finding's
+            # own docstring), all sharing ONE call-tracker cap
+            # (settings.humanize_max_calls) so a single upload can never
+            # run away into an unbounded real bill.
+            #
+            # Humanize is a cosmetic post-process layer on top of the real
+            # rule-checking results above, not part of rule-checking
+            # itself. Fix Round (2026-08-27): humanize_findings itself now
+            # isolates each finding's own attempt (see its own docstring
+            # for the real crash this fixes) -- one bad model response
+            # falls back to raw text for THAT finding only, every other
+            # finding in the batch keeps its real result. This outer
+            # try/except is now a last-resort net for something even more
+            # catastrophic happening before/around the per-item loop
+            # itself (e.g. the tracker failing to construct) -- expected
+            # to fire rarely, if ever; when it does, every finding in this
+            # upload falls back, same as before this round.
+            finding_texts = [draft.model_finding or "" for draft in drafts]
+            finding_labels = [draft.rule_id for draft in drafts]
+            try:
+                humanize_results = humanize_findings(
+                    finding_texts, max_calls=settings.humanize_max_calls, labels=finding_labels,
+                )
+            except Exception:
+                logger.exception(
+                    "Upload %s: humanize pass failed for the WHOLE batch (not just one finding -- "
+                    "this is the rare outer fallback, see upload_pipeline.py's own comment), "
+                    "falling back to un-humanized text for every finding", upload_id,
+                )
+                humanize_results = [(text, text, {}) for text in finding_texts]
+
             # ---- step 5: ONE all-or-nothing transaction (gap C5) ----
             upload.rules_snapshot_id = snapshot_id
             upload.page_label_map = page_label_map
-            for draft in drafts:
+            for draft, (raw_finding, humanized_finding, _humanize_usage) in zip(drafts, humanize_results):
                 session.add(RuleResult(
                     upload_id=upload.id,
                     rule_id=uuid.UUID(draft.rule_id),
                     rule_version_used=draft.rule_version_used,
                     model_status=draft.model_status,
-                    model_finding=draft.model_finding,
+                    # model_finding is the HUMANIZED text (what every
+                    # consumer reads, unchanged from that point of view) --
+                    # model_finding_raw is the pre-humanize "before",
+                    # written once alongside it and never touched again,
+                    # same discipline as model_finding itself.
+                    model_finding=humanized_finding,
+                    model_finding_raw=raw_finding,
                     model_pages=draft.model_pages,
                     model_source_quote=draft.model_source_quote,
                     final_status=draft.model_status,
-                    final_finding=draft.model_finding,
+                    final_finding=humanized_finding,
                     final_pages=draft.model_pages,
                 ))
             upload.status = "ready"

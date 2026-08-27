@@ -218,6 +218,12 @@ def create_upload_route(
     # is a deliberately deferred future round, independent of which mode
     # is active.
     supporting_document: UploadFile | None = File(None),
+    # Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL prior-TP
+    # slot -- unlike supporting_document above, never required under
+    # either supporting_doc_mode (a first-ever patient has no prior TP).
+    # Display-only for now, same as supporting_document was when it first
+    # shipped.
+    previous_tp: UploadFile | None = File(None),
     # Round 56: the structured_form-mode alternative -- 5 plain-text
     # answers + 1+ session-note files, required ONLY under
     # supporting_doc_mode="structured_form". Kept as exactly these 5 named
@@ -260,6 +266,12 @@ def create_upload_route(
         intake_answers = qa_fields
         session_note_tuples = [(f.filename or "session-note.pdf", f.file.read()) for f in session_notes]
 
+    previous_tp_filename: str | None = None
+    previous_tp_content: bytes | None = None
+    if previous_tp is not None:
+        previous_tp_filename = previous_tp.filename or "previous-tp.pdf"
+        previous_tp_content = previous_tp.file.read()
+
     content = file.file.read()
     upload = create_upload(
         db,
@@ -268,6 +280,8 @@ def create_upload_route(
         content=content,
         supporting_document_filename=supporting_document_filename,
         supporting_document_content=supporting_document_content,
+        previous_tp_filename=previous_tp_filename,
+        previous_tp_content=previous_tp_content,
         intake_answers=intake_answers,
         session_notes=session_note_tuples,
         uploaded_by=current_user.id,

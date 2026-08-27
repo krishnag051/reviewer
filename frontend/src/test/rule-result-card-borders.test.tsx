@@ -34,6 +34,7 @@ function makeResult(status: RuleResultOut["final_status"]): RuleResultOut {
     model_status: status,
     model_finding: `Finding text for ${status}.`,
     model_pages: [],
+    model_finding_raw: null,
   };
 }
 

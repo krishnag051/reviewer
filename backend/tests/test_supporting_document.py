@@ -136,7 +136,7 @@ def test_run_rule_checks_forwards_supporting_document_path_to_review_treatment_p
 
     def _fake_review_treatment_plan(
         pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
-        source_filename=None, max_calls=None,
+        source_filename=None, max_calls=None, extra_rule_context=None, extra_fields=None,
     ):
         seen_kwargs["pdf_path"] = pdf_path
         seen_kwargs["supporting_doc_path"] = supporting_doc_path

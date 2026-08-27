@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import record
 from app.db.models import SessionNoteFile, Upload, UploadIntakeAnswers, Version
-from app.storage import save_blob, save_session_note_blob, save_supporting_blob
+from app.storage import save_blob, save_previous_tp_blob, save_session_note_blob, save_supporting_blob
 
 
 def create_upload(
@@ -19,6 +19,12 @@ def create_upload(
     content: bytes,
     supporting_document_filename: str | None = None,
     supporting_document_content: bytes | None = None,
+    # Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL prior-TP
+    # slot -- unlike supporting_document_filename/_content above, these
+    # are allowed to stay None with no requiredness check anywhere (a
+    # first-ever patient has no prior TP).
+    previous_tp_filename: str | None = None,
+    previous_tp_content: bytes | None = None,
     # Round 56: the structured_form-mode alternative to the two params
     # above. `intake_answers` is the 5 plain-text Q&A answers (dict keyed by
     # UploadIntakeAnswers' own column names); `session_notes` is a list of
@@ -91,6 +97,11 @@ def create_upload(
     if supporting_document_filename is not None:
         upload.supporting_document_path = save_supporting_blob(
             upload.id, supporting_document_filename, supporting_document_content
+        )
+
+    if previous_tp_filename is not None:
+        upload.previous_tp_path = save_previous_tp_blob(
+            upload.id, previous_tp_filename, previous_tp_content
         )
 
     if intake_answers is not None:

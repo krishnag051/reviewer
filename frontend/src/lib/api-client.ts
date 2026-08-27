@@ -112,10 +112,17 @@ export type PatientListItem = {
   score: number | null;
   audit_result: string | null;
   reviewed: boolean | null;
+  active: boolean;
 };
 
-export async function listPatients(): Promise<PatientListItem[]> {
-  return request("/patients");
+// Part 6, Fix Round: "active" (default -- every existing caller's own
+// expectation of "the patient list" unchanged) / "archived" (the dedicated
+// deactivated view) / "all" (the single-patient review page, which must
+// still find and render a deactivated patient's own page).
+export type PatientStatusFilter = "active" | "archived" | "all";
+
+export async function listPatients(statusFilter: PatientStatusFilter = "active"): Promise<PatientListItem[]> {
+  return request(`/patients?status_filter=${statusFilter}`);
 }
 
 // --- Reports (Round 74: Dashboard's real data, not tp-mock.ts) --------
@@ -157,7 +164,18 @@ export type PatientOut = {
   name: string;
   payor: string | null;
   created_at: string;
+  active: boolean;
+  deactivated_at: string | null;
 };
+
+// Part 6, Fix Round: reversible deactivate/archive -- never a hard delete.
+export async function deactivatePatient(patientId: string): Promise<PatientOut> {
+  return request(`/patients/${patientId}/deactivate`, { method: "POST" });
+}
+
+export async function reactivatePatient(patientId: string): Promise<PatientOut> {
+  return request(`/patients/${patientId}/reactivate`, { method: "POST" });
+}
 
 export async function createPatient(body: { reference_id: string; name: string; payor?: string | null }): Promise<PatientOut> {
   return request("/patients", {
@@ -244,6 +262,11 @@ export type RuleResultOut = {
   model_status: "pass" | "fail" | "na" | "uncertain" | "not_checkable";
   model_finding: string;
   model_pages: number[];
+  // Next Round, Part 2: the pre-humanize "raw" text, alongside
+  // model_finding (now the humanized text shown everywhere else). Only
+  // populated for a rule_result created after the humanize pass was wired
+  // in -- null for anything older. Display-only, same as model_finding.
+  model_finding_raw: string | null;
 };
 
 export type UploadDetailOut = UploadOut & {
@@ -258,6 +281,12 @@ export type UploadDetailOut = UploadOut & {
   // app/services/page_labels.py. Display/cross-check only; page-jump
   // navigation itself always targets the physical page number.
   page_label_map: Record<string, string>;
+  // Next Round (2026-08-27), Part 2 item 2: whether THIS upload has a
+  // prior-TP file attached -- optional on every upload (unlike
+  // supporting_document, always present under "document" mode), so the
+  // frontend needs a real presence flag to decide whether to show the
+  // "Previous TP" button at all.
+  has_previous_tp: boolean;
 };
 
 export async function getUpload(uploadId: string): Promise<UploadDetailOut> {
@@ -301,6 +330,7 @@ export type RuleResultPatchOut = {
   model_status: "pass" | "fail" | "na" | "uncertain" | "not_checkable";
   model_finding: string;
   model_pages: number[];
+  model_finding_raw: string | null;
 };
 
 export async function overrideRuleResult(
@@ -444,6 +474,31 @@ export async function fetchUploadSupportingFileBlob(uploadId: string): Promise<B
   return resp.blob();
 }
 
+/** Next Round (2026-08-27), Part 2 item 2 -- mirrors
+ * fetchUploadSupportingFileBlob above exactly, for the new OPTIONAL prior-TP
+ * slot. */
+export async function fetchUploadPreviousTpFileBlob(uploadId: string): Promise<Blob> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const resp = await fetch(`${API_BASE_URL}/uploads/${uploadId}/previous-tp-file`, { headers });
+
+  if (resp.status === 401) onUnauthorized();
+
+  if (!resp.ok) {
+    let body: unknown = null;
+    try { body = await resp.json(); } catch { /* non-JSON error body, ignore */ }
+    const message =
+      body && typeof body === "object" && "detail" in body && typeof (body as { detail: unknown }).detail === "string"
+        ? (body as { detail: string }).detail
+        : `${resp.status} ${resp.statusText}`;
+    throw new ApiError(resp.status, body, message);
+  }
+
+  return resp.blob();
+}
+
 /** Round 56: the 5 structured Q&A answers -- see backend's
  * UploadIntakeAnswers. Kept as exactly these 5 named fields, matching the
  * backend Form fields 1:1 -- no generic dict, so a typo/rename 422s
@@ -464,6 +519,12 @@ export async function createUpload(
   versionId: string,
   file: File,
   payload: { supportingDocument: File } | { intakeAnswers: IntakeAnswers; sessionNotes: File[] },
+  // Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL "prior
+  // Treatment Plan" file -- independent of which payload shape above is
+  // active (document vs. structured_form), so it's its own separate
+  // param rather than a third payload variant. Omit entirely (undefined)
+  // for the common case of no prior TP to attach.
+  previousTp?: File,
 ): Promise<UploadOut> {
   const formData = new FormData();
   formData.append("file", file);
@@ -473,6 +534,7 @@ export async function createUpload(
     for (const [key, value] of Object.entries(payload.intakeAnswers)) formData.append(key, value);
     for (const note of payload.sessionNotes) formData.append("session_notes", note);
   }
+  if (previousTp) formData.append("previous_tp", previousTp);
   return request(`/versions/${versionId}/uploads`, { method: "POST", body: formData });
 }
 

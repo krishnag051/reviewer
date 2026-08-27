@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # pipeline's own cap.
     session_notes_max_calls: int = 10
 
+    # Next Round, Part 2: the real LLM humanize pass, one real call per
+    # finding a real upload produces (~170ish rules today). This is a
+    # DIFFERENT real-call surface than either cap above -- not a per-rule
+    # judgment batch, not a per-file extraction, but a per-FINDING rewrite
+    # pass that runs after everything else. Same standing discipline: a
+    # real, enforced number, never uncapped. 200 gives headroom above the
+    # current real rule count without being effectively unbounded.
+    humanize_max_calls: int = 200
+
     # Dev-only simulated-completion path (Round 49) -- lets a `developer`-role
     # user test the U1/U2/V1/V2/finalize lifecycle mechanics without waiting
     # on or paying for the real agent. Off by default; the route itself is

@@ -106,6 +106,51 @@ def _blocked_review_treatment_plan(*args, **kwargs):
     )
 
 
+def _blocked_humanize_evidence_with_llm(*args, **kwargs):
+    raise RuntimeError(
+        "BLOCKED by tests/conftest.py::_block_real_api_calls: a test attempted to call "
+        "humanize_evidence_with_llm (agent-making's pipeline.humanize -- the real LLM "
+        "humanize pass, reached via app.agent_client.humanize_finding/humanize_findings, "
+        "wired live into app.services.upload_pipeline.py's run_upload_pipeline this round), "
+        "which would make a real, billed call to the Anthropic API. This is a SEPARATE "
+        "real-call seam from review_treatment_plan above -- discovered and closed the same "
+        "round it was wired in, precisely because it was NOT covered by the guardrail until "
+        "this fixture patched it too. Blocked for every test by default, same discipline as "
+        "review_treatment_plan. If a test is deliberately meant to exercise the real "
+        "humanize call, mark it with @pytest.mark.real_api -- and only run it with the "
+        "user's explicit, per-instance approval, per CLAUDE.md's hard rule."
+    )
+
+
+def _make_ceiling_enforced_real_humanize_call(real_fn):
+    """Same shared-ceiling discipline as _make_ceiling_enforced_real_call
+    above, for the humanize seam. humanize_evidence_with_llm makes AT MOST
+    one real call per invocation (and zero for empty/whitespace-only
+    input -- see its own docstring), so a call is counted only when its
+    returned usage shows real tokens actually got spent, never a flat +1
+    per invocation regardless of whether a request went out.
+    """
+    def _wrapper(*args, **kwargs):
+        if _real_api_call_counter.count >= MAX_REAL_API_CALLS_PER_SESSION:
+            raise RuntimeError(
+                f"BLOCKED by tests/conftest.py's real-API spend ceiling: "
+                f"{MAX_REAL_API_CALLS_PER_SESSION} real Anthropic API call(s) already made "
+                f"this pytest session (MAX_REAL_API_CALLS_PER_SESSION={MAX_REAL_API_CALLS_PER_SESSION}). "
+                "Refusing to make another real humanize call in this same session, even "
+                "though this test is marked @pytest.mark.real_api."
+            )
+        text, usage = real_fn(*args, **kwargs)
+        if usage.get("input_tokens", 0) > 0 or usage.get("output_tokens", 0) > 0:
+            _real_api_call_counter.count += 1
+            print(
+                f"[real-api-ceiling] real API calls this session: "
+                f"{_real_api_call_counter.count}/{MAX_REAL_API_CALLS_PER_SESSION}"
+            )
+        return text, usage
+
+    return _wrapper
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -226,14 +271,29 @@ def _block_real_api_calls(request, monkeypatch):
     bound so every real call counts against the one shared session ceiling above.
     """
     if request.node.get_closest_marker("real_api") is not None:
+        import app.agent_client as agent_client_module
         import app.rule_engine.client as client_module
 
         monkeypatch.setattr(
             client_module, "review_treatment_plan", _make_ceiling_enforced_real_call(client_module.review_treatment_plan),
         )
+        # Next Round, Part 2: humanize_evidence_with_llm is a SEPARATE real
+        # seam from review_treatment_plan above (different function, wired
+        # in this same round) -- must be wrapped too, or a real_api test
+        # that touches the live upload pipeline could make real humanize
+        # calls that never count against the shared ceiling at all.
+        monkeypatch.setattr(
+            agent_client_module, "_humanize_evidence_with_llm",
+            _make_ceiling_enforced_real_humanize_call(agent_client_module._humanize_evidence_with_llm),
+        )
         yield
         return
     monkeypatch.setattr("app.rule_engine.client.review_treatment_plan", _blocked_review_treatment_plan)
+    # Next Round, Part 2: block the humanize seam too, same discipline as
+    # review_treatment_plan -- see _blocked_humanize_evidence_with_llm's own
+    # docstring for why this is a separate patch target, not covered by the
+    # line above.
+    monkeypatch.setattr("app.agent_client._humanize_evidence_with_llm", _blocked_humanize_evidence_with_llm)
     yield
 
 
@@ -388,6 +448,7 @@ def make_patient_version_upload(
     created_at=None,
     file_path=None,
     supporting_document_path=None,
+    previous_tp_path=None,
     uploaded_by=None,
     rules_snapshot_id=None,
 ):
@@ -421,6 +482,7 @@ def make_patient_version_upload(
         purge_after=purge_after,
         file_path=file_path,
         supporting_document_path=supporting_document_path,
+        previous_tp_path=previous_tp_path,
         rules_snapshot_id=rules_snapshot_id,
         status=status,
         uploaded_by=uploaded_by,

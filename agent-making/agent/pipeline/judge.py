@@ -127,14 +127,29 @@ FINDINGS_TOOL = {
                                         "finding, not every page the topic happens to appear on."
                                     ),
                                 },
-                                {"type": "null", "description": "Not page-specific."},
+                                {
+                                    "type": "null",
+                                    "description": (
+                                        "Not page-specific. For a fail/uncertain/not_checkable result "
+                                        "specifically, treat null as a last resort, not a default: a "
+                                        "reviewer needs to open the document to that exact page to verify "
+                                        "one of these three results, so first make a genuine effort to "
+                                        "find and cite the real page before concluding none applies."
+                                    ),
+                                },
                             ],
                             "description": (
                                 "1-indexed page number(s) the evidence came from — a single integer for "
                                 "the common case, an array of 2+ integers when the finding genuinely spans "
                                 "multiple specific pages together, or null if not page-specific. Must be "
                                 "null when evidence is the {page, detail} array form above (each item "
-                                "already carries its own page)."
+                                "already carries its own page). NON-PASS RESULTS (fail/uncertain/"
+                                "not_checkable): a real, correct page number here is what lets a reviewer "
+                                "actually verify the problem — this matters far more than on a pass, "
+                                "since a pass usually needs no follow-up. Do not leave this null for a "
+                                "non-pass result just because it's more convenient; if you genuinely "
+                                "cannot pin the finding to a specific page, that is itself worth "
+                                "reconsidering (see the top-level instructions below)."
                             ),
                         },
                         "confidence": {"type": "number", "description": "0.0-1.0"},
@@ -161,6 +176,16 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
             # through explicitly so the model isn't relying on whatever
             # numbers happen to already be in the free-text description.
             "params": r.get("params"),
+            # Fix Round (2026-08-27): real, additional data for this
+            # specific rule -- e.g. the upload's own Patient Central Reach
+            # Information intake answer -- injected by a caller via
+            # review_treatment_plan's extra_rule_context param (see that
+            # function's own docstring). None for every rule this isn't
+            # set for; omitted from the summary entirely only in the sense
+            # that json.dumps below will still show the key as null, which
+            # is fine -- the point is this is never silently missing for a
+            # rule that DOES have real extra context to offer.
+            "additional_real_data": r.get("extra_context"),
         }
         for r in judgment_rules
     ]
@@ -177,6 +202,12 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "Where a rule includes a 'params' object, treat those values as the exact, "
                 "authoritative thresholds for that rule (e.g. an age cutoff or a numeric cap) — "
                 "use them directly rather than re-deriving numbers from the prose description.\n\n"
+                "Where a rule includes a non-null 'additional_real_data' value, that is real data "
+                "collected specifically for this upload (e.g. a reviewer's own typed intake answer) — "
+                "not part of the TP document itself, but genuinely real, current information you "
+                "should actually compare against/reason with for that rule, not ignore. This is "
+                "different from the 'named external source not provided to you' caveat below — "
+                "'additional_real_data' IS provided to you, right here, so use it.\n\n"
                 "IMPORTANT: no previous finalized version of this patient's TP is available "
                 "for this run (standalone prototype, no backend integration yet). Any rule "
                 "that depends on comparing against a prior TP version must be answered "
@@ -243,6 +274,22 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "comma/range list. If a sentence touches more than one page, repeat the tag once per "
                 "page (e.g. '...missing on [Page 12] and [Page 14]'), never a single tag covering a "
                 "range or list.\n\n"
+                "PAGE NUMBERS MATTER MOST ON NON-PASS RESULTS (Next Round, Part 4): the structured "
+                "`page` field is not a formality — it is what lets a human reviewer actually go open "
+                "the document and verify a finding, and that verification is exactly what a fail, "
+                "uncertain, or not_checkable result requires from a reviewer (a pass usually needs no "
+                "follow-up, so a page number there, while still worth including, is less urgent). For "
+                "every fail/uncertain/not_checkable finding, make a genuine, specific effort to attach "
+                "the real page(s) the problem is actually on before considering `page` null — null "
+                "should mean 'this genuinely isn't tied to one physical page' (e.g. a document-wide "
+                "absence with no single page to point to), never 'I didn't look for one.' If, after "
+                "real effort, you still cannot identify a page for a fail/uncertain/not_checkable "
+                "finding, treat that inability itself as a signal, not a footnote: a finding you "
+                "can't point to a specific page for is often a finding you can't fully ground either. "
+                "In that situation, prefer downgrading a shaky-feeling 'fail' to 'uncertain' and say "
+                "plainly in the evidence that no specific page could be identified — do not report a "
+                "confident fail/uncertain/not_checkable with an unexplained null page when a real "
+                "effort to locate one was skipped.\n\n"
                 "Rules to check (JSON):\n" + json.dumps(rules_summary, indent=2)
             ),
         },

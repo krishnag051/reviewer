@@ -27,6 +27,15 @@ from scripts.seed import (
 
 SEEDED_RULES = _load_rules_from_agent_making()
 SEEDED_RULE_CODES = {r["rule_code"] for r in SEEDED_RULES}
+# Next Round (2026-08-27): Snapshot 0 only ever pins ACTIVE rules (see
+# app/services/rule_snapshots.py's own `Rule.active.is_(True)` filter) --
+# this used to be silently equivalent to "every seeded rule" back when
+# every seeded rule WAS active, but that stopped holding true once this
+# round deactivated 6 of them. Separate constant, scoped to the snapshot
+# assertion specifically, rather than changing SEEDED_RULES/SEEDED_RULE_CODES'
+# own "every seeded rule regardless of active" meaning that every other
+# assertion in this file correctly still relies on.
+SEEDED_ACTIVE_RULE_CODES = {r["rule_code"] for r in SEEDED_RULES if r["active"]}
 
 
 def test_seed_is_idempotent(db_session, seeded_baseline):
@@ -112,20 +121,29 @@ def test_snapshot_zero_and_sync_state_exist_with_all_seeded_rules(db_session, se
     snapshot_zero = db_session.execute(
         select(RuleSnapshot).order_by(RuleSnapshot.created_at.asc()).limit(1)
     ).scalar_one()
-    assert len(snapshot_zero.rule_ids_and_versions) == len(SEEDED_RULES)
+    assert len(snapshot_zero.rule_ids_and_versions) == len(SEEDED_ACTIVE_RULE_CODES)
     versions_used = {entry["version"] for entry in snapshot_zero.rule_ids_and_versions}
     assert versions_used == {1}
 
     seeded_rule_ids = {
         str(r.id)
-        for r in db_session.execute(select(Rule).where(Rule.rule_code.in_(SEEDED_RULE_CODES))).scalars().all()
+        for r in db_session.execute(select(Rule).where(Rule.rule_code.in_(SEEDED_ACTIVE_RULE_CODES))).scalars().all()
     }
     snapshot_rule_ids = {entry["rule_id"] for entry in snapshot_zero.rule_ids_and_versions}
     assert snapshot_rule_ids == seeded_rule_ids
 
-    seeded_rule_ids = {
+    # Next Round (2026-08-27): this second block was checking the SAME thing
+    # as the block above it with SEEDED_RULE_CODES (every seeded rule,
+    # active or not) instead of SEEDED_ACTIVE_RULE_CODES -- harmless
+    # duplication before this round (every seeded rule was active, so the
+    # two sets were identical), but wrong now. Left as its own explicit
+    # assertion (not deleted) since it usefully confirms the INACTIVE
+    # rules are correctly excluded from the snapshot, not just that the
+    # active ones are correctly included.
+    inactive_rule_ids = {
         str(r.id)
-        for r in db_session.execute(select(Rule).where(Rule.rule_code.in_(SEEDED_RULE_CODES))).scalars().all()
+        for r in db_session.execute(
+            select(Rule).where(Rule.rule_code.in_(SEEDED_RULE_CODES - SEEDED_ACTIVE_RULE_CODES))
+        ).scalars().all()
     }
-    snapshot_rule_ids = {entry["rule_id"] for entry in snapshot_zero.rule_ids_and_versions}
-    assert snapshot_rule_ids == seeded_rule_ids
+    assert not (snapshot_rule_ids & inactive_rule_ids), "an inactive seeded rule must never be pinned in a snapshot"

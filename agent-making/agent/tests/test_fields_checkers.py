@@ -82,6 +82,29 @@ def test_rpt01_fail_on_multiple_blank_pages_uses_list_form():
     assert {item["page"] for item in evidence} == {1, 2}
 
 
+def test_rpt01_evidence_never_leaks_debug_context():
+    """Next Round (2026-08-27) -- real bug, confirmed in a real CSV export:
+    the evidence string used to contain literal "[DEBUG context before=...
+    after=... is_last_line_of_page=...]" text, straight from
+    _find_blank_labels' own internal diagnostic. Locks in that this can
+    never reach evidence again, for both the single-page string form and
+    the multi-page list form."""
+    _, single_evidence, _, _ = fields._check_RPT01(
+        _rule(), _fields("Recommended Behavior Reduction Goals\nSome content here\nBehavioral Summary:"),
+    )
+    assert "DEBUG" not in single_evidence
+    assert "context before" not in single_evidence
+    assert "is_last_line_of_page" not in single_evidence
+
+    _, list_evidence, _, _ = fields._check_RPT01(
+        _rule(), _fields("Diagnosis:\n\nNext:", "Goals:\n\nNext:"),
+    )
+    combined = " ".join(item["detail"] for item in list_evidence)
+    assert "DEBUG" not in combined
+    assert "context before" not in combined
+    assert "is_last_line_of_page" not in combined
+
+
 # --- GIP-04: literal 'Invalid Date' string ---
 
 def test_gip04_pass_when_no_invalid_date_string():

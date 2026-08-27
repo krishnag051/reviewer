@@ -56,6 +56,7 @@ from . import run_full_pipeline
 from .call_tracker import ApiCallCapExceeded, ApiCallTracker
 from .extract import extract_pdf_text
 from .flag_pages import flag_image_only_pages, flagged_page_numbers
+from .humanize import humanize_evidence as _humanize_evidence
 from .integrity import IntegrityError
 from .render import render_flagged_pages
 from .supporting_doc_extraction import extract_supporting_document
@@ -85,6 +86,7 @@ def _run_pipeline_with_extras(
     plan_type_override: str | None,
     supporting_doc_path: str | None,
     source_filename: str | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> dict:
     """Duplicates run_full_pipeline's orchestration (pipeline/__init__.py)
     so a manual payor/plan_type override, and/or the Round 52 supporting-
@@ -161,6 +163,14 @@ def _run_pipeline_with_extras(
         # storage-key filename carries no name-like tokens to compare) until
         # a future backend round wires the real original filename through.
         extracted_fields["source_filename"] = source_filename
+    if extra_fields:
+        # Fix Round (2026-08-27): same additive-key convention as
+        # payor/plan_type/supporting_doc/source_filename above -- real,
+        # per-upload data (currently: the Patient Central Reach
+        # Information intake answers) that a deterministic checker can
+        # read by key, same as _check_PPI05's new
+        # intake_bcba_name_credentials_npi read.
+        extracted_fields.update(extra_fields)
 
     applicable_rules, excluded_findings = fields_module.partition_rules_by_scope(rules, extracted_fields)
     det_results = fields_module.run_deterministic_checks(applicable_rules, extracted_fields)
@@ -277,7 +287,16 @@ def _to_review_result(raw: dict, tracker: ApiCallTracker) -> dict:
                 "category": row["category"],
                 "result": row["result"],
                 "page": row["page"],
-                "detail": row["detail"],
+                # Fix Round (2026-08-27), Part 4: the real, distinct
+                # humanize pass -- see pipeline/humanize.py's own module
+                # docstring. Runs here, in this ONE centralized spot,
+                # right before a finding is returned -- both orchestration
+                # paths (run_full_pipeline / _run_pipeline_with_extras)
+                # already converge on this exact "export_rows" shape by
+                # the time execution reaches here, so this covers every
+                # real finding regardless of which path produced it,
+                # without needing two call sites.
+                "detail": _humanize_evidence(row["detail"]),
                 "confidence": row["confidence"],
                 "action_lane": row["action_lane"],
                 "action_tag": row["action_tag"],
@@ -302,6 +321,8 @@ def review_treatment_plan(
     plan_type_override: str | None = None,
     source_filename: str | None = None,
     max_calls: int | None = None,
+    extra_rule_context: dict[str, str] | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The one public entry point. Runs the full pipeline against `pdf_path`
     and returns a JSON-serializable `ReviewResult` dict — see
@@ -353,6 +374,28 @@ def review_treatment_plan(
     ApiCallCapExceeded, anything else) comes back as
     `{"status": "failed", "error": {...}}` instead. A missing/bad
     supporting_doc_path is caught the same way, before any real call.
+
+    `extra_rule_context` (Fix Round, 2026-08-27): optional {rule_id: text}
+    map -- when a rule_id here matches one of the rules actually loaded,
+    that rule's own entry sent to the judgment layer (judge.py::
+    _build_prompt) carries this text as real, additional context, right
+    alongside its existing description/notes/params. Built for the
+    confirmed gap where the upload's Patient Central Reach Information
+    intake answers were collected but never reached the judgment call at
+    all (a rule like QA-SCH-02 was judging blind) -- but generic, not
+    QA-SCH-02-specific: any rule_id can be a key. This rides the SAME
+    already-happening real judgment call every rule already goes through
+    -- zero new API-call surface, just richer input to the existing one.
+    `None` (every caller before this round) is the exact byte-identical
+    behavior this function always had.
+
+    `extra_fields` (Fix Round, 2026-08-27): {key: text} merged directly
+    into `extracted_fields` -- reaches a DETERMINISTIC checker (which
+    reads `fields[...]` by key, e.g. `_check_PPI05`'s new
+    `intake_bcba_name_credentials_npi` read), unlike `extra_rule_context`
+    above, which only reaches the judgment layer's prompt. Same additive-
+    key convention `_run_pipeline_with_extras` already uses for payor/
+    plan_type/supporting_doc/source_filename.
     """
     tracker = ApiCallTracker(max_calls=max_calls)
 
@@ -367,15 +410,23 @@ def review_treatment_plan(
     except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
         return _error_result("rules_load_failed", f"{type(exc).__name__}: {exc}", tracker)
 
+    if extra_rule_context:
+        rules = [
+            {**r, "extra_context": extra_rule_context[r["rule_id"]]} if r["rule_id"] in extra_rule_context else r
+            for r in rules
+        ]
+
     try:
         if (
             payor_override is not None or plan_type_override is not None
             or supporting_doc_path is not None or source_filename is not None
+            or extra_fields is not None
         ):
             raw = _run_pipeline_with_extras(
                 pdf_path, rules, tracker,
                 payor_override=payor_override, plan_type_override=plan_type_override,
                 supporting_doc_path=supporting_doc_path, source_filename=source_filename,
+                extra_fields=extra_fields,
             )
         else:
             raw = run_full_pipeline(pdf_path, rules, tracker=tracker)

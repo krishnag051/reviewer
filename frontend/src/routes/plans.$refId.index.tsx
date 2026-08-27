@@ -2,11 +2,11 @@ import { createFileRoute, useNavigate, notFound } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import {
   usePatients, usePatientVersions, useVersionDetail, useUploadDetail,
-  useOverrideRuleResult, useFinalizeUpload,
+  useOverrideRuleResult, useFinalizeUpload, useDeactivatePatient, useReactivatePatient,
 } from "@/lib/real-data";
 import {
-  apiErrorMessage, fetchUploadFileBlob, fetchUploadSupportingFileBlob, generateCorrectionEmail,
-  sendGeneratedEmail, type RuleResultOut, type GeneratedEmailOut, type RuleResultStatus,
+  apiErrorMessage, fetchUploadFileBlob, fetchUploadSupportingFileBlob, fetchUploadPreviousTpFileBlob,
+  generateCorrectionEmail, sendGeneratedEmail, type RuleResultOut, type GeneratedEmailOut, type RuleResultStatus,
 } from "@/lib/api-client";
 import { StatusBadge, ReviewedBadge } from "@/components/tp/ui";
 import { RuleResultCard, RuleResultContent } from "@/components/tp/RuleResultCard";
@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Megaphone, FlaskConical, FileText, NotebookText, Download, Send } from "lucide-react";
+import { Loader2, Megaphone, FlaskConical, FileText, NotebookText, Download, Send, Archive, ArchiveRestore } from "lucide-react";
 import { downloadResultsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
 
@@ -65,7 +65,10 @@ function PlanDetail() {
   const { refId } = Route.useParams();
   const nav = useNavigate();
 
-  const patientsQuery = usePatients();
+  // Part 6, Fix Round: "all" -- this page must still find and render a
+  // deactivated patient's own review page (to show the reactivate control),
+  // unlike the Treatment Plans list, which defaults to active-only.
+  const patientsQuery = usePatients("all");
   const patient = patientsQuery.data?.find(p => p.reference_id === refId);
 
   if (patientsQuery.isSuccess && !patient) throw notFound();
@@ -117,6 +120,33 @@ function PlanDetail() {
   const finalizeMutation = useFinalizeUpload();
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [confirmRefId, setConfirmRefId] = useState("");
+
+  // Part 6, Fix Round: deactivate/archive -- reversible, real backend flag,
+  // same access level as finalize/escalate (any authenticated user).
+  const deactivateMutation = useDeactivatePatient();
+  const reactivateMutation = useReactivatePatient();
+  const [deactivateOpen, setDeactivateOpen] = useState(false);
+
+  async function handleDeactivate() {
+    if (!patient) return;
+    try {
+      await deactivateMutation.mutateAsync(patient.id);
+      toast.success(`${patient.name} deactivated — removed from the active Treatment Plans list, still viewable under Archived.`);
+      setDeactivateOpen(false);
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    }
+  }
+
+  async function handleReactivate() {
+    if (!patient) return;
+    try {
+      await reactivateMutation.mutateAsync(patient.id);
+      toast.success(`${patient.name} reactivated — back in the active Treatment Plans list.`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    }
+  }
 
   // Round 70, Item 2: real page-jump target -- PdfViewer.tsx exposes
   // goToPage via forwardRef/useImperativeHandle.
@@ -271,6 +301,7 @@ function PlanDetail() {
   const [qaModalOpen, setQaModalOpen] = useState(false);
 
   const [openingSupportingDoc, setOpeningSupportingDoc] = useState(false);
+  const [openingPreviousTp, setOpeningPreviousTp] = useState(false);
 
   // Round 51: opens the real supporting document (GET /uploads/:id/
   // supporting-file) in a NEW browser tab -- never rendered inline, the
@@ -290,6 +321,25 @@ function PlanDetail() {
       toast.error(apiErrorMessage(err));
     } finally {
       setOpeningSupportingDoc(false);
+    }
+  }
+
+  // Next Round (2026-08-27), Part 2 item 2: mirrors
+  // handleOpenSupportingDocument exactly, for the new OPTIONAL prior-TP
+  // slot -- only shown at all when uploadDetailQuery.data.has_previous_tp
+  // is true (see the button's own render condition below).
+  async function handleOpenPreviousTp() {
+    if (!finalUpload) return;
+    setOpeningPreviousTp(true);
+    try {
+      const blob = await fetchUploadPreviousTpFileBlob(finalUpload.id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    } finally {
+      setOpeningPreviousTp(false);
     }
   }
 
@@ -330,6 +380,11 @@ function PlanDetail() {
               </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <h1 className="text-xl font-semibold">{patient.name}</h1>
+                {!patient.active && (
+                  <span className="text-[10px] uppercase tracking-wide rounded bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.5 flex items-center gap-1">
+                    <Archive className="h-3 w-3" />Deactivated
+                  </span>
+                )}
                 {selectedVersionSummary && (
                   selectedVersionSummary.status === "finalized" ? (
                     <>
@@ -351,6 +406,17 @@ function PlanDetail() {
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {patient.active ? (
+                <Button variant="destructive" onClick={() => setDeactivateOpen(true)}>
+                  <Archive className="h-4 w-4 mr-1.5" />Deactivate this TP
+                </Button>
+              ) : (
+                <Button variant="outline" onClick={handleReactivate} disabled={reactivateMutation.isPending}>
+                  {reactivateMutation.isPending
+                    ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Reactivating…</>
+                    : <><ArchiveRestore className="h-4 w-4 mr-1.5" />Reactivate this TP</>}
+                </Button>
+              )}
               <Select
                 value={effectiveVersionId ? `v-${effectiveVersionId}` : undefined}
                 onValueChange={setSelectedValue}
@@ -384,6 +450,17 @@ function PlanDetail() {
                       : <><FileText className="h-4 w-4 mr-1.5" />Helping Document</>}
                   </Button>
                 )
+              )}
+              {finalUpload && uploadDetailQuery.data?.has_previous_tp && (
+                // Next Round (2026-08-27), Part 2 item 2 -- same UX pattern
+                // as Helping Document above, but only shown when THIS
+                // upload actually has a previous TP attached (optional on
+                // every upload, unlike the supporting document).
+                <Button variant="outline" onClick={handleOpenPreviousTp} disabled={openingPreviousTp}>
+                  {openingPreviousTp
+                    ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Opening…</>
+                    : <><FileText className="h-4 w-4 mr-1.5" />Previous TP</>}
+                </Button>
               )}
               {finalUpload && (
                 // Round 56, Item 4 -- same UX pattern as Helping Document
@@ -421,6 +498,26 @@ function PlanDetail() {
           </div>
         </div>
       </div>
+
+      <Dialog open={deactivateOpen} onOpenChange={setDeactivateOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Deactivate this TP?</DialogTitle>
+            <DialogDescription>
+              This will deactivate this TP and remove it from active views. It will not be deleted and can be
+              restored later.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeactivateOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDeactivate} disabled={deactivateMutation.isPending}>
+              {deactivateMutation.isPending
+                ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Deactivating…</>
+                : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={finalizeOpen} onOpenChange={open => { setFinalizeOpen(open); if (!open) setConfirmRefId(""); }}>
         <DialogContent>

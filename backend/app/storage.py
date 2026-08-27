@@ -90,6 +90,22 @@ def save_session_note_blob(upload_id: uuid.UUID, filename: str, content: bytes) 
     return str(path)
 
 
+def save_previous_tp_blob(upload_id: uuid.UUID, filename: str, content: bytes) -> str:
+    """Next Round (2026-08-27), Part 2 item 2 -- the new, OPTIONAL "prior
+    Treatment Plan" upload slot. Same convention as save_supporting_blob
+    (a fixed suffix so this can never collide with the TP's own blob or the
+    supporting-document blob), but this one's presence is optional -- a
+    first-ever patient genuinely has no prior TP. Returns the path to
+    store as uploads.previous_tp_path.
+    """
+    directory = _upload_storage_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    suffix = Path(filename).suffix or ".pdf"
+    path = directory / f"{upload_id}-previous-tp{suffix}"
+    path.write_bytes(content)
+    return str(path)
+
+
 def delete_blob(file_path: str) -> None:
     """Placeholder local-filesystem-backed implementation — swap for the real
     S3/R2 client when object storage is wired up. Callers depend only on:

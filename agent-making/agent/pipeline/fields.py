@@ -230,7 +230,7 @@ def _bare_rbt_mentions(text: str) -> list[str]:
 _BLANK_LABEL_DEBUG_CONTEXT_LINES = 3
 
 
-def _find_blank_labels(text: str) -> list[tuple[str, str]]:
+def _find_blank_labels(text: str) -> list[str]:
     """Heuristic: a label ending in ':' with nothing but whitespace before the
     next line's content, suggesting an unfilled form field.
 
@@ -243,17 +243,19 @@ def _find_blank_labels(text: str) -> list[tuple[str, str]]:
     own separate label) couldn't be distinguished without seeing the real
     per-page extracted text around a flagged case.
 
-    Round 94 (2026-08-14), item 1: the Round 93 version only printed this
-    diagnostic to the console, which isn't captured when someone runs the
-    real pipeline directly (not through this file's own console). Now
-    RETURNED alongside each flagged label -- (label, debug_suffix) pairs
-    instead of bare label strings -- so the caller (_check_RPT01) can fold
-    the diagnostic context directly into the evidence/Detail text a real
-    run actually surfaces, with zero extra steps on the human running it.
-    Still diagnostic-only: PASS/FAIL/page/confidence are computed exactly
-    as before this round; only the evidence STRING gains this appended
-    context. The console print is kept too, unchanged, for anyone who
-    does have console access.
+    Round 94 (2026-08-14), item 1: folded that same diagnostic context
+    directly into the evidence/Detail text a real run surfaces, reasoning
+    that this made it visible without needing console access. REAL BUG,
+    CONFIRMED IN A REAL CSV EXPORT (Next Round, 2026-08-27): that debug
+    text was never removed once the investigation it was built for
+    finished, and reached actual reviewers verbatim -- "[DEBUG context
+    before=... after=... is_last_line_of_page=False]" showing up as if it
+    were part of the real finding. Reverted: this function is back to
+    returning bare label strings, and the console `print()` below is the
+    ONLY place this diagnostic context still exists -- exactly the
+    "console access" case Round 94's own docstring said was already
+    covered, restored to being the sole channel for it, never the
+    evidence a reviewer actually reads.
     """
     blanks = []
     lines = text.splitlines()
@@ -265,16 +267,12 @@ def _find_blank_labels(text: str) -> list[tuple[str, str]]:
                 before = lines[max(0, i - _BLANK_LABEL_DEBUG_CONTEXT_LINES):i]
                 after = lines[i + 1:i + 1 + _BLANK_LABEL_DEBUG_CONTEXT_LINES]
                 is_last_line = i == len(lines) - 1
-                debug_suffix = (
-                    f"[DEBUG context before={before!r} after={after!r} "
-                    f"is_last_line_of_page={is_last_line}]"
-                )
                 print(
                     f"[_find_blank_labels DEBUG] flagged {stripped!r} as blank (line {i} of this page's text). "
                     f"Context before: {before!r}. Context after: {after!r}. "
                     f"(is_last_line_of_page={is_last_line})"
                 )
-                blanks.append((stripped, debug_suffix))
+                blanks.append(stripped)
     return blanks
 
 
@@ -795,13 +793,13 @@ def _check_TEMP05(rule: dict, fields: dict) -> tuple:
 
 
 def _check_RPT01(rule: dict, fields: dict) -> tuple:
-    """Round 94, item 1: _find_blank_labels now returns (label, debug_suffix)
-    pairs rather than bare label strings -- the debug_suffix (surrounding
-    text context + is_last_line_of_page) is folded directly into this
-    rule's own evidence/Detail text below, so it reaches the CSV export
-    automatically on a real run with zero extra steps. DIAGNOSTIC ONLY --
-    the result/page/confidence computed below are unchanged from before
-    this round; only the evidence STRING is longer.
+    """Next Round (2026-08-27): the Round 94 version of this function
+    folded _find_blank_labels' internal debug context directly into this
+    rule's real evidence/Detail text -- confirmed, via a real CSV export,
+    to have leaked verbatim "[DEBUG context before=... after=...]" text to
+    an actual reviewer. Reverted to plain label strings only; the
+    diagnostic context still exists (console print, inside
+    _find_blank_labels itself), it just never reaches evidence again.
     """
     blanks = []
     for p in fields["pages"]:
@@ -811,9 +809,7 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
     if not blanks:
         return "pass", "No unfilled 'Label:' form fields detected.", None, 0.6
     if len(blanks) == 1:
-        page, label_pairs = blanks[0]
-        labels = [label for label, _ in label_pairs]
-        debug_text = " ".join(suffix for _, suffix in label_pairs)
+        page, labels = blanks[0]
         # confidence 0.65, not 0.5: a blank required field is a plain fact
         # this regex either finds or doesn't, not a judgment call, and
         # confidence < ESCALATION_CONFIDENCE_THRESHOLD (0.6) forces this
@@ -824,19 +820,13 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
         # escalation silently replaced it with the model's wrong guess (19).
         # Round 77, Item 2: "[Page N]" tag, same standard convention as
         # every other checker/the judgment prompt -- was "on page {page}:".
-        return "fail", f"Possible unfilled field(s): {labels}. [Page {page}] {debug_text}", page, 0.65
+        return "fail", f"Possible unfilled field(s): {labels}. [Page {page}]", page, 0.65
     # More than one page implicated: one {page, detail} entry per page,
     # naming that page's specific labels — never a collapsed page-range
     # summary a reviewer would have to decode.
     evidence = [
-        {
-            "page": page,
-            "detail": (
-                f"Possible unfilled field(s): {[label for label, _ in label_pairs]}. "
-                + " ".join(suffix for _, suffix in label_pairs)
-            ),
-        }
-        for page, label_pairs in blanks
+        {"page": page, "detail": f"Possible unfilled field(s): {labels}."}
+        for page, labels in blanks
     ]
     return "fail", evidence, None, 0.65
 
@@ -1930,6 +1920,15 @@ VISION_ELIGIBLE_RULE_SECTIONS: dict[str, str] = {
     # across the whole Goals-in-Progress section rather than one
     # contiguous span like ACF -- see _gip_graph_page_range below.
     "QA-GIP-02": "gip_graph",
+    # Next Round (2026-08-27), Part 2: QA-GIP-32/34/35 all read the SAME
+    # per-goal "Graph:" embedded image QA-GIP-02 already needed vision
+    # for -- data-point count, final-data-point value, and x-axis label
+    # all live inside that image, not in extractable text (confirmed on
+    # the real sample TP). See the block comment above DET_CHECKS for why
+    # these are check_type="judgment", not a deterministic checker.
+    "QA-GIP-32": "gip_graph",
+    "QA-GIP-34": "gip_graph",
+    "QA-GIP-35": "gip_graph",
 }
 
 
@@ -4102,6 +4101,20 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
     ground_truth_npi_vals: set[str] = set()
     if supporting_npi_field and supporting_npi_field.get("confidence") != "none" and supporting_npi_field.get("value"):
         ground_truth_npi_vals = {m.group(0) for m in re.finditer(r"[0-9]{10}", supporting_npi_field["value"])}
+    # Fix Round (2026-08-27): the OLD document-mode supporting_doc field
+    # above is dormant under structured_form (the live default since
+    # Round 56) -- confirmed real gap, this rule's own ground-truth
+    # cross-check silently stopped having any real data to check against
+    # for every upload since then. `intake_bcba_name_credentials_npi` is
+    # the SAME real fact from the CURRENT default mode's own "BCBA Name,
+    # Credentials & NPI" intake answer (see app/rule_engine/client.py::
+    # run_rule_checks for where this key gets set) -- a second, parallel
+    # ground-truth source, same NPI-digit-extraction logic, additive with
+    # the supporting_doc source above (either or both can supply
+    # ground_truth_npi_vals; neither is required).
+    intake_npi_text = fields.get("intake_bcba_name_credentials_npi")
+    if intake_npi_text:
+        ground_truth_npi_vals |= {m.group(0) for m in re.finditer(r"[0-9]{10}", intake_npi_text)}
     if ground_truth_npi_vals and npi_vals and not (set(npi_vals) & ground_truth_npi_vals):
         problems.append(
             f"TP states NPI {npi_vals}, but the supporting document's BCBA "
@@ -4279,6 +4292,265 @@ def find_cross_rule_contradictions(det_results: dict[str, dict]) -> list[dict]:
     return flags
 
 
+# --- Next Round (2026-08-27), Part 2: 11 new rules ------------------------
+#
+# QA-HRS-12, QA-GIP-30, QA-GIP-31, QA-GIP-33, QA-COC-08 below are real
+# deterministic checkers, verified against the real Zyaan Ullah sample TP's
+# actual field layout (Target Goal:/Goal Status:/Current Data:/Graph: per
+# goal block; CPT-code rows in the Hours Requesting section) before being
+# written, not guessed at.
+#
+# QA-SCH-10 (POS = School) is deliberately built as check_type="judgment",
+# NOT deterministic, despite this round's own ask -- confirmed real reason:
+# it needs the exact same per-CPT-code "Place of Service" field QA-SCH-08
+# already gave up parsing deterministically (see that rule's own notes:
+# "three rounds of point-fixes... without addressing the underlying issue
+# -- this field's real-world layout/labeling in the source PDF is too
+# inconsistent for a fixed extraction pattern to hold up"). Building a
+# second brittle regex against the identical field would repeat a
+# documented failure, not avoid it -- flagged in this round's own report
+# rather than silently building something likely to break the same way.
+#
+# QA-GIP-32/34/35 are also check_type="judgment", not the plain text
+# deterministic checks this round assumed -- confirmed real reason: "data
+# points"/"final data point"/"x-axis label" all live inside each goal's own
+# embedded "Graph:" IMAGE (confirmed on the real sample TP, same field
+# QA-GIP-02 already registered as vision-eligible for this exact reason),
+# not in extractable text. There is no existing structured graph-value-
+# extraction primitive in this codebase to build a deterministic comparison
+# on top of (unlike e.g. session-note extraction, which does have one) --
+# building one is new-capability work, not a checker, and is flagged back
+# rather than faked. What IS real, deterministic work done this round:
+# registering all three in VISION_ELIGIBLE_RULE_SECTIONS so the judgment
+# layer actually SEES the graph image instead of guessing blind.
+#
+# QA-BIO-17 (dangerous/poisonous language) is check_type="judgment" for a
+# different, confirmed reason: a naive keyword scan for "dangerous"/
+# "poisonous" produces a REAL, VERIFIED false positive on the real sample
+# TP's own text -- "Zyaan lacks safety awareness. He is unable to
+# communicate if something is dangerous such as sharp, hot or poisonous" is
+# a completely normal, expected clinical description of the patient's OWN
+# safety deficit, not the kind of AI-hallucinated or genuinely alarming
+# content this rule is trying to catch. Telling those two apart needs real
+# contextual understanding a keyword list structurally can't do -- shipping
+# a blind keyword scan here would guarantee false positives on real
+# documents, which is worse than leaving it to judgment.
+
+
+_HRS12_EXEMPT_PAYORS_DEFAULT = ("1199SEIU", "New York Medicaid", "Molina")
+
+
+def _check_HRS12(rule: dict, fields: dict) -> tuple:
+    """QA-HRS-12: "Treatment Planning hours requested correctly -- flag if
+    Treatment Planning hours are missing for any payor except 1199SEIU, NY
+    Medicaid, and Molina."
+
+    Real layout confirmed on the Zyaan Ullah sample TP: the Hours
+    Requesting section has a SEPARATE row for 97151-Treatment Planning
+    (distinct from the 97151-Assessment row -- same CPT code, different
+    row, distinguished only by the trailing label text), formatted the
+    same way _find_weekly_hours_for_code already reads for other codes
+    ("<value> hours per <period>.\\n97151-...Treatment Planning"), except
+    the value is often literally "N/A" rather than a number when Treatment
+    Planning hours weren't requested. Matches the label with or without
+    "Ongoing" (the "Hours Approved Previous Authorization" block below the
+    current request uses "97151-Ongoing Treatment Planning"; this checker
+    only reads the CURRENT Hours Requesting section's own row, matching
+    either wording so a phrasing difference on that row alone doesn't
+    cause a false not_checkable).
+    """
+    excluded_payors = rule["params"].get("excluded_payors", _HRS12_EXEMPT_PAYORS_DEFAULT)
+    payor = fields.get("payor")
+    if payor in excluded_payors:
+        return (
+            "not_applicable",
+            f"Payor detected as '{payor}', which is exempt from the Treatment Planning hours requirement.",
+            None, 0.9,
+        )
+    m = re.search(
+        r"(\S+)\s*hours?\s*per\s*\n?\s*(?:authorization\s*\n?\s*Period\.|week\.)\s*\n?\s*"
+        r"97151-\s*(?:Ongoing\s*)?Treatment\s*Planning",
+        fields["full_text"], re.IGNORECASE,
+    )
+    if not m:
+        return (
+            "not_checkable",
+            "Could not find a '97151-Treatment Planning' row in the Hours Requesting section to check.",
+            None, 0.0,
+        )
+    value = m.group(1).strip()
+    if re.match(r"^\d+(\.\d+)?$", value) and float(value) > 0:
+        return "pass", f"Treatment Planning hours requested: {value} for this authorization period.", None, 0.8
+    return (
+        "fail",
+        f"Treatment Planning hours requested is {value!r} (missing/zero) for payor '{payor or 'unknown'}', "
+        f"which requires this rule's hours to be requested.",
+        None, 0.75,
+    )
+
+
+_GROUP_KEYWORD_RE = re.compile(r"\bgroup\b", re.IGNORECASE)
+_RECALL_KEYWORD_RE = re.compile(r"\brecall\b", re.IGNORECASE)
+_MET_STATUS_RE = re.compile(r"\bmet\b", re.IGNORECASE)
+
+
+def _iter_goal_target_text(fields: dict) -> list[tuple[int, int, str]]:
+    """Shared iteration helper for the new per-goal keyword checkers below
+    (QA-GIP-30/31) -- yields (block_start_offset, target_text_offset,
+    target_text) for every goal block's own "Target Goal:"/"Target Name:"
+    value, reusing the already-proven _goal_block_starts splitter rather
+    than a new pattern.
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text) + [len(text)]
+    out = []
+    for i in range(len(starts) - 1):
+        block_start = starts[i]
+        block = text[block_start:starts[i + 1]]
+        tg_m = re.search(r"(?:Target Goal|Target Name):[ \t]*([^\n]*)", block)
+        if tg_m:
+            out.append((block_start, block_start + tg_m.start(1), tg_m.group(1).strip()))
+    return out
+
+
+def _check_GIP30(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-30: "No Group mentions unless 97154 is requested." Reintroduces,
+    as its own separate rule, the group-mentions half of the clause that
+    QA-GIP-01 deliberately dropped in the 2026-08-26 fix round (confirmed
+    against QA-GIP-01's own current notes) -- confirmed with the user this
+    is the intended split, not a silent duplicate.
+
+    Scans each goal's own Target Goal/Target Name text for the word
+    "group" (word-boundary, so "grouped"/"groups" also match but
+    "groupware" would not, and unrelated words like "outgroup" wouldn't
+    either) and cross-checks against 97154 hours actually requested, via
+    the already-proven _find_weekly_hours_for_code helper -- not a new
+    extraction pattern.
+    """
+    text = fields["full_text"]
+    hours_97154 = _find_weekly_hours_for_code(text, "97154")
+    mentions = [
+        (block_start, target) for block_start, _, target in _iter_goal_target_text(fields)
+        if _GROUP_KEYWORD_RE.search(target)
+    ]
+    if not mentions:
+        return "pass", "No goal's Target Goal/Target Name text mentions 'group'.", None, 0.8
+    if hours_97154 is not None and hours_97154 > 0:
+        return (
+            "not_applicable",
+            f"97154 (Social Skills Group) requested at {hours_97154} hrs/week -- goal text mentioning "
+            f"'group' is expected and does not violate this rule.",
+            None, 0.85,
+        )
+    if len(mentions) == 1:
+        block_start, target = mentions[0]
+        page = _page_for_offset(fields, block_start)
+        return (
+            "fail",
+            f"Goal mentions 'group' ('{target[:150]}') but 97154 (Social Skills Group) is not requested.",
+            page, 0.75,
+        )
+    evidence = [
+        {
+            "page": _page_for_offset(fields, block_start),
+            "detail": f"Goal mentions 'group' ('{target[:150]}') but 97154 is not requested.",
+        }
+        for block_start, target in mentions
+    ]
+    return "fail", evidence, None, 0.75
+
+
+def _check_GIP31(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-31: "Recall Goal -- any goal that is a recall goal should be
+    flagged." Plain keyword match against each goal's own Target Goal/
+    Target Name text for the word "recall" (word-boundary), same shape and
+    same shared helper as QA-GIP-30 above.
+    """
+    mentions = [
+        (block_start, target) for block_start, _, target in _iter_goal_target_text(fields)
+        if _RECALL_KEYWORD_RE.search(target)
+    ]
+    if not mentions:
+        return "pass", "No goal's Target Goal/Target Name text mentions 'recall'.", None, 0.8
+    if len(mentions) == 1:
+        block_start, target = mentions[0]
+        page = _page_for_offset(fields, block_start)
+        return "fail", f"Goal is a recall goal: '{target[:150]}'.", page, 0.8
+    evidence = [
+        {"page": _page_for_offset(fields, block_start), "detail": f"Goal is a recall goal: '{target[:150]}'."}
+        for block_start, target in mentions
+    ]
+    return "fail", evidence, None, 0.8
+
+
+def _check_GIP33(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-33: "Any goal that mentions 'met' should be flagged" -- a
+    Goals in Progress entry that says its own status is "Met" belongs in
+    Mastered Goals, not this section, so its presence here is itself the
+    thing to flag.
+
+    Reads each goal block's own status FIELD value (matches both "Goal
+    Status:" and the bare "Status:" label -- both confirmed present on the
+    real sample TP for different goal blocks) rather than scanning the
+    whole block's free text, so a goal whose narrative happens to use the
+    word "met" in an unrelated sentence elsewhere in the block is never
+    the trigger -- only the status value itself.
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text) + [len(text)]
+    mentions = []
+    for i in range(len(starts) - 1):
+        block_start = starts[i]
+        block = text[block_start:starts[i + 1]]
+        status_m = re.search(r"(?:Goal Status|Status):[ \t]*([^\n]*)", block)
+        if status_m and _MET_STATUS_RE.search(status_m.group(1)):
+            tg_m = re.search(r"(?:Target Goal|Target Name):[ \t]*([^\n]*)", block)
+            goal_name = tg_m.group(1).strip()[:100] if tg_m else "(name not found)"
+            page = _page_for_offset(fields, block_start + status_m.start())
+            mentions.append((page, goal_name, status_m.group(1).strip()))
+    if not mentions:
+        return "pass", "No goal's status field mentions 'met'.", None, 0.8
+    if len(mentions) == 1:
+        page, goal_name, status_val = mentions[0]
+        return "fail", f"Goal '{goal_name}' status is {status_val!r} -- mentions 'met'.", page, 0.8
+    evidence = [
+        {"page": page, "detail": f"Goal '{goal_name}' status is {status_val!r} -- mentions 'met'."}
+        for page, goal_name, status_val in mentions
+    ]
+    return "fail", evidence, None, 0.8
+
+
+_LAPSE_IN_SERVICE_RE = re.compile(
+    r"\blapse\s+in\s+(?:service|treatment|care)\b"
+    r"|\b(?:gap|break)\s+in\s+(?:service|treatment|care)\b"
+    r"|\b(?:service|treatment)\s+lapse\b"
+    r"|\bdiscontinuation\s+of\s+services?\b",
+    re.IGNORECASE,
+)
+
+
+def _check_COC08(rule: dict, fields: dict) -> tuple:
+    """QA-COC-08: "Any mention of a lapse in service should be flagged."
+    Conservative, specific phrase list (not a bare "lapse" substring match,
+    which would also fire on unrelated uses like "time lapse" or "lapse in
+    judgment") across the full document text -- no existing Coordination of
+    Care section-boundary helper exists in this codebase to scope this to
+    (QA-COC-04, the only other COC deterministic checker, searches full
+    text directly for the same reason), so this deliberately searches the
+    whole document rather than inventing an unverified section boundary.
+    """
+    matches = list(_LAPSE_IN_SERVICE_RE.finditer(fields["full_text"]))
+    if not matches:
+        return "pass", "No mention of a lapse/gap/break in service found.", None, 0.75
+    pages = sorted({_page_for_offset(fields, m.start()) for m in matches})
+    if len(pages) == 1:
+        return "fail", f"Mention of a lapse in service found: '{matches[0].group(0)}'.", pages[0], 0.75
+    evidence = [
+        {"page": p, "detail": "Mention of a lapse in service found on this page."} for p in pages
+    ]
+    return "fail", evidence, None, 0.75
+
+
 DET_CHECKS = {
     "QA-TEMP-05": _check_TEMP05,
     "QA-RPT-01": _check_RPT01,
@@ -4347,6 +4619,16 @@ DET_CHECKS = {
     "ANT-03": _check_EMP03,
     "EMB-01": _check_HF02,  # generic CPT-hour-cap check, reused via params
     "AET-01": _check_AET01,
+    # Next Round (2026-08-27), Part 2: 5 new real deterministic checkers --
+    # see each function's own docstring, and the block comment above
+    # DET_CHECKS's own definition for why QA-SCH-10/QA-GIP-32/34/35/
+    # QA-BIO-17 are deliberately NOT in this dict (judgment, for confirmed
+    # real reasons, not left unbuilt by omission).
+    "QA-HRS-12": _check_HRS12,
+    "QA-GIP-30": _check_GIP30,
+    "QA-GIP-31": _check_GIP31,
+    "QA-GIP-33": _check_GIP33,
+    "QA-COC-08": _check_COC08,
     # QA-BIO-03 relabeled from judgment to deterministic this round -- see
     # its rules.json notes for why the old BIO-01-derived "needs external
     # diagnostic report" dependency didn't actually apply to this rule.

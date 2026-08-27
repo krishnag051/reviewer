@@ -17,15 +17,37 @@
 // still stays on tp-context.tsx's mock data -- see FRONTEND_STATE.md §0.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  createPatient, createRule, createSimulatedUpload, createUpload, createVersion, finalizeUpload, getAppConfig,
+  createPatient, createRule, createSimulatedUpload, createUpload, createVersion, deactivatePatient, finalizeUpload, getAppConfig,
   getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getSessionNoteExtraction, getUpload, getVersion,
-  listPatientVersions, listPatients, listRules, listSessionNotes, overrideRuleResult, setRuleActive,
+  listPatientVersions, listPatients, listRules, listSessionNotes, overrideRuleResult, reactivatePatient, setRuleActive,
   setNotificationSettings, setSupportingDocMode, updateRule,
-  type IntakeAnswers, type NotificationSettingsUpdate, type RulePayor, type RuleType, type SupportingDocMode,
+  type IntakeAnswers, type NotificationSettingsUpdate, type PatientStatusFilter, type RulePayor, type RuleType, type SupportingDocMode,
 } from "./api-client";
 
-export function usePatients() {
-  return useQuery({ queryKey: ["patients"], queryFn: listPatients });
+// Part 6, Fix Round: defaults to "active", matching every existing caller's
+// own expectation of "the patient list" unchanged. Pass "archived" for the
+// dedicated deactivated view, or "all" for a page that must find a patient
+// regardless of active state (the single-patient review page -- it has to
+// be able to render a deactivated patient's own page to show the
+// reactivate control at all).
+export function usePatients(statusFilter: PatientStatusFilter = "active") {
+  return useQuery({ queryKey: ["patients", statusFilter], queryFn: () => listPatients(statusFilter) });
+}
+
+export function useDeactivatePatient() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (patientId: string) => deactivatePatient(patientId),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["patients"] }); },
+  });
+}
+
+export function useReactivatePatient() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (patientId: string) => reactivatePatient(patientId),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["patients"] }); },
+  });
 }
 
 export function useReportsOverview() {
@@ -95,7 +117,10 @@ export function useCreateUpload() {
       versionId: string;
       file: File;
       payload: { supportingDocument: File } | { intakeAnswers: IntakeAnswers; sessionNotes: File[] };
-    }) => createUpload(args.versionId, args.file, args.payload),
+      // Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL prior-TP
+      // file -- independent of the payload shape above.
+      previousTp?: File;
+    }) => createUpload(args.versionId, args.file, args.payload, args.previousTp),
     onSuccess: (_data, args) => {
       queryClient.invalidateQueries({ queryKey: ["version", args.versionId] });
       queryClient.invalidateQueries({ queryKey: ["patients"] });

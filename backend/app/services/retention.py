@@ -75,6 +75,20 @@ def _purge_one(upload_id: uuid.UUID) -> None:
                 session.rollback()
                 return
 
+        # Next Round (2026-08-27), Part 2 item 2: the new, OPTIONAL prior-TP
+        # file follows the exact same retention lifecycle as the two blobs
+        # above -- same purge_after, same file_purged flag, no independent
+        # expiry. Simply absent (None) for the common case of an upload
+        # with no prior TP attached, same as supporting_document_path was
+        # absent for a structured_form-mode upload before this round.
+        if upload.previous_tp_path:
+            try:
+                delete_blob(upload.previous_tp_path)
+            except Exception:
+                logger.exception("Failed to purge previous-TP blob for upload %s — will retry next run", upload_id)
+                session.rollback()
+                return
+
         # Round 56: session-note files follow the exact same lifecycle too
         # -- the PARENT upload's file_purged/purge_after/is_final, not any
         # expiry of their own. Each file gets its own file_purged flip so a

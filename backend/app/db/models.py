@@ -79,6 +79,15 @@ class Patient(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     payor: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Part 6, Fix Round: reversible deactivate/archive -- no hard delete,
+    # same "flag it, never delete a row that represents something that
+    # happened" convention as uploads.voided. `active` gates whether a
+    # patient shows up in the default/active list and review views;
+    # deactivated_by/at are null while active, both set together on
+    # deactivate, both cleared together on reactivate.
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    deactivated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     versions: Mapped[list["Version"]] = relationship(back_populates="patient")
 
@@ -159,6 +168,17 @@ class Upload(Base):
     # supporting-file) -- no parsing/extraction/pipeline consumption yet,
     # deliberately deferred to a future round.
     supporting_document_path: Mapped[str | None] = mapped_column(Text)
+    # Next Round (2026-08-27), Part 2 item 2: a new, OPTIONAL upload slot
+    # for the patient's prior Treatment Plan document -- unlike
+    # supporting_document_path above, NOT required at the application
+    # layer (a first-ever patient genuinely has no prior TP to attach).
+    # Same retention lifecycle as file_path/supporting_document_path (see
+    # app/services/retention.py). Display-only for now (GET /uploads/:id/
+    # previous-tp-file) -- not read by review_treatment_plan or any part
+    # of the rule-checking pipeline yet; several rules that need "the
+    # previous TP" as a real data source may become buildable against
+    # this in a future round, but nothing wires into it this round.
+    previous_tp_path: Mapped[str | None] = mapped_column(Text)
     file_purged: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rules_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("rule_snapshots.id", ondelete="RESTRICT"))
@@ -203,6 +223,18 @@ class Upload(Base):
     session_note_files: Mapped[list["SessionNoteFile"]] = relationship(
         back_populates="upload", order_by="SessionNoteFile.created_at, SessionNoteFile.id"
     )
+
+    @property
+    def has_previous_tp(self) -> bool:
+        """Next Round (2026-08-27), Part 2 item 2: the frontend needs a
+        plain presence flag to decide whether to show a "Previous TP"
+        button at all -- unlike supporting_document_path (always present
+        under "document" mode, so the frontend never needed to check),
+        previous_tp_path is optional on EVERY upload. Never expose the raw
+        path itself in an API response -- same discipline as file_path/
+        supporting_document_path, which also never appear directly.
+        """
+        return self.previous_tp_path is not None
 
 
 class UploadIntakeAnswers(Base):
@@ -343,6 +375,17 @@ class RuleResult(Base):
     model_finding: Mapped[str] = mapped_column(Text, nullable=False)
     model_pages: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, server_default="{}")
     model_source_quote: Mapped[str | None] = mapped_column(Text)
+    # Next Round, Part 2: the real LLM humanize pass is now wired in --
+    # `model_finding` above is the HUMANIZED text (what everyone reads,
+    # same as before this round from every consumer's point of view).
+    # This is the raw, pre-humanize text preserved alongside it, written
+    # once at the same time as model_finding and never touched again --
+    # same "written once, never updated" discipline, just a second real
+    # column instead of overwriting the first. Nullable only so a
+    # pre-existing row (created before this migration, or from a run
+    # where humanize was skipped/failed) doesn't need a backfill to stay
+    # valid -- never null for a rule_result created after this round.
+    model_finding_raw: Mapped[str | None] = mapped_column(Text)
 
     # final layer — the human-ownable truth
     final_status: Mapped[str] = mapped_column(rule_result_status_enum, nullable=False)

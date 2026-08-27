@@ -1,10 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { usePatients } from "@/lib/real-data";
+import { usePatients, useReactivatePatient } from "@/lib/real-data";
+import { apiErrorMessage } from "@/lib/api-client";
 import { StatusBadge, ReviewedBadge, PageHeader } from "@/components/tp/ui";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, FileClock, Loader2 } from "lucide-react";
+import { Search, FileClock, Loader2, ArchiveRestore } from "lucide-react";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/plans/")({ component: PlansList });
 
@@ -20,10 +23,26 @@ export const Route = createFileRoute("/plans/")({ component: PlansList });
 // (plans.$refId.index.tsx does fetch that detail, real, for the one
 // patient being viewed).
 function PlansList() {
-  const { data: patients = [], isLoading } = usePatients();
+  // Part 6, Fix Round: Active/Archived tabs -- "view" tracks which one is
+  // showing; patients are re-fetched with the matching statusFilter rather
+  // than fetched once as "all" and filtered client-side, so a deactivated
+  // patient genuinely never even reaches this page's own state while
+  // viewing Active, matching "excluded from... review views by default".
+  const [view, setView] = useState<"active" | "archived">("active");
+  const { data: patients = [], isLoading } = usePatients(view);
+  const reactivateMutation = useReactivatePatient();
   const nav = useNavigate();
   const [q, setQ] = useState("");
   const [result, setResult] = useState<"all" | "pass" | "fail">("all");
+
+  async function handleReactivate(patientId: string, name: string) {
+    try {
+      await reactivateMutation.mutateAsync(patientId);
+      toast.success(`${name} reactivated — back in the active Treatment Plans list.`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    }
+  }
 
   function matchesFilters(name: string, refId: string, auditResult: string | null) {
     const matchQ = !q || name.toLowerCase().includes(q.toLowerCase()) || refId.toLowerCase().includes(q.toLowerCase());
@@ -46,26 +65,76 @@ function PlansList() {
         <PageHeader
           title="Treatment Plans"
           description={
-            (isLoading ? "Loading real data from the backend…" : `${rows.length} patient(s) with a finalized version`)
-            + (!isLoading && draftRows.length > 0 ? ` · ${draftRows.length} more with only a draft in progress (shown below)` : "")
-            + (isLoading ? "" : ".")
+            view === "archived"
+              ? (isLoading ? "Loading real data from the backend…" : `${patients.length} deactivated patient(s).`)
+              : (isLoading ? "Loading real data from the backend…" : `${rows.length} patient(s) with a finalized version`)
+                + (!isLoading && draftRows.length > 0 ? ` · ${draftRows.length} more with only a draft in progress (shown below)` : "")
+                + (isLoading ? "" : ".")
           }
         />
+
+        <div className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-sm">
+          {(["active", "archived"] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`px-4 py-1.5 rounded ${view === v ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+            >
+              {v === "active" ? "Active" : "Archived"}
+            </button>
+          ))}
+        </div>
 
         <div className="flex items-center gap-3">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search patient or reference ID" className="pl-8" />
           </div>
-          <Select value={result} onValueChange={v => setResult(v as "all" | "pass" | "fail")}>
-            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All results</SelectItem>
-              <SelectItem value="pass">Pass</SelectItem>
-              <SelectItem value="fail">Fail</SelectItem>
-            </SelectContent>
-          </Select>
+          {view === "active" && (
+            <Select value={result} onValueChange={v => setResult(v as "all" | "pass" | "fail")}>
+              <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All results</SelectItem>
+                <SelectItem value="pass">Pass</SelectItem>
+                <SelectItem value="fail">Fail</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </div>
+
+        {view === "archived" && !isLoading && (
+          <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="text-left px-4 py-2.5 font-medium">Patient</th>
+                  <th className="text-left px-4 py-2.5 font-medium">Reference ID</th>
+                  <th className="text-left px-4 py-2.5 font-medium">Payor</th>
+                  <th className="text-right px-4 py-2.5 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {patients
+                  .filter(p => !q || p.name.toLowerCase().includes(q.toLowerCase()) || p.reference_id.toLowerCase().includes(q.toLowerCase()))
+                  .map(p => (
+                    <tr key={p.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium cursor-pointer" onClick={() => nav({ to: "/plans/$refId", params: { refId: p.reference_id } })}>{p.name}</td>
+                      <td className="px-4 py-3 text-slate-600 font-mono text-xs">{p.reference_id}</td>
+                      <td className="px-4 py-3 text-slate-600">{p.payor ?? "—"}</td>
+                      <td className="px-4 py-3 text-right">
+                        <Button variant="outline" size="sm" onClick={() => handleReactivate(p.id, p.name)} disabled={reactivateMutation.isPending}>
+                          <ArchiveRestore className="h-3.5 w-3.5 mr-1.5" />Reactivate
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                {patients.length === 0 && (
+                  <tr><td colSpan={4} className="px-4 py-10 text-center text-sm text-slate-500">No deactivated patients.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {isLoading && (
           <div className="flex items-center gap-2 text-sm text-slate-500 py-6">
@@ -73,7 +142,7 @@ function PlansList() {
           </div>
         )}
 
-        {!isLoading && draftRows.length > 0 && (
+        {view === "active" && !isLoading && draftRows.length > 0 && (
           <div className="rounded-lg border border-amber-200 bg-amber-50/40 overflow-hidden">
             <div className="px-4 py-2.5 flex items-center gap-1.5 text-xs font-medium text-amber-900 border-b border-amber-200">
               <FileClock className="h-3.5 w-3.5" />
@@ -110,7 +179,7 @@ function PlansList() {
           </div>
         )}
 
-        {!isLoading && (
+        {view === "active" && !isLoading && (
           <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">

@@ -75,7 +75,9 @@ def test_rules_json_notes_for_hrs01_and_bio01_carry_no_round54_instruction():
         "pre-upload 'approved hours' field or this rule is dropped for V1."
     )
     assert rules["QA-BIO-01"]["notes"] == (
-        "Needs the diagnostic report as a supporting upload; not checkable against TP alone."
+        "Needs the diagnostic report as a supporting upload; not checkable against TP alone. | "
+        "Next Round (2026-08-27), Part 1: deactivated per this round's explicit list -- kept in "
+        "the file, ID permanently retired, never reused."
     )
 
 

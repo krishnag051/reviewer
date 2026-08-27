@@ -31,7 +31,21 @@ export function buildResultsCsv(results: RuleResultOut[]): string {
   // makes each exported row self-contained: readable and independently
   // verifiable without cross-referencing rules.json separately for what
   // e.g. "QA-PAR-01" actually means.
-  const header = ["rule_id", "rule_name", "category", "status", "page", "evidence", "overridden"];
+  //
+  // Next Round, Part 2: three new columns give the CSV a full audit trail
+  // that the live UI deliberately doesn't show all at once --
+  // "evidence" stays the current/latest text (unchanged from before, so
+  // nothing downstream that already parses this column breaks), and
+  // "evidence_pre_humanize" / "evidence_post_humanize" / "evidence_human_edited"
+  // are the three real, separate stages: the raw pre-humanize text, the
+  // humanized text the model actually produced, and (only when
+  // r.is_overridden) the human-edited replacement -- blank otherwise, since
+  // "overridden" already tells the reader whether that column means
+  // anything for this row.
+  const header = [
+    "rule_id", "rule_name", "category", "status", "page", "evidence", "overridden",
+    "evidence_pre_humanize", "evidence_post_humanize", "evidence_human_edited",
+  ];
   const rows = results.map(r => [
     r.rule_code,
     r.question_text,
@@ -40,6 +54,9 @@ export function buildResultsCsv(results: RuleResultOut[]): string {
     r.final_pages.join("; "),
     r.final_finding,
     r.is_overridden ? "yes" : "no",
+    r.model_finding_raw ?? "",
+    r.model_finding,
+    r.is_overridden ? r.final_finding : "",
   ]);
   return [header, ...rows].map(row => row.map(cell => csvEscape(String(cell))).join(",")).join("\r\n");
 }

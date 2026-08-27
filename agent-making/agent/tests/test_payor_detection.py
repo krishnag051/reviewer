@@ -30,7 +30,13 @@ N_UNIVERSAL = sum(1 for r in ACTIVE_RULES if r["applies_to_payor"] == "ALL")
 # direct inspection of rules.json, not assumed from the round's own
 # summary (which only called out Cigna/Molina since those were the
 # notable "first ever" cases).
-HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-04", "HF-05", "HF-06", "HF-07", "HF-09"}
+# HF-04 deactivated (Next Round, 2026-08-27, Part 2 item 5 overlap
+# resolution) -- replaced by the new universal QA-GIP-32, which is
+# applies_to_payor="ALL", not payor-specific, so it belongs in
+# N_UNIVERSAL's live count, not this fixed set. Removing HF-04 here rather
+# than leaving a now-inactive rule id in a set meant to describe the
+# ACTIVE rule set's shape.
+HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-05", "HF-06", "HF-07", "HF-09"}
 STRAIGHT_MEDICAID_ONLY_IDS = {"SM-01", "SM-02"}
 AETNA_ONLY_IDS = {"AET-01"}
 EMBLEM_ONLY_IDS = {"EMB-01", "EMB-02"}

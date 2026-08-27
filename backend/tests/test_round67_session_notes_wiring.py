@@ -64,7 +64,7 @@ def test_session_notes_results_are_merged_into_the_same_drafts_list(db_session, 
 
     captured_call = {}
 
-    def _fake_review_session_notes(tp_pdf_path, session_note_paths, *, model_override=None, max_calls=None):
+    def _fake_review_session_notes(tp_pdf_path, session_note_paths, *, model_override=None, max_calls=None, phase1_results=None):
         captured_call["tp_pdf_path"] = tp_pdf_path
         captured_call["session_note_paths"] = session_note_paths
         captured_call["model_override"] = model_override

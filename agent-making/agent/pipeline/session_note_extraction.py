@@ -62,6 +62,15 @@ SESSION_NOTE_FIELDS = (
     "clinician_telehealth_location",
     "patient_telehealth_location",
     "assessment_activity",
+    # Fix Round (2026-08-27): backs QA-COC-01's "session note detailed"
+    # half -- previously never extracted at all, so that rule's judgment
+    # call had zero real session-note content to read (confirmed dead-
+    # description last round). Same {value, confidence, source_quote}
+    # shape as every other field here -- no schema restructuring needed.
+    # Zero new spend: this rides the SAME already-existing, already-free
+    # (OpenRouter) per-note extraction call every upload with session
+    # notes already makes -- not a new call.
+    "note_detail_level",
 )
 
 _FIELD_DESCRIPTIONS = {
@@ -82,6 +91,16 @@ _FIELD_DESCRIPTIONS = {
         "'Direct observation', 'Treatment plan development', or a named assessment tool "
         "(VB-MAPP, ABLLS, AFLS, Vineland, Functional Analysis, etc.). Report exactly what's marked/named, "
         "not your own inference of what activity probably happened."
+    ),
+    "note_detail_level": (
+        "Whether this note's own narrative describes actual session CONTENT (the specific topic discussed "
+        "and its relevance to treatment), or only confirms that contact happened with no real content named. "
+        "Set value to exactly \"detailed\" or \"minimal\" (never anything else). "
+        "\"detailed\" example: 'Discussed clients social goals as well as maladaptive behaviors and how to "
+        "implement the replacement behaviors.' -- names the actual topic and its treatment relevance. "
+        "\"minimal\" example: 'Discussed patient.' or 'Spoke with provider regarding treatment.' -- confirms "
+        "contact occurred but names no actual content. Base this only on the note's own narrative text, not "
+        "on the structured fields above."
     ),
 }
 

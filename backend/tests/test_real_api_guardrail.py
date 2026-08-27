@@ -72,7 +72,7 @@ def test_guardrail_active_by_default_with_no_special_setup(client, seeded_baseli
 
 def _fake_review_treatment_plan(
     pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
-    source_filename=None, max_calls=None,
+    source_filename=None, max_calls=None, extra_rule_context=None, extra_fields=None,
 ):
     # Round 66: app.rule_engine.client.review_treatment_plan is now
     # app.agent_client.review_treatment_plan under the hood, which returns
@@ -108,6 +108,76 @@ def test_real_api_marker_opts_out_of_the_autouse_guard(client, seeded_baseline, 
 
 
 # ---------------------------------------------- Round 45: real-API spend ceiling
+
+
+# ---------------------------------------------- Next Round, Part 2: the humanize seam
+
+
+def _fake_review_treatment_plan_with_one_finding(
+    pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
+    source_filename=None, max_calls=None, extra_rule_context=None, extra_fields=None,
+):
+    """Same shape as _fake_review_treatment_plan above, but with one real
+    finding -- so run_upload_pipeline actually reaches the (separate)
+    humanize step below run_rule_checks, instead of short-circuiting on an
+    empty results list before ever getting there.
+    """
+    from app.agent_client import RuleResult as AgentRuleResult
+
+    return ReviewResult(
+        schema_version="1.0", status="complete", detected_payor=None, detected_plan_type=None,
+        supporting_doc_extraction=None,
+        results=[
+            AgentRuleResult(
+                rule_id="QA-TEMP-01", category="Template", status="fail",
+                page=[3], evidence="Some finding text to humanize.", confidence=0.9,
+            ),
+        ],
+        bcba_fix_rule_ids=[], facilitator_assign_rule_ids=[],
+        counts_by_result={"fail": 1}, usage=UsageInfo(api_calls=0, input_tokens=0, output_tokens=0, estimated_cost_usd=0.0),
+        error=None,
+    )
+
+
+def test_humanize_seam_is_blocked_by_default_same_as_review_treatment_plan(client, seeded_baseline, monkeypatch):
+    """The real bug this locks in: humanize_evidence_with_llm is a SEPARATE
+    real-Anthropic seam from review_treatment_plan, reached only AFTER
+    run_rule_checks succeeds -- discovered because the autouse guardrail
+    didn't cover it until this round. Mocks review_treatment_plan (a
+    controlled fake, not a real call, so this test itself makes zero real
+    API calls) with one real finding so the pipeline actually reaches the
+    humanize step, then confirms IT is blocked too, not just the seam
+    upstream of it.
+
+    upload_pipeline.py deliberately treats a humanize failure as
+    non-fatal to the whole upload (a cosmetic post-process, not part of
+    rule-checking itself -- see its own comment) -- so the proof here
+    ISN'T status="error" (that's review_treatment_plan's own failure
+    mode), it's that model_finding_raw/model_finding come back as the
+    exact original, un-rewritten text: the only way that happens is if
+    the real humanize call never actually completed.
+    """
+    monkeypatch.setattr("app.rule_engine.client.review_treatment_plan", _fake_review_treatment_plan_with_one_finding)
+    headers = login_headers(client, "m.chen@brightpath-aba.com")
+    detail = _create_upload(client, headers)
+
+    assert detail["status"] == "ready", detail
+    result = next(r for r in detail["rule_results"] if r["rule_code"] == "QA-TEMP-01")
+    # If the real humanize call had actually gone through (i.e. the block
+    # failed to fire), model_finding would differ from the raw original
+    # text -- at minimum the free deterministic cleanup pass would have
+    # run. Both staying exactly equal to the untouched original is only
+    # possible if the whole humanize call was blocked before it started.
+    assert result["model_finding"] == "Some finding text to humanize."
+    assert result["model_finding_raw"] == "Some finding text to humanize."
+
+
+def test_humanize_seam_active_by_default_with_no_special_setup(client, seeded_baseline):
+    """Same as test_guardrail_active_by_default_with_no_special_setup above,
+    for the humanize seam specifically."""
+    import app.agent_client as agent_client_module
+
+    assert agent_client_module._humanize_evidence_with_llm.__name__ == "_blocked_humanize_evidence_with_llm"
 
 
 def test_ceiling_blocks_a_real_call_past_the_configured_max_before_it_reaches_the_real_function(monkeypatch):

@@ -161,8 +161,14 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_fifty_four_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...fifty_one..." (Fix Round, 2026-08-26) -- three more
+def test_exactly_fifty_nine_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...fifty_four..." (Next Round, 2026-08-27) -- five more
+    joined this set this round: QA-HRS-12, QA-GIP-30, QA-GIP-31, QA-GIP-33,
+    QA-COC-08 (all genuinely new rule_ids, real deterministic checkers built
+    from the start -- see the new-entries comment right above the closing
+    brace for the full detail).
+
+    Renamed from "...fifty_one..." (Fix Round, 2026-08-26) -- three more
     joined this set this round: QA-HRS-11, ANT-01, ANT-03. See this test's
     own docstring further down and the new-entries comment right above the
     closing brace for the full detail.
@@ -339,6 +345,12 @@ def test_exactly_fifty_four_deterministic_labeled_rules_have_real_checkers():
         # registrations and new rules.json entries). ANT-02 deliberately
         # NOT added here, matching EMP-02's own unbuilt state.
         "QA-HRS-11", "ANT-01", "ANT-03",
+        # Next Round (2026-08-27), Part 2: 5 genuinely NEW rule_ids, built as
+        # real deterministic checkers from the start -- see each checker's
+        # own docstring in pipeline/fields.py (right above DET_CHECKS's own
+        # definition) for why these 5 specifically got real checkers while
+        # QA-SCH-10/QA-GIP-32/34/35/QA-BIO-17 (also new this round) did not.
+        "QA-HRS-12", "QA-GIP-30", "QA-GIP-31", "QA-GIP-33", "QA-COC-08",
     }
 
 

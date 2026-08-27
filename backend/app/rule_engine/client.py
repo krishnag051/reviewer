@@ -33,7 +33,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent_client import ReviewResult, RuleResult, review_session_notes, review_treatment_plan
+from app.agent_client import ReviewResult, RuleResult, review_intake_answers, review_session_notes, review_treatment_plan
 from app.config import settings
 from app.db.models import Rule, RuleSnapshot, Upload
 from app.rule_engine.contract import RuleResultDraft
@@ -52,6 +52,11 @@ _RESULT_TO_MODEL_STATUS = {
     "not_applicable": "na",
     "not_checkable": "not_checkable",
 }
+# Fix Round (2026-08-27): the reverse direction -- needed to hand a
+# compound rule's phase-1 draft (already translated to this backend's own
+# vocabulary) back to agent-making's combine_compound_rule_result, which
+# only knows agent-making's own 4-value result vocabulary.
+_MODEL_STATUS_TO_RESULT = {v: k for k, v in _RESULT_TO_MODEL_STATUS.items()}
 
 
 def _drafts_from_review_result(
@@ -154,6 +159,28 @@ def run_rule_checks(
     upload = session.get(Upload, uuid.UUID(upload_id))
     snapshot = session.get(RuleSnapshot, uuid.UUID(snapshot_id))
 
+    # Fix Round (2026-08-27): the real fix for "is the intake schedule text
+    # actually reaching the judgment call, or is it still reasoning blind" --
+    # it wasn't. `extra_rule_context` gives QA-SCH-02's own judgment call
+    # the real intake answer to read (the final schedule/POS comparison
+    # itself stays a judgment call, deliberately -- see
+    # pipeline/schedule_hours.py's own docstring for why -- but it's no
+    # longer blind while making that call). `extra_fields` gives
+    # _check_PPI05 (deterministic) the real intake BCBA NPI/credentials
+    # answer as a second ground-truth source, alongside the old
+    # document-mode supporting_doc field (dormant since structured_form
+    # became the default -- confirmed real gap, see fields.py::
+    # _check_PPI05's own updated docstring).
+    extra_rule_context: dict[str, str] = {}
+    extra_fields: dict[str, str] = {}
+    if upload.intake_answers is not None:
+        extra_rule_context["QA-SCH-02"] = (
+            f"Patient Central Reach Information intake answer -- Schedule and POS: "
+            f"{upload.intake_answers.pos_schedule_vs_97153_hours!r}. Hours Requesting: "
+            f"{upload.intake_answers.hours_requesting!r}."
+        )
+        extra_fields["intake_bcba_name_credentials_npi"] = upload.intake_answers.bcba_name_credentials_npi
+
     result = review_treatment_plan(
         upload.file_path,
         supporting_doc_path=upload.supporting_document_path,
@@ -165,6 +192,8 @@ def run_rule_checks(
         # backward-compatible, same as it's always been.
         source_filename=upload.original_filename,
         max_calls=settings.rule_engine_max_calls,
+        extra_rule_context=extra_rule_context or None,
+        extra_fields=extra_fields or None,
     )
     if result.status != "complete":
         error = result.error
@@ -182,16 +211,75 @@ def run_rule_checks(
     drafts = _drafts_from_review_result(result, snapshot.rule_ids_and_versions, rule_codes_by_id)
 
     session_note_paths = {note.original_filename: note.file_path for note in upload.session_note_files}
+    # Next Round (2026-08-27): QA-OBS-03's own simple, explicit fallback --
+    # its notes are unambiguous: "if genuinely absent from the system,
+    # treat as fail -> auto QA-tag by design," not left to judgment to
+    # guess at from a TP that was never going to mention its own missing
+    # session note. This is the minimum real fix: when NO session note was
+    # uploaded at all, force this one rule's draft to fail. The harder half
+    # (does an ATTACHED note genuinely "back" the TP's own observation/
+    # assessment content) is NOT built here -- that's a real cross-
+    # document semantic comparison the current extraction (5 narrow
+    # structured fields, never the note's full text) can't answer; when a
+    # note IS attached, this rule is left exactly as the main judgment call
+    # already answered it, same as before this round.
+    if not session_note_paths:
+        obs03_backend_id = rule_codes_by_id and next(
+            (bid for bid, code in rule_codes_by_id.items() if code == "QA-OBS-03"), None
+        )
+        if obs03_backend_id is not None:
+            version_for_obs03 = next(
+                (e["version"] for e in snapshot.rule_ids_and_versions if e["rule_id"] == obs03_backend_id), None
+            )
+            if version_for_obs03 is not None:
+                drafts = [
+                    RuleResultDraft(
+                        rule_id=obs03_backend_id,
+                        rule_version_used=version_for_obs03,
+                        model_status="fail",
+                        model_finding=(
+                            "No session note was uploaded with this TP. This rule's own notes require "
+                            "treating that as a fail (auto QA-tagged), not a guess based on the TP alone."
+                        ),
+                        model_pages=[],
+                        model_source_quote=None,
+                    ) if d.rule_id == obs03_backend_id else d
+                    for d in drafts
+                ]
+
     if session_note_paths:
+        rule_id_by_code = {code: backend_id for backend_id, code in rule_codes_by_id.items()}
+        draft_by_rule_id_pre = {d.rule_id: d for d in drafts}
+        # Fix Round (2026-08-27): QA-COC-01's phase-1 draft (whatever the
+        # main TP-only judgment call already decided, blind to session-note
+        # data), translated back to agent-making's own vocabulary -- see
+        # app/agent_client.py::review_session_notes and
+        # pipeline/session_note_comparison.py::combine_compound_rule_result
+        # for why this needs to be COMBINED, not overwritten.
+        phase1_results: dict[str, RuleResult] = {}
+        for compound_code in ("QA-COC-01",):
+            backend_id = rule_id_by_code.get(compound_code)
+            draft = draft_by_rule_id_pre.get(backend_id) if backend_id else None
+            if draft is not None:
+                phase1_results[compound_code] = RuleResult(
+                    rule_id=compound_code,
+                    # category is unused by the combine step below --
+                    # never sent back out as a real RuleResult itself.
+                    category="Unknown",
+                    status=_MODEL_STATUS_TO_RESULT[draft.model_status],
+                    page=draft.model_pages,
+                    evidence=draft.model_finding,
+                    confidence=None,
+                )
         session_note_results = review_session_notes(
             upload.file_path,
             session_note_paths,
             model_override="openrouter",
             max_calls=settings.session_notes_max_calls,
+            phase1_results=phase1_results,
         )
-        rule_id_by_code = {code: backend_id for backend_id, code in rule_codes_by_id.items()}
         version_by_backend_id = {entry["rule_id"]: entry["version"] for entry in snapshot.rule_ids_and_versions}
-        draft_by_rule_id = {d.rule_id: d for d in drafts}
+        draft_by_rule_id = dict(draft_by_rule_id_pre)
         for rr in session_note_results:
             backend_rule_id = rule_id_by_code.get(rr.rule_id)
             if backend_rule_id is None or backend_rule_id not in version_by_backend_id:
@@ -200,5 +288,53 @@ def run_rule_checks(
                 rr, backend_rule_id, version_by_backend_id[backend_rule_id],
             )
         drafts = list(draft_by_rule_id.values())  # dict overwrite preserves original insertion order
+
+    # Fix Round (2026-08-26): same override mechanism as session notes above,
+    # for the confirmed QA-SCH-02 gap -- review_treatment_plan never sees the
+    # upload's Patient Central Reach Information intake answers at all, so
+    # its own answer for QA-SCH-02 (not_checkable, per that rule's own notes)
+    # is never the real one once real intake answers exist. `intake_answers`
+    # is None for a document-mode upload (no structured Q&A collected at
+    # all) -- nothing to override in that case.
+    if upload.intake_answers is not None:
+        rule_id_by_code = {code: backend_id for backend_id, code in rule_codes_by_id.items()}
+        draft_by_rule_id_pre_intake = {d.rule_id: d for d in drafts}
+        # Fix Round (2026-08-27): QA-SCH-02's own phase-1 draft, translated
+        # back to agent-making's vocabulary -- same combine reasoning as
+        # QA-COC-01 above (the judgment call is no longer blind now that
+        # extra_rule_context carries the real intake answer, so its own
+        # attempt deserves a chance to combine with, not be erased by, the
+        # deterministic hours-only check below).
+        sch02_phase1_results: dict[str, RuleResult] = {}
+        backend_id = rule_id_by_code.get("QA-SCH-02")
+        draft = draft_by_rule_id_pre_intake.get(backend_id) if backend_id else None
+        if draft is not None:
+            sch02_phase1_results["QA-SCH-02"] = RuleResult(
+                rule_id="QA-SCH-02",
+                category="Unknown",
+                status=_MODEL_STATUS_TO_RESULT[draft.model_status],
+                page=draft.model_pages,
+                evidence=draft.model_finding,
+                confidence=None,
+            )
+        intake_results = review_intake_answers(
+            upload.file_path,
+            pos_schedule_vs_97153_hours=upload.intake_answers.pos_schedule_vs_97153_hours,
+            hours_requesting=upload.intake_answers.hours_requesting,
+            phase1_results=sch02_phase1_results,
+        )
+        version_by_backend_id = {entry["rule_id"]: entry["version"] for entry in snapshot.rule_ids_and_versions}
+        draft_by_rule_id = dict(draft_by_rule_id_pre_intake)
+        for rr in intake_results:
+            backend_rule_id = rule_id_by_code.get(rr.rule_id)
+            if backend_rule_id is None or backend_rule_id not in version_by_backend_id:
+                continue  # this rule_code isn't part of the pinned snapshot -- nothing to override
+            # Reused as-is: this helper only ever builds a RuleResultDraft
+            # from a RuleResult + backend_rule_id + version, nothing
+            # session-notes-specific in its body.
+            draft_by_rule_id[backend_rule_id] = _draft_from_session_notes_result(
+                rr, backend_rule_id, version_by_backend_id[backend_rule_id],
+            )
+        drafts = list(draft_by_rule_id.values())
 
     return drafts

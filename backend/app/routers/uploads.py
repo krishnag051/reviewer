@@ -13,6 +13,7 @@ from app.db.models import SessionNoteFile, Upload, User
 from app.deps import get_current_user
 from app.services.diff import compute_diff
 from app.services.finalize import finalize_upload
+from app.services.rule_ordering import sort_rule_results
 from app.services.uploads import void_upload
 from app.storage import resolve_stored_path
 
@@ -48,6 +49,12 @@ class RuleResultOut(BaseModel):
     model_status: str
     model_finding: str
     model_pages: list[int]
+    # Next Round, Part 2: the pre-humanize "raw" text, alongside
+    # model_finding (now the humanized text) -- display-only, same as the
+    # other model_* fields above; never written to from this API. None
+    # for any rule_result created before this round's migration (no real
+    # "pre" text exists for those -- see the migration's own docstring).
+    model_finding_raw: str | None = None
 
 
 class IntakeAnswersOut(BaseModel):
@@ -78,6 +85,11 @@ class UploadDetailOut(BaseModel):
     # this; page-jump navigation itself still targets the physical page
     # number already in final_pages/model_pages, not a translated value.
     page_label_map: dict[str, str]
+    # Next Round (2026-08-27), Part 2 item 2: whether THIS upload has a
+    # prior-TP file attached -- optional on every upload, so the frontend
+    # needs a real presence flag (unlike supporting_document_path, always
+    # present under "document" mode). Never the raw path itself.
+    has_previous_tp: bool
     rule_results: list[RuleResultOut]
     # Round 57: reuses the SAME upload.intake_answers relationship Round
     # 56's prefill endpoint (GET /patients/:id/latest-intake-answers)
@@ -118,12 +130,29 @@ class DiffOut(BaseModel):
     rules_changed: list[DiffEntryOut]
 
 
+def _to_upload_detail_out(upload: Upload) -> UploadDetailOut:
+    """Next Round, Part 3: the ONE place every route below builds its
+    UploadDetailOut response, so the fixed rule-list order (this TP's own
+    payor-specific rules, then Template, then the fixed 20-category order
+    -- see app/services/rule_ordering.py) is applied identically on every
+    endpoint that can hand back an upload's rule_results, not just GET.
+    `model_validate` first (from_attributes, picks up every field as-is,
+    including rule_results in the relationship's own created_at order),
+    then override rule_results with the real sorted order.
+    """
+    detail = UploadDetailOut.model_validate(upload)
+    payor = upload.version.payor if upload.version else None
+    sorted_results = sort_rule_results(upload.rule_results, payor)
+    detail.rule_results = [RuleResultOut.model_validate(rr) for rr in sorted_results]
+    return detail
+
+
 @router.get("/{upload_id}", response_model=UploadDetailOut)
-def get_upload(upload_id: uuid.UUID, db: Session = Depends(get_db)) -> Upload:
+def get_upload(upload_id: uuid.UUID, db: Session = Depends(get_db)) -> UploadDetailOut:
     upload = db.get(Upload, upload_id)
     if upload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload not found")
-    return upload
+    return _to_upload_detail_out(upload)
 
 
 @router.get("/{upload_id}/file")
@@ -169,6 +198,31 @@ def get_upload_supporting_file(upload_id: uuid.UUID, db: Session = Depends(get_d
         resolved,
         media_type="application/pdf",
         filename=f"upload-{upload.upload_number}-supporting.pdf",
+    )
+
+
+@router.get("/{upload_id}/previous-tp-file")
+def get_upload_previous_tp_file(upload_id: uuid.UUID, db: Session = Depends(get_db)) -> FileResponse:
+    """Next Round (2026-08-27), Part 2 item 2 -- mirrors
+    get_upload_supporting_file above exactly, for the new OPTIONAL prior-TP
+    slot. Same auth guard, same file_purged/exists checks, same retention
+    lifecycle. 404 (not a different status) when this upload simply never
+    had a previous TP attached -- same as any other "file no longer
+    available" case, so the frontend doesn't need a separate code path to
+    distinguish "never uploaded" from "purged."
+    """
+    upload = db.get(Upload, upload_id)
+    if upload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload not found")
+    if not upload.previous_tp_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file no longer available")
+    resolved = resolve_stored_path(upload.previous_tp_path)
+    if upload.file_purged or not resolved.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file no longer available")
+    return FileResponse(
+        resolved,
+        media_type="application/pdf",
+        filename=f"upload-{upload.upload_number}-previous-tp.pdf",
     )
 
 
@@ -254,14 +308,14 @@ def finalize_upload_route(
     body: FinalizeBody,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> Upload:
+) -> UploadDetailOut:
     upload = finalize_upload(
         db, upload_id, reference_id=body.reference_id, actor_user_id=current_user.id
     )
     if upload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload not found")
     db.refresh(upload)
-    return upload
+    return _to_upload_detail_out(upload)
 
 
 @router.post("/{upload_id}/void", response_model=UploadDetailOut)
@@ -270,12 +324,12 @@ def void_upload_route(
     body: VoidBody,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> Upload:
+) -> UploadDetailOut:
     upload = void_upload(db, upload_id, reason=body.reason, actor_user_id=current_user.id)
     if upload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload not found")
     db.refresh(upload)
-    return upload
+    return _to_upload_detail_out(upload)
 
 
 @router.get("/{upload_id}/diff", response_model=DiffOut)

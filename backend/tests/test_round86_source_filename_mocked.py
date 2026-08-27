@@ -16,7 +16,7 @@ from tests.conftest import make_patient_version_upload
 
 def _fake_complete_result(seen_kwargs: dict):
     def _fake(pdf_path, *, supporting_doc_path=None, payor_override=None, plan_type_override=None,
-               source_filename=None, max_calls=None):
+               source_filename=None, max_calls=None, extra_rule_context=None, extra_fields=None):
         seen_kwargs["source_filename"] = source_filename
         return ReviewResult(
             schema_version="1.0", status="complete", detected_payor=None, detected_plan_type=None,

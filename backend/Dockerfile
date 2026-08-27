@@ -56,6 +56,7 @@ WORKDIR /app
 COPY --from=build /install /usr/local
 COPY --from=build /agent-making-src /agent-making
 COPY backend/app ./app
+COPY backend/scripts ./scripts
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
 
