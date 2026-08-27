@@ -44,7 +44,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 
@@ -507,10 +507,38 @@ def extract_session_note(
     upload's session-notes rule check already ran) costs zero real model
     calls; only a genuinely new file triggers one real (free-tier
     OpenRouter, per this round's own call site) extraction call.
+
+    Fix Round (2026-08-27): REAL PRODUCTION CRASH FOUND AND FIXED,
+    confirmed via a real 500 -- a cache entry written before
+    note_detail_level (the QA-COC-01 fix round) was added to this
+    function's own expected shape fails SessionNoteExtraction(**raw)'s
+    validation, and that exception was never caught -- it crashed the
+    whole request instead of being treated as what it actually is: a
+    cache-shape mismatch, not a real extraction failure. Now caught and
+    retried exactly once with force_refresh=True (skips the stale cached
+    read, forces one real fresh extraction, and -- unlike use_cache=False
+    -- still WRITES the fresh result back to the cache, so this file
+    self-heals for every read after this one rather than needing a real
+    model call forever). If the SECOND attempt also fails validation,
+    that's let through uncaught -- a fresh extraction that still doesn't
+    match this function's expected shape is a genuinely different, real
+    bug worth surfacing loudly, not one to silently retry forever.
     """
     tracker = _CallTracker(max_calls=max_calls)
     raw = _extract_session_note_file(file_path, tracker=tracker, model_override=model_override)
-    return SessionNoteExtraction(**raw)
+    try:
+        return SessionNoteExtraction(**raw)
+    except ValidationError:
+        logger.warning(
+            "extract_session_note: cached extraction for %s failed validation against the "
+            "current SessionNoteExtraction shape (likely a stale cache entry from before a "
+            "field was added) -- forcing one fresh real extraction and re-caching it.",
+            file_path,
+        )
+        raw = _extract_session_note_file(
+            file_path, tracker=tracker, model_override=model_override, force_refresh=True,
+        )
+        return SessionNoteExtraction(**raw)
 
 
 def humanize_finding(text: str, *, tracker: "_CallTracker | None" = None) -> tuple[str, str, dict]:

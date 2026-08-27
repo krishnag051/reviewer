@@ -290,6 +290,7 @@ def extract_session_note_file(
     tracker: CallTracker,
     model_override: str | None = None,
     use_cache: bool = True,
+    force_refresh: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """The one callable a future backend endpoint/button should wire
     straight into (per Round 59's explicit scope: build the function, not
@@ -301,6 +302,22 @@ def extract_session_note_file(
     Raises FileNotFoundError immediately (before any cache lookup or model
     call) if the path doesn't exist -- same convention as
     supporting_doc_extraction.py's extract_supporting_document.
+
+    Fix Round (2026-08-27): `force_refresh=True` -- a real production
+    crash, confirmed: a cache entry written before a field (note_
+    detail_level, the QA-COC-01 fix round) was added to the extraction
+    shape fails validation in whatever Pydantic model a caller builds
+    from this function's return value, with no way to recover short of
+    manually deleting the cache file. `force_refresh` skips the cache
+    LOOKUP (so a stale/incompatible entry is never returned) but still
+    WRITES the fresh result back to the cache afterward, same as a normal
+    cache miss -- unlike `use_cache=False`, which skips saving too and
+    would silently turn every future read of this same file back into a
+    real model call forever. A caller that discovers its OWN validation
+    of a cached read failed (e.g. a missing field) should retry with
+    force_refresh=True exactly once -- this self-heals the cache for
+    every read after that, rather than needing use_cache=False's
+    permanent no-cache behavior or a manual cache-directory wipe.
     """
     path = Path(file_path)
     if not path.is_file():
@@ -309,7 +326,7 @@ def extract_session_note_file(
     content = path.read_bytes()
     content_hash = _content_hash(content)
 
-    if use_cache:
+    if use_cache and not force_refresh:
         cached = _load_cached(content_hash)
         if cached is not None:
             print(f"[session-note-extraction] cache hit for {path.name} ({content_hash[:12]}...) -- no model call made")

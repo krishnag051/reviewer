@@ -160,6 +160,47 @@ def test_extract_session_note_file_use_cache_false_always_calls_through(monkeypa
     assert call_count["n"] == 2
 
 
+def test_force_refresh_skips_the_cached_read_but_still_writes_a_fresh_one(monkeypatch, tmp_path):
+    """Fix Round (2026-08-27): the real fix for a stale-schema cache entry
+    -- force_refresh=True must skip the LOOKUP (unlike a normal cache hit,
+    it must call through for real) but, unlike use_cache=False, it must
+    STILL save the fresh result afterward -- so a caller that discovers
+    its own validation of a cached read failed can force one real
+    extraction and have the cache self-heal for every read after that,
+    without needing use_cache=False's permanent no-cache behavior.
+    """
+    import pipeline.session_note_extraction as sne
+
+    call_count = {"n": 0}
+
+    def _fake_call_tool_json(**kwargs):
+        call_count["n"] += 1
+        tracker = kwargs["tracker"]
+        tracker.record(reason="fake", provider="openrouter", model="fake-model", usage={"input_tokens": 5, "output_tokens": 5})
+        return {"session_date": {"value": "09/20/2026", "confidence": "high", "source_quote": "q"}}
+
+    monkeypatch.setattr(sne, "call_tool_json", _fake_call_tool_json)
+    monkeypatch.setattr(sne, "_CACHE_DIR", tmp_path / "cache")
+
+    note_file = tmp_path / "note.txt"
+    note_file.write_text("a synthetic note, for force_refresh testing only", encoding="utf-8")
+
+    tracker = CallTracker(max_calls=5)
+    first = extract_session_note_file(str(note_file), tracker=tracker)
+    assert call_count["n"] == 1
+
+    # force_refresh=True must call through again -- not reuse the cache.
+    second = extract_session_note_file(str(note_file), tracker=tracker, force_refresh=True)
+    assert call_count["n"] == 2, "force_refresh must skip the cached read and call through for real"
+    assert second == first  # same fake response either way -- just confirms it genuinely ran
+
+    # A THIRD, ordinary call (no force_refresh) must now hit the cache the
+    # force_refresh call just wrote -- proving it self-healed, not that it
+    # left the cache in a "never persists" state like use_cache=False would.
+    third = extract_session_note_file(str(note_file), tracker=tracker)
+    assert call_count["n"] == 2, "the force_refresh call must have re-saved the cache for future reads"
+
+
 def test_different_file_content_is_a_different_cache_key(monkeypatch, tmp_path):
     import pipeline.session_note_extraction as sne
 
