@@ -117,6 +117,91 @@ def test_existing_single_page_rules_are_unaffected():
     assert by_id["A-2"]["page"] is None
 
 
+def test_format_page_display_handles_a_malformed_dict_shaped_page_without_crashing():
+    """REAL BUG FOUND AND FIXED (2026-08-27), confirmed via a real
+    production crash: judge.py's `page` schema is advisory to the model,
+    not enforced by a runtime validator -- a real response returned
+    something other than a plain list of ints here (e.g. {page, detail}
+    dicts nested into the page field by mistake), and sorted(page) raised
+    "TypeError: '<' not supported between instances of 'dict' and
+    'dict'". A malformed page value must now render as None (not
+    page-specific) instead of crashing.
+    """
+    assert _format_page_display([{"page": 3, "detail": "x"}, {"page": 5, "detail": "y"}]) is None
+    assert _format_page_display([3, {"page": 5, "detail": "y"}]) is None  # mixed int/dict, same fix
+    assert _format_page_display("not even a list") is None
+    assert _format_page_display({"page": 3}) is None
+
+
+def test_a_malformed_page_value_no_longer_crashes_at_all_thanks_to_the_root_cause_fix():
+    """The exact real production shape: one rule's `page` field comes back
+    dict-shaped (a real tie-break response gone wrong). With the
+    root-cause fix in _format_page_display, this rule's REAL result
+    ('fail') survives with a safely-defaulted page (None) -- it never
+    even reaches the batch-level fallback below, because the actual bug
+    is fixed at its source, not just contained.
+    """
+    rules = [_rule("A-1", check_type="judgment"), _rule("A-2", check_type="judgment")]
+    judgment_results = {
+        "A-1": {"result": "pass", "evidence": "Fine.", "page": 4, "confidence": 0.9},
+        "A-2": {
+            # The exact real bug: page holding dict-shaped content instead of ints.
+            "result": "fail",
+            "evidence": "Malformed tie-break response.",
+            "page": [{"page": 7, "detail": "x"}, {"page": 9, "detail": "y"}],
+            "confidence": 0.6,
+        },
+    }
+    result = merge_findings(rules, {}, judgment_results)
+
+    assert result["findings"]["A-1"]["result"] == "pass"
+    # The real result ('fail') is preserved -- the malformed page is the
+    # only thing defaulted, not the whole finding discarded.
+    assert result["findings"]["A-2"]["result"] == "fail"
+    assert result["findings"]["A-2"]["evidence"] == "Malformed tie-break response."
+    assert len(result["findings"]) == 2, "both rules present -- nothing dropped"
+
+
+def test_one_rules_unrelated_internal_error_does_not_take_down_the_whole_batch(monkeypatch):
+    """Batch-level isolation, independent of the specific dict-comparison
+    bug (already fixed at its root above): if some OTHER, future,
+    currently-unknown error occurs while building one rule's entry, every
+    OTHER rule's real result in the same review must still come back --
+    same principle as the humanize-batch isolation fix from a prior
+    round. Forces a real, injected exception for exactly one rule_id via
+    monkeypatch, not the already-fixed malformed-page shape.
+    """
+    import pipeline.merge as merge_module
+
+    real_explode = merge_module._explode_to_rows
+
+    def _flaky_explode(rule_id, entry):
+        if rule_id == "A-2":
+            raise ValueError("simulated unrelated internal error")
+        return real_explode(rule_id, entry)
+
+    monkeypatch.setattr(merge_module, "_explode_to_rows", _flaky_explode)
+
+    rules = [_rule("A-1", check_type="judgment"), _rule("A-2", check_type="judgment"), _rule("A-3", check_type="judgment")]
+    judgment_results = {
+        "A-1": {"result": "pass", "evidence": "Fine.", "page": 4, "confidence": 0.9},
+        "A-2": {"result": "fail", "evidence": "Would have been a real fail, but the build step throws.", "page": 2, "confidence": 0.8},
+        "A-3": {"result": "uncertain", "evidence": "Genuinely uncertain, unrelated to the injected error.", "page": None, "confidence": 0.0},
+    }
+    result = merge_findings(rules, {}, judgment_results)
+
+    # A-1 and A-3's real results are completely untouched.
+    assert result["findings"]["A-1"]["result"] == "pass"
+    assert result["findings"]["A-1"]["evidence"] == "Fine."
+    assert result["findings"]["A-3"]["result"] == "uncertain"
+    assert result["findings"]["A-3"]["evidence"] == "Genuinely uncertain, unrelated to the injected error."
+
+    # A-2 landed on a safe fallback, not a crash and not silently dropped.
+    assert result["findings"]["A-2"]["result"] == "uncertain"
+    assert "internal error" in result["findings"]["A-2"]["evidence"].lower()
+    assert len(result["findings"]) == 3, "all three rules must still be present -- none silently dropped"
+
+
 def test_format_page_display_helper_directly():
     assert _format_page_display(None) is None
     assert _format_page_display(7) == 7
