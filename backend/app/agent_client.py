@@ -90,8 +90,12 @@ RuleCheckStatus = Literal["pass", "fail", "uncertain", "not_applicable", "not_ch
 # Fix Round (2026-08-27): QA-COC-01 added. It's compound (also has a
 # TP-only half) -- run_rule_checks combines its result with phase 1's own
 # draft instead of overwriting wholesale, unlike the other 3.
-_SESSION_NOTES_RULE_IDS = ("QA-RPT-03", "QA-ACF-02", "QA-ACF-08", "QA-COC-01")
-_SESSION_NOTES_COMPOUND_RULE_IDS = ("QA-COC-01",)
+_SESSION_NOTES_RULE_IDS = ("QA-RPT-03", "QA-ACF-02", "QA-ACF-08", "QA-COC-01", "QA-ACF-12")
+# Fix Round, Section 1 Bucket C (2026-08-27): QA-ACF-12 added -- also
+# compound (has its own TP-only phase-1 half, fields.py::_check_ACF12, same
+# as QA-COC-01) -- see pipeline/session_note_comparison.py::
+# compare_session_notes_to_tp's own docstring for the real gap this closes.
+_SESSION_NOTES_COMPOUND_RULE_IDS = ("QA-COC-01", "QA-ACF-12")
 _AGENT_MAKING_RULES_BY_ID = {r["rule_id"]: r for r in _load_agent_making_rules()}
 
 

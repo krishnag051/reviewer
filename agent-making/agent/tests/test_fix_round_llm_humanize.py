@@ -18,26 +18,28 @@ class _FakeTextBlock:
 
 
 class _FakeResponse:
-    def __init__(self, text, input_tokens=100, output_tokens=20):
+    def __init__(self, text, input_tokens=100, output_tokens=20, stop_reason="end_turn"):
         self.content = [_FakeTextBlock(text)]
         self.usage = SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens)
+        self.stop_reason = stop_reason
 
 
 class _FakeMessages:
-    def __init__(self, response_text, input_tokens=100, output_tokens=20):
+    def __init__(self, response_text, input_tokens=100, output_tokens=20, stop_reason="end_turn"):
         self._response_text = response_text
         self._input_tokens = input_tokens
         self._output_tokens = output_tokens
+        self._stop_reason = stop_reason
         self.calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return _FakeResponse(self._response_text, self._input_tokens, self._output_tokens)
+        return _FakeResponse(self._response_text, self._input_tokens, self._output_tokens, self._stop_reason)
 
 
 class _FakeClient:
-    def __init__(self, response_text, input_tokens=100, output_tokens=20):
-        self.messages = _FakeMessages(response_text, input_tokens, output_tokens)
+    def __init__(self, response_text, input_tokens=100, output_tokens=20, stop_reason="end_turn"):
+        self.messages = _FakeMessages(response_text, input_tokens, output_tokens, stop_reason)
 
 
 def test_returns_deterministic_cleanup_unchanged_for_empty_text():

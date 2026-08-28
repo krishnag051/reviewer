@@ -657,6 +657,26 @@ def run_judgment_checks(
     return reconciled
 
 
+# Fix Round (2026-08-27): REAL BUG FOUND AND FIXED, confirmed via a real
+# completed review's own exported CSV -- tie-break summary text below used
+# to interpolate the raw internal result token straight into reviewer-
+# facing evidence ("first call said 'not_applicable'", "call 3 said
+# 'not_checkable'"), exposing this pipeline's own internal vocabulary
+# instead of plain language. This is a pure text-formatting fix -- the
+# underlying result values/logic are completely unchanged.
+_RESULT_TO_NATURAL_PHRASE = {
+    "pass": "pass",
+    "fail": "fail",
+    "uncertain": "this is uncertain",
+    "not_applicable": "this doesn't apply",
+    "not_checkable": "this can't be checked",
+}
+
+
+def _natural_result_phrase(result: str) -> str:
+    return _RESULT_TO_NATURAL_PHRASE.get(result, result)
+
+
 def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
     """The original (pre-Round-93) two-call disagreement fallback,
     extracted unchanged so both run_judgment_checks' own two-call path and
@@ -672,9 +692,9 @@ def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
         "result": "uncertain",
         "evidence": (
             f"Judgment layer disagreed across two consistency-check calls for this "
-            f"rule with identical input: first call said '{f['result']}' ({f_evidence}); "
-            f"second call said '{s['result']}' ({s_evidence}). Flagged uncertain rather "
-            f"than silently keeping one of the two answers."
+            f"rule with identical input: first call said {_natural_result_phrase(f['result'])} "
+            f"({f_evidence}); second call said {_natural_result_phrase(s['result'])} ({s_evidence}). "
+            f"Flagged uncertain rather than silently keeping one of the two answers."
         ),
         "page": None,
         "confidence": 0.0,
@@ -699,7 +719,7 @@ def _three_way_majority_finding(f: dict, s: dict, t: dict) -> dict:
     summaries = []
     for i, e in enumerate(entries):
         ev = e["evidence"] if isinstance(e["evidence"], str) else json.dumps(e["evidence"])
-        summaries.append(f"call {i + 1} said '{e['result']}' ({ev})")
+        summaries.append(f"call {i + 1} said {_natural_result_phrase(e['result'])} ({ev})")
     return {
         "result": "uncertain",
         "evidence": (
@@ -785,7 +805,7 @@ def _reconcile_majority_vote(all_results: list[dict[str, dict]]) -> dict[str, di
         summaries = []
         for i, e in enumerate(entries):
             ev = e["evidence"] if isinstance(e["evidence"], str) else json.dumps(e["evidence"])
-            summaries.append(f"call {i + 1} said '{e['result']}' ({ev})")
+            summaries.append(f"call {i + 1} said {_natural_result_phrase(e['result'])} ({ev})")
         reconciled[rule_id] = {
             "result": "uncertain",
             "evidence": (

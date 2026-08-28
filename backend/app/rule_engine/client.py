@@ -257,7 +257,10 @@ def run_rule_checks(
         # pipeline/session_note_comparison.py::combine_compound_rule_result
         # for why this needs to be COMBINED, not overwritten.
         phase1_results: dict[str, RuleResult] = {}
-        for compound_code in ("QA-COC-01",):
+        # Fix Round, Section 1 Bucket C (2026-08-27): QA-ACF-12 added --
+        # also compound (see app/agent_client.py's own
+        # _SESSION_NOTES_COMPOUND_RULE_IDS comment).
+        for compound_code in ("QA-COC-01", "QA-ACF-12"):
             backend_id = rule_id_by_code.get(compound_code)
             draft = draft_by_rule_id_pre.get(backend_id) if backend_id else None
             if draft is not None:

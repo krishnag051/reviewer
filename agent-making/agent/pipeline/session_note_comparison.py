@@ -130,15 +130,20 @@ def check_date_in_current_report_period(
     report_start, report_end = parse_date_range(current_report_period_str)
 
     if session_date is None:
-        return _uncertain(
-            f"Could not determine a specific calendar date from the session note's session_date "
-            f"({session_date_str!r})."
-        )
+        # Fix Round (2026-08-27): REAL BUG FOUND AND FIXED -- this exposed
+        # the literal internal field name "session_date" and Python's
+        # repr() of the raw value (including a bare "None") directly in
+        # reviewer-facing evidence text. Plain language now, regardless of
+        # WHY the date couldn't be determined (missing vs. unparseable are
+        # the same real outcome for a reviewer: no usable date).
+        return _uncertain("Could not determine a session date from the session note.")
     if report_start is None or report_end is None:
-        return _uncertain(
-            f"Could not determine both ends of the TP's current-report date range from "
-            f"{current_report_period_str!r}."
-        )
+        # Fix Round (2026-08-27): same class of bug as the session_date
+        # case above -- !r would print a literal "None" when the TP
+        # simply never stated its own report period at all. Only include
+        # the raw stated text when there genuinely IS one to show.
+        detail = f" (TP states {current_report_period_str!r})" if current_report_period_str else ""
+        return _uncertain(f"Could not determine both ends of the TP's current-report date range{detail}.")
 
     if report_start <= session_date <= report_end:
         return _finding(
@@ -557,10 +562,17 @@ def compare_session_notes_to_tp(
             f"due to a real upstream failure ({failure_note}) -- the matching note may be one of those. "
             f"Flagged not_checkable rather than guessed at."
         )
+        # Fix Round, Section 1 Bucket C (2026-08-27): QA-ACF-12 gets the
+        # SAME treatment as ACF-02/ACF-08 in this exact branch (a real
+        # upstream extraction failure on the file that might be the
+        # matching one) -- same not_checkable evidence, not a silently
+        # missing key the way QA-COC-01 already is in this specific
+        # branch (a pre-existing gap, not introduced or touched here).
         return {
             "QA-RPT-03": rpt03_combined,
             "QA-ACF-02": _not_checkable(no_match_due_to_failure),
             "QA-ACF-08": _not_checkable(no_match_due_to_failure),
+            "QA-ACF-12": _not_checkable(no_match_due_to_failure),
         }
     if matched_extraction is None:
         no_match_evidence = (
@@ -569,6 +581,9 @@ def compare_session_notes_to_tp(
         )
         acf02 = _uncertain(no_match_evidence)
         acf08 = _uncertain(no_match_evidence)
+        # Fix Round, Section 1 Bucket C (2026-08-27): see this function's
+        # own docstring -- QA-ACF-12's session-note cross-check half.
+        acf12_session = _uncertain(no_match_evidence)
     else:
         matched_result = compare_session_note_to_tp(
             matched_extraction,
@@ -580,6 +595,20 @@ def compare_session_notes_to_tp(
         )
         acf02 = matched_result["QA-ACF-02"]
         acf08 = matched_result["QA-ACF-08"]
+        # Fix Round, Section 1 Bucket C (2026-08-27): QA-ACF-12's own real
+        # gap -- the rule's TP-only phase-1 half (fields.py::_check_ACF12)
+        # only ever checked the TP's own Assessment Date against the TP's
+        # own report-date range; it never cross-referenced the real
+        # session note the way QA-ACF-02/QA-ACF-08 already do. Reuses
+        # check_field_match (the SAME exact-match helper QA-ACF-02's own
+        # date sub-check already uses) against the SAME matched note
+        # ACF-02/ACF-08 use -- not a new matching mechanism. This is
+        # COMPOUND with phase 1 (see combine_compound_rule_result, and
+        # app/agent_client.py's _SESSION_NOTES_COMPOUND_RULE_IDS on the
+        # backend side), not a replacement for the report-date-range/
+        # testing-tool-date check phase 1 already does.
+        session_date = value_or_none(matched_extraction, "session_date")
+        acf12_session = check_field_match(session_date, tp_assessment_date, field_label="Assessment Date")
 
     # Fix Round (2026-08-27): QA-COC-01's "detailed" half -- checked across
     # EVERY successfully-extracted note (see check_note_detail_level_across_
@@ -587,4 +616,7 @@ def compare_session_notes_to_tp(
     # note the way ACF-02/ACF-08 are).
     coc01_detail = check_note_detail_level_across_notes(ok_extractions)
 
-    return {"QA-RPT-03": rpt03_combined, "QA-ACF-02": acf02, "QA-ACF-08": acf08, "QA-COC-01": coc01_detail}
+    return {
+        "QA-RPT-03": rpt03_combined, "QA-ACF-02": acf02, "QA-ACF-08": acf08, "QA-COC-01": coc01_detail,
+        "QA-ACF-12": acf12_session,
+    }

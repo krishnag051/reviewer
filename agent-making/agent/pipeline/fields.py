@@ -1268,6 +1268,19 @@ def _check_SCH07(rule: dict, fields: dict) -> tuple:
 
 
 def _check_HRS02(rule: dict, fields: dict) -> tuple:
+    """Fix Round, Section 1 (2026-08-27): confirmed real staleness --
+    ma'am's own wording for this rule drifted through 3 versions ('note
+    on review email to Eliana' -> Round 90's 'strong clinical rationale
+    required' -> the current, simplest framing: 'auto-flagged
+    deterministically if hours > 20, no rationale-quality judgment
+    involved'). The actual THRESHOLD LOGIC here was already correct and
+    unchanged across all 3 wordings (a plain hours > threshold check, no
+    rationale-quality judgment ever implemented) -- only the FAIL
+    evidence text still said "requires a note on the review email to
+    Eliana", a phrase from the oldest, no-longer-accurate version. Fixed
+    to a plain, current statement of the finding -- the logic itself
+    needed no change.
+    """
     cpt_code = rule["params"]["cpt_code"]
     threshold = rule["params"]["hours_threshold"]
     hours = _find_weekly_hours_for_code(fields["full_text"], cpt_code)
@@ -1276,8 +1289,7 @@ def _check_HRS02(rule: dict, fields: dict) -> tuple:
     if hours > threshold:
         return (
             "fail",
-            f"{cpt_code} hours requested: {hours}/week, exceeds {threshold} hrs/week — "
-            f"requires a note on the review email to Eliana.",
+            f"{cpt_code} hours requested: {hours}/week, exceeds the {threshold} hrs/week threshold.",
             None, 0.75,
         )
     return "pass", f"{cpt_code} hours requested: {hours}/week (<= {threshold} hrs/week).", None, 0.75
@@ -1620,33 +1632,46 @@ def _check_RPT05(rule: dict, fields: dict) -> tuple:
     Medicaid's own specific wording (SM-01 keeps it, payor-scoped); making
     it universal here would risk a false fail for a payor that genuinely
     allows a gap between the old auth's end and the new auth's start.
+
+    Fix Round, Section 1 (2026-08-27): REAL BUG FOUND AND FIXED -- the
+    2026-08-26 round already updated this rule's own DESCRIPTION from a
+    6-month default to a 26-week default (flagged explicitly in its own
+    notes as NOT YET carried into this function's actual code), but the
+    code itself was still doing month-math (_add_months, max_months=6)
+    until now. Confirmed real reason week-math is the right fix, not just
+    a unit relabeling: calendar months vary in length (28-31 days), so
+    "6 months" and "26 weeks" (182 days) are NOT the same real date in
+    general -- the params key is renamed accordingly
+    (max_weeks_after_report_end, default 26) so a stale month-shaped
+    param can never silently coexist with week-shaped code.
     """
-    max_months = rule.get("params", {}).get("max_months_after_report_end", 6)
+    max_weeks = rule.get("params", {}).get("max_weeks_after_report_end", 26)
     report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
     auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
     if not report_range or not auth_range:
         return (
             "not_checkable",
-            "Could not find both 'Date of Current Report' and 'Authorization Dates Requested' to compute the 6-month window.",
+            "Could not find both 'Date of Current Report' and 'Authorization Dates Requested' to compute the "
+            "26-week window.",
             None, 0.0,
         )
 
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     auth_end = datetime.strptime(auth_range[1], "%m/%d/%Y")
-    max_allowed_end = _add_months(report_end, max_months)
+    max_allowed_end = report_end + timedelta(weeks=max_weeks)
 
     if auth_end > max_allowed_end:
         overage_days = (auth_end - max_allowed_end).days
         return (
             "fail",
-            f"Requested auth end ({auth_range[1]}) is {overage_days} day(s) beyond the {max_months}-month "
+            f"Requested auth end ({auth_range[1]}) is {overage_days} day(s) beyond the {max_weeks}-week "
             f"default window from the current report's end ({report_range[1]}); latest allowed under the "
             f"default is {max_allowed_end.strftime('%m/%d/%Y')}.",
             None, 0.75,
         )
     return (
         "pass",
-        f"Requested auth end ({auth_range[1]}) is within the {max_months}-month default window from the "
+        f"Requested auth end ({auth_range[1]}) is within the {max_weeks}-week default window from the "
         f"current report's end ({report_range[1]}); latest allowed is {max_allowed_end.strftime('%m/%d/%Y')}.",
         None, 0.75,
     )
@@ -1929,7 +1954,42 @@ VISION_ELIGIBLE_RULE_SECTIONS: dict[str, str] = {
     "QA-GIP-32": "gip_graph",
     "QA-GIP-34": "gip_graph",
     "QA-GIP-35": "gip_graph",
+    # Fix Round, Section 1 (2026-08-27): QA-PAR-03 ("parent training >4
+    # data points per graph") reads the SAME per-goal "Graph:" image as
+    # QA-GIP-02/32 -- parent-training goals are goal blocks like any
+    # other, just tagged by their own Skill Domain, so the existing
+    # whole-document "gip_graph" page range already covers them with no
+    # new finder needed.
+    "QA-PAR-03": "gip_graph",
+    # Fix Round, Section 1 (2026-08-27): CIG-01 ("ABLLS completed A-Z") --
+    # confirmed real document shape: the ABLLS-R section's own completion
+    # status lives in an embedded "ABLLS grid" image (real text found:
+    # "Below you will find the ABLLS grid:" immediately followed by a
+    # page break into the grid image itself), not extractable text -- see
+    # _ablls_grid_page_range below, same vision dependency as ACF's own
+    # VB-MAPP/Vineland grid.
+    "CIG-01": "ablls_grid",
 }
+
+
+def _ablls_grid_page_range(fields: dict) -> set[int]:
+    """Section-page-range finder for "ablls_grid" (CIG-01) -- confirmed
+    real document shape: "Below you will find the ABLLS grid:" appears in
+    extractable text immediately before the grid itself, which is an
+    embedded image with no extractable text of its own. Renders the page
+    that phrase falls on plus the next page (the grid image itself
+    reliably starts on a fresh page in the confirmed real sample), same
+    "render every page in this small, explicitly bounded span" reasoning
+    _acf_section_page_range already uses.
+    """
+    text = fields["full_text"]
+    pages: set[int] = set()
+    for m in re.finditer(r"ABLLS grid", text, re.IGNORECASE):
+        page = _page_for_offset(fields, m.start())
+        if page is not None:
+            pages.add(page)
+            pages.add(page + 1)
+    return pages
 
 
 def _acf_section_page_range(fields: dict) -> set[int]:
@@ -1995,6 +2055,7 @@ def _gip_graph_page_range(fields: dict) -> set[int]:
 _SECTION_PAGE_RANGE_FINDERS = {
     "acf": _acf_section_page_range,
     "gip_graph": _gip_graph_page_range,
+    "ablls_grid": _ablls_grid_page_range,
 }
 
 
@@ -2693,7 +2754,17 @@ _ZERO_MASTERY_PATTERN = re.compile(
     r"(?:\b0\s*%"
     r"|\b(?:0|zero)\s*(?:occurrences?|times?|instances?|x)\b"
     r"|\bnear[\s-]*0\b"
-    r"|^\s*(?:0|zero|none)\s*\.?\s*$)",
+    r"|^\s*(?:0|zero|none)\s*\.?\s*$"
+    # Fix Round, Section 1 (2026-08-27): "Current Data:" values (the real
+    # field this pattern was extended to also cover) confirmed to use a
+    # plain "<number> <Sampling Method name>" phrasing with no "%" sign at
+    # all (e.g. real sample TP: "Current Data: 56.67 Percent Correct") --
+    # a genuine zero reading in that same real format ("0 Percent
+    # Correct") would silently miss every branch above, none of which
+    # match a bare "0"/"zero" followed by a sampling-method WORD instead
+    # of "%"/occurrences/times/instances/x.
+    r"|\b(?:0|zero)\s+percent\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -2740,6 +2811,24 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     agreeing on a real problem, not a conflict (see
     find_cross_rule_contradictions, which only flags a genuine
     blank-vs-populated DISAGREEMENT, never two rules agreeing).
+
+    Fix Round, Section 1 (2026-08-27): the 2026-08-26 round added
+    "current level" alongside "Mastery Criteria" to this rule's own
+    description, but flagged in its own notes that the code was NOT
+    changed to match -- confirmed real gap, now fixed. "Current Data:" is
+    the real field name for a goal's current-level value (confirmed on
+    the real sample TP, e.g. "Current Data: 0 Percent Correct" would be
+    exactly the same zero-endpoint problem this rule already bans for
+    Mastery Criteria). Checked with the SAME zero/near-zero pattern, same
+    per-goal-block scope -- but NOT the blank-field failure that applies
+    to Mastery Criteria: a blank Current Data reading commonly just means
+    "no data collected yet this period" for a newly-started goal, a
+    different, legitimate situation from Mastery Criteria being blank
+    (which is a real setup problem regardless of goal age) -- flagging a
+    blank Current Data the same way would risk a real false-fail on
+    every brand-new goal. Only the explicit zero/near-zero PATTERN is
+    checked for Current Data, matching the actual "no 0%, use fewer than
+    one instance" ask precisely.
     """
     text = fields["full_text"]
     goal_starts = _goal_block_starts(text)
@@ -2752,30 +2841,51 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
-        if not mc_m:
+        cd_m = re.search(r"Current Data:[ \t]*([^\n]*)", block)
+        if not mc_m and not cd_m:
             continue
         total += 1
-        mc_val = mc_m.group(1).strip()
         marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
         goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
-        if mc_val and _ZERO_MASTERY_PATTERN.search(mc_val):
-            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
-            problems.append((page, (
-                f"Mastery Criteria for goal '{goal_name}' reads {mc_val!r} -- a zero/near-zero "
-                f"endpoint must instead read 'fewer than one instance' (or equivalent "
-                f"minimum-occurrence phrasing)."
-            )))
-        elif not mc_val:
-            # Fix Round, item 6: fails on its own now, regardless of
-            # whether a Sampling Method field is also present in this
-            # block -- see this function's own docstring.
-            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
-            problems.append((page, f"Mastery Criteria is blank for goal '{goal_name}'."))
+
+        if mc_m:
+            mc_val = mc_m.group(1).strip()
+            if mc_val and _ZERO_MASTERY_PATTERN.search(mc_val):
+                page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+                problems.append((page, (
+                    f"Mastery Criteria for goal '{goal_name}' reads {mc_val!r} -- a zero/near-zero "
+                    f"endpoint must instead read 'fewer than one instance' (or equivalent "
+                    f"minimum-occurrence phrasing)."
+                )))
+            elif not mc_val:
+                # Fix Round, item 6: fails on its own now, regardless of
+                # whether a Sampling Method field is also present in this
+                # block -- see this function's own docstring.
+                page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+                problems.append((page, f"Mastery Criteria is blank for goal '{goal_name}'."))
+
+        if cd_m:
+            cd_val = cd_m.group(1).strip()
+            if cd_val and _ZERO_MASTERY_PATTERN.search(cd_val):
+                page = _page_for_offset(fields, goal_starts[i] + cd_m.start())
+                problems.append((page, (
+                    f"Current Data for goal '{goal_name}' reads {cd_val!r} -- a zero/near-zero "
+                    f"endpoint must instead read 'fewer than one instance' (or equivalent "
+                    f"minimum-occurrence phrasing)."
+                )))
+            # Deliberately no blank-Current-Data failure -- see this
+            # function's own docstring for why that's different from a
+            # blank Mastery Criteria.
 
     if total == 0:
-        return "not_checkable", "No goal blocks with a Mastery Criteria field found.", None, 0.0
+        return "not_checkable", "No goal blocks with a Mastery Criteria or Current Data field found.", None, 0.0
     if not problems:
-        return "pass", f"None of the {total} goal(s)' Mastery Criteria use a zero/near-zero endpoint phrasing.", None, 0.85
+        return (
+            "pass",
+            f"None of the {total} goal(s)' Mastery Criteria or Current Data use a zero/near-zero "
+            f"endpoint phrasing.",
+            None, 0.85,
+        )
     if len(problems) == 1:
         page, detail = problems[0]
         return "fail", detail, page, 0.85
@@ -3027,6 +3137,39 @@ def _check_BIP05(rule: dict, fields: dict) -> tuple:
     Verified this doesn't fire on any of the three real documents (none
     has a goal repeated as two separate blocks) -- added coverage for a
     real possible shape without manufacturing evidence that isn't there.
+
+    Fix Round, Section 1 Bucket D (2026-08-27): REAL SCOPE BUG FOUND AND
+    FIXED, visible directly in the code without needing a specific real
+    document -- this rule's own description is "Age-appropriate mastery
+    criteria for BEHAVIOR TARGETS" specifically, but the code processed
+    EVERY goal block _goal_block_starts finds, including 'Target Goal:'
+    blocks (skill-acquisition Goals in Progress entries -- a completely
+    different category from BIP's own Behavior Reduction Goals). Ma'am's
+    own confirmed complaint ("pulling in transition-plan content it
+    shouldn't") is exactly this shape: nothing scoped this checker to
+    behavior-target blocks only, so ANY section of the document using a
+    similarly-labeled per-item block got swept in.
+
+    NOT a blanket "skip every Target Goal: block" fix -- that would have
+    broken the Round 83 cross-block generalization above, which has its
+    OWN confirmed real case (see test_check_bip05_catches_the_real_
+    confirmed_case_with_different_field_labels): the SAME behavior-target
+    goal genuinely gets restated under the OTHER marker form ('Target
+    Goal:') elsewhere in some real documents. The real, correct
+    distinction is by NAME, not by marker form: the same-BLOCK Target-
+    Name-vs-own-Mastery-Criteria check (this rule's primary check) now
+    only ever reads a block's OWN name from a genuine 'Target Name:'
+    block (skill-acquisition goals never have a numeric behavior-target
+    ceiling in their own name to begin with, so this was always a
+    no-op for them in practice, but is now also structurally scoped, not
+    just incidentally safe). The cross-block generalization (a goal
+    repeated under a DIFFERENT marker with a different Mastery Criteria)
+    now only considers a 'Target Goal:' block's own name if that EXACT
+    normalized name was ALSO seen under a real 'Target Name:' block
+    somewhere in the document -- confirming it's genuinely the same
+    behavior-target goal restated, not an unrelated skill-acquisition
+    goal or Transition Plan entry that merely happens to share the
+    'Target Goal:' label shape.
     """
     text = fields["full_text"]
     goal_starts = _goal_block_starts(text)
@@ -3034,39 +3177,67 @@ def _check_BIP05(rule: dict, fields: dict) -> tuple:
         return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
 
     goal_starts = goal_starts + [len(text)]
+    blocks = []
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        is_behavior_target = block.startswith("Target Name:")
+        marker_len = len("Target Name:") if is_behavior_target else len("Target Goal:")
+        goal_name = block[marker_len:].split("\n", 1)[0].strip()
+        blocks.append((goal_starts[i], block, is_behavior_target, goal_name))
+
+    # First pass: which normalized goal names are CONFIRMED real behavior
+    # targets (appear under a genuine 'Target Name:' block at least once)?
+    # This is what lets the cross-block generalization below trust a
+    # same-named 'Target Goal:' block as a restatement of that SAME
+    # behavior target, rather than an unrelated skill-acquisition goal.
+    confirmed_behavior_target_names = {
+        _normalize_goal_text(name) for _, _, is_bt, name in blocks if is_bt
+    }
+
     problems = []
     checked = 0
     mastery_by_goal: dict[str, list[tuple[int | None, str, float]]] = {}
-    for i in range(len(goal_starts) - 1):
-        block = text[goal_starts[i]:goal_starts[i + 1]]
-        marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
-        goal_name = block[marker_len:].split("\n", 1)[0].strip()
+    for start, block, is_behavior_target, goal_name in blocks:
         mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
         if not mc_m:
             continue
         mc_val = mc_m.group(1).strip()
-        target_ceiling = _parse_occurrence_ceiling(goal_name)
         mastery_ceiling = _parse_occurrence_ceiling(mc_val)
+        norm_name = _normalize_goal_text(goal_name)
+
+        # A 'Target Goal:' block only counts toward the cross-block
+        # generalization when it's a confirmed restatement of a real
+        # behavior target -- otherwise it's out of this rule's scope
+        # entirely (a skill-acquisition goal, or unrelated content from
+        # elsewhere in the document that merely uses the same label
+        # shape).
+        in_scope = is_behavior_target or norm_name in confirmed_behavior_target_names
+        if not in_scope:
+            continue
 
         if mastery_ceiling is not None:
-            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
-            mastery_by_goal.setdefault(_normalize_goal_text(goal_name), []).append((page, mc_val, mastery_ceiling))
+            page = _page_for_offset(fields, start + mc_m.start())
+            mastery_by_goal.setdefault(norm_name, []).append((page, mc_val, mastery_ceiling))
 
+        if not is_behavior_target:
+            continue  # same-block Target-Name-vs-own-name check only applies to the real behavior-target block itself
+        target_ceiling = _parse_occurrence_ceiling(goal_name)
         if target_ceiling is None or mastery_ceiling is None:
             continue  # this goal doesn't state a numeric threshold on both sides -- not comparable
         checked += 1
         if mastery_ceiling > target_ceiling + 0.01:
-            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+            page = _page_for_offset(fields, start + mc_m.start())
             problems.append((page, (
                 f"Goal '{goal_name[:120]}' states a target threshold in its own name, but its "
                 f"Mastery Criteria ({mc_val!r}) allows MORE occurrences than that same target "
                 f"implies -- these contradict each other for the same goal."
             )))
 
-    # Round 83, item 2c: cross-block generalization -- the same goal
-    # repeated as two separate blocks with two DIFFERENT Mastery Criteria
-    # ceilings is its own real contradiction, independent of whether
-    # either block's own Target Name states a numeric threshold at all.
+    # Round 83, item 2c: cross-block generalization -- the same CONFIRMED
+    # behavior-target goal repeated as two separate blocks with two
+    # DIFFERENT Mastery Criteria ceilings is its own real contradiction,
+    # independent of whether either block's own name states a numeric
+    # threshold at all.
     for norm_name, entries in mastery_by_goal.items():
         distinct_ceilings = {ceiling for _, _, ceiling in entries}
         if len(distinct_ceilings) > 1:
@@ -3319,8 +3490,19 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
 # a count/level qualifier followed by "for N consecutive/repeated
 # sessions/days/weeks/months." General pattern, not tied to any one
 # behavior name.
+#
+# Fix Round, Section 1 Bucket D (2026-08-27): REAL BUG FOUND AND FIXED,
+# visible directly in the regex without needing a specific real document
+# -- a "2 minutes" duration qualifier (a TIME-based window, e.g. "will
+# remain calm for 2 minutes") was reported as failing to parse. Confirmed:
+# the unit alternation only ever listed sessions/days/weeks/months/
+# observations -- minutes/seconds/hours (equally real, equally valid
+# duration units for a behavior-reduction criterion) were never included
+# at all, so ANY minutes/seconds/hours-based duration qualifier silently
+# failed this match and got treated as if no duration qualifier existed.
 _DURATION_QUALIFIER_RE = re.compile(
-    r"for\s+\d+\s*(?:consecutive|straight|repeated)?\s*(?:sessions?|days?|weeks?|months?|observations?)",
+    r"for\s+\d+\s*(?:consecutive|straight|repeated)?\s*"
+    r"(?:sessions?|days?|weeks?|months?|observations?|minutes?|seconds?|hours?)",
     re.IGNORECASE,
 )
 
@@ -4551,6 +4733,482 @@ def _check_COC08(rule: dict, fields: dict) -> tuple:
     return "fail", evidence, None, 0.75
 
 
+# --- Fix Round, Section 1 (2026-08-27): "wording changed but no real code" ---
+# 20 rules whose description/notes were updated in earlier rounds without
+# anyone confirming real code enforces the new wording. See each function's
+# own docstring for what was found and fixed for that specific rule_id.
+
+
+def _check_BAR01(rule: dict, fields: dict) -> tuple:
+    """QA-BAR-01: "a barrier/goal requirement that only kicks in
+    conditionally around a 25-hour threshold" (per this rule's own
+    current description: applies only when the request exceeds 25 hours
+    of 97153). REAL GAP FOUND AND FIXED: the 2026-08-26 round added this
+    threshold to the description and flagged explicitly, in its own
+    notes, that nothing enforced it in code -- the LLM was only ever told
+    the condition in English, with no real precondition gate. Same
+    hybrid shape as _check_HRS05: the threshold gate is a real DET
+    precondition (zero judgment call when the threshold genuinely isn't
+    met); the actual "is a barrier mentioned" question stays genuinely
+    judgment (a holistic read across the whole document, not reducible
+    to a keyword scan -- see this rule's own notes for the real PASS/FAIL
+    examples already established).
+    """
+    threshold = rule.get("params", {}).get("hours_threshold", 25)
+    cpt_code = rule.get("params", {}).get("cpt_code", "97153")
+    hours = _find_weekly_hours_for_code(fields["full_text"], cpt_code)
+    if hours is None:
+        return (
+            "not_checkable",
+            f"Could not find {cpt_code} hours requested to check the {threshold}-hour threshold this rule "
+            f"applies above.",
+            None, 0.0,
+        )
+    if hours <= threshold:
+        return (
+            "not_applicable",
+            f"{cpt_code} hours requested: {hours}/week, at or below the {threshold}-hour threshold this "
+            f"rule applies above -- rule does not apply.",
+            None, 0.85,
+        )
+    return (
+        "not_checkable",
+        f"{cpt_code} hours requested: {hours}/week, above the {threshold}-hour threshold -- rule applies; "
+        f"whether a barrier is documented anywhere in the report requires reading the full narrative.",
+        None, 0.0,
+    )
+
+
+def _find_hours_after_label(text: str, label_pattern: str) -> float | None:
+    """Finds a "<N> hours per <period>." value immediately AFTER a
+    label (e.g. "97156-Parent Training\\n1 hour per week") -- the
+    OPPOSITE layout from _find_weekly_hours_for_code's "<N> hours per
+    week.\\n<label>" (value BEFORE the label). Confirmed real document
+    shape: the "Hours Approved Previous Authorization" section lists
+    each code's value AFTER its own label line, the reverse of the
+    current "Hours Requesting" section's own layout for the same code.
+    """
+    m = re.search(
+        rf"{label_pattern}\s*\n?\s*(\d+(?:\.\d+)?)\s*hours?\s*per\s*(?:week|auth(?:orization)?)\.?",
+        text, re.IGNORECASE,
+    )
+    return float(m.group(1)) if m else None
+
+
+def _check_HF05(rule: dict, fields: dict) -> tuple:
+    """HF-05: "BCBA indicates hours PT occurred in previous auth period,
+    and this matches PT hours requested." REAL, CONFIRMED DATA GAP,
+    documented rather than guessed around: "hours PT OCCURRED" (actual
+    utilization) is not a field this pipeline has ever found extractable
+    text for on a real document -- only hours APPROVED for the previous
+    period are stated (confirmed real finding, an earlier round's own
+    real-data check: "Hours Approved Previous Authorization... states PT
+    previous auth was 2 hours/week... but no narrative BCBA statement
+    explicitly confirms 'hours PT occurred' in the previous period").
+
+    This checker does the real, extractable half -- compares 97156
+    (Parent Training) hours APPROVED for the previous period against
+    97156 hours REQUESTED now, using _find_hours_after_label (the
+    Approved-Previous-Authorization section's own reversed layout) and
+    _find_weekly_hours_for_code (the current Hours Requesting section) --
+    and surfaces that real comparison as context, but always escalates
+    to judgment (not_checkable) for the "occurred" half specifically,
+    since treating "approved" as if it were "occurred" would overstate
+    what this pipeline actually verified.
+    """
+    text = fields["full_text"]
+    approved = _find_hours_after_label(text, r"97156-\s*Parent\s*Training")
+    requested = _find_weekly_hours_for_code(text, "97156")
+    if approved is None or requested is None:
+        return (
+            "not_checkable",
+            "Could not find both the previous-period APPROVED and currently REQUESTED 97156 (Parent "
+            "Training) hours to compare.",
+            None, 0.0,
+        )
+    comparison = (
+        f"97156 (Parent Training) hours approved for the previous period: {approved}/week; hours requested "
+        f"now: {requested}/week ({'match' if abs(approved - requested) < 0.01 else 'do NOT match'})."
+    )
+    return (
+        "not_checkable",
+        f"{comparison} Note: 'approved' is not the same as 'occurred' -- whether PT hours actually "
+        f"occurred during the previous period is a real BCBA narrative statement this pipeline has never "
+        f"found extractable text for on a real document; escalating for a full-text judgment read.",
+        None, 0.0,
+    )
+
+
+def _check_COC06(rule: dict, fields: dict) -> tuple:
+    """QA-COC-06: "Date faxed to doctor includes month/day, and is within
+    the current dates of report" -- REAL FIX: the 2026-08-26 round
+    dropped the year requirement from this rule's own wording and added
+    the within-report-date-range check, but its own notes flag that
+    conversion to a real deterministic checker was never reached (still
+    plain judgment, "with no guarantee it applies date-range math
+    correctly or consistently"). Built here: reuses QA-COC-04's own real
+    "faxed to ... on <date>" regex, now accepting a date WITHOUT a year
+    (matching the current wording's own dropped requirement), and
+    QA-RPT-05/QA-COC-04's own _find_labeled_date_range helper for the
+    within-report-range check. A fax date with no year genuinely cannot
+    be range-checked (there's no year to anchor it to) -- returns
+    not_checkable for that specific case rather than guessing a year.
+    """
+    text = fields["full_text"]
+    m = re.search(r"faxed to [^\n]*?on\s*(\d{1,2})/(\d{1,2})(?:/(\d{4}))?", text, re.IGNORECASE)
+    if not m:
+        return "not_checkable", "Could not find a 'faxed to ... on <date>' statement in the document.", None, 0.0
+    month, day, year = m.group(1), m.group(2), m.group(3)
+    raw_date = f"{month}/{day}" + (f"/{year}" if year else "")
+    report_range = _find_labeled_date_range(text, "Date of Current Report")
+    if not report_range:
+        return (
+            "not_checkable",
+            f"Found fax date {raw_date!r} (month/day present) but could not find 'Date of Current Report' "
+            f"to check it falls within range.",
+            None, 0.0,
+        )
+    if not year:
+        return (
+            "not_checkable",
+            f"Fax date {raw_date!r} has month/day but no year -- cannot confirm it falls within the "
+            f"current report's date range ({report_range[0]} to {report_range[1]}) without a year to "
+            f"anchor it.",
+            None, 0.0,
+        )
+    fax_date = datetime(int(year), int(month), int(day))
+    start = datetime.strptime(report_range[0], "%m/%d/%Y")
+    end = datetime.strptime(report_range[1], "%m/%d/%Y")
+    if start <= fax_date <= end:
+        return (
+            "pass",
+            f"Fax date {raw_date!r} (month/day present) falls within the current report's date range "
+            f"({report_range[0]} to {report_range[1]}).",
+            None, 0.8,
+        )
+    return (
+        "fail",
+        f"Fax date {raw_date!r} does not fall within the current report's date range ({report_range[0]} "
+        f"to {report_range[1]}).",
+        None, 0.8,
+    )
+
+
+def _check_RPT07(rule: dict, fields: dict) -> tuple:
+    """QA-RPT-07: "Flag if requested auth range is less than a full
+    authorization period (13-week or 26-week cycle, depending on
+    payor)." Real, confirmed context resolving this rule's own flagged
+    blocker ("the payor-to-week-count mapping this needs isn't confirmed
+    anywhere in the codebase"): a separate, already-existing Healthfirst-
+    specific rule (13 weeks above an age threshold, 26 at/under it)
+    already handles the payor-conditional 13-week case on its own,
+    payor-scoped terms -- this universal rule's own real job is just the
+    UNIVERSAL default (26 weeks), same "default, with payor-specific
+    overrides living in their own dedicated rules" shape QA-RPT-05
+    already established for the auth-END-date check. Computes the
+    requested range's own real length in weeks from 'Authorization Dates
+    Requested' and compares against that default.
+
+    REAL BUG FOUND AND FIXED (confirmed on the real Zyaan Ullah sample
+    TP, a Healthfirst patient): without a self-exclusion, this rule
+    would fail every Healthfirst patient correctly following THEIR OWN
+    13-week cycle (Ullah's real requested range: 12.9 weeks -- correctly
+    short of THIS rule's 26-week universal default, but that's the wrong
+    comparison for a Healthfirst patient on the age-appropriate 13-week
+    track HF-01 already validates). Self-excludes Healthfirst here, same
+    "defer to the payor's own dedicated rule" pattern QA-HRS-11 already
+    established for Healthfirst/Emblem's own 97151-hour caps -- avoids a
+    contradictory pair of findings (this rule's false fail alongside
+    HF-01's correct pass) for the exact same real-world fact.
+    """
+    detected_payor = fields.get("payor")
+    excluded_payors = rule.get("params", {}).get("excluded_payors", ["Healthfirst"])
+    if detected_payor in excluded_payors:
+        return (
+            "not_applicable",
+            f"Payor detected as '{detected_payor}', which has its own dedicated authorization-period-length "
+            f"rule (not this universal default).",
+            None, 0.9,
+        )
+    weeks_expected = rule.get("params", {}).get("expected_weeks", 26)
+    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
+    if not auth_range:
+        return (
+            "not_checkable",
+            "Could not find 'Authorization Dates Requested' to compute the requested auth range's length.",
+            None, 0.0,
+        )
+    start = datetime.strptime(auth_range[0], "%m/%d/%Y")
+    end = datetime.strptime(auth_range[1], "%m/%d/%Y")
+    actual_weeks = (end - start).days / 7
+    if actual_weeks < weeks_expected - 0.5:  # half-week tolerance for inclusive-day-count rounding
+        return (
+            "fail",
+            f"Requested auth range ({auth_range[0]} to {auth_range[1]}) spans {actual_weeks:.1f} weeks, "
+            f"short of a full {weeks_expected}-week authorization period.",
+            None, 0.75,
+        )
+    return (
+        "pass",
+        f"Requested auth range ({auth_range[0]} to {auth_range[1]}) spans {actual_weeks:.1f} weeks, "
+        f"meeting the full {weeks_expected}-week authorization period.",
+        None, 0.75,
+    )
+
+
+# Fix Round, Section 1: QA-SCH-06's own "another related therapy" signal --
+# frequency/duration phrasing ("OT 2x per week for 30 minutes") confirmed as
+# the real shape this appears in, not a dedicated schedule table.
+_OTHER_THERAPY_MENTION_RE = re.compile(
+    r"\boccupational therapy\b|\bphysical therapy\b|\bspeech therapy\b|\bspeech-language\b"
+    r"|\bOT\b[^.\n]{0,20}\bper week\b|\bPT\b[^.\n]{0,20}\bper week\b",
+    re.IGNORECASE,
+)
+
+
+def _check_SCH06(rule: dict, fields: dict) -> tuple:
+    """QA-SCH-06: "If overlaps related therapy, that schedule is added to
+    TP." REAL BUG FOUND AND FIXED: check_type was already "deterministic"
+    in rules.json but had ZERO checker registered in DET_CHECKS -- every
+    real document silently fell through to the generic not_checkable
+    fallback for this rule regardless of content, an HF-01-style silent
+    gap (labeled deterministic, no logic behind the label at all).
+
+    LIMITATION, explicit, not glossed over: genuine time-block overlap
+    detection between the ABA schedule and another therapy's own
+    schedule needs BOTH schedules' actual day/time data -- confirmed on
+    the real sample TP, the "other therapy" mention (e.g. "OT 2x per
+    week for 30 minutes") states FREQUENCY/DURATION only, never specific
+    days/times, so a real overlap computation isn't possible from this
+    field alone in the one real document available to verify against.
+    This checker implements the real, confirmable half instead: if
+    another therapy is mentioned as received at all, confirm SOME
+    schedule/time information for it (a day-of-week name or a clock-time
+    pattern) appears nearby in the document -- flagging the case where
+    another therapy is mentioned with no schedule information anywhere
+    near it, which is the real, checkable core of "that schedule is
+    added to TP." Full day/time overlap arithmetic is NOT implemented --
+    flagged here rather than guessed at without a confirmed real-document
+    example showing explicit day/time blocks for a non-ABA service.
+    """
+    text = fields["full_text"]
+    m = _OTHER_THERAPY_MENTION_RE.search(text)
+    if not m:
+        return (
+            "not_applicable",
+            "No mention of another related therapy (OT/PT/speech) found -- no overlap to check.",
+            None, 0.8,
+        )
+    window = text[max(0, m.start() - 200):m.end() + 200]
+    has_schedule_info = bool(re.search(
+        r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b|\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+        window, re.IGNORECASE,
+    ))
+    if has_schedule_info:
+        return (
+            "pass",
+            "Another related therapy is mentioned and schedule/time information for it appears nearby in "
+            "the document.",
+            None, 0.65,
+        )
+    return (
+        "uncertain",
+        "Another related therapy (OT/PT/speech) is mentioned as received, but no day/time schedule "
+        "information for it was found nearby in the document -- cannot confirm whether its schedule was "
+        "added to the TP as required.",
+        None, 0.0,
+    )
+
+
+def _check_GIP19(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-19: "Behavior goals and summary section present in
+    review." Real, confirmed field shapes: at least one goal block whose
+    own Skill Domain mentions "Behavior" (e.g. the real sample TP's
+    "Skill Domain: Functional Behavior Skills"), AND a non-blank
+    "Behavioral Summary:" field -- the same field name QA-RPT-01's own
+    checker already reads elsewhere in this file, reused here rather
+    than guessed at fresh.
+    """
+    text = fields["full_text"]
+    has_behavior_goal = bool(re.search(r"Skill Domain:[ \t]*[^\n]*Behavior", text, re.IGNORECASE))
+    summary_m = re.search(r"Behavioral Summary:[ \t]*([^\n]*)", text, re.IGNORECASE)
+    has_summary = bool(summary_m and summary_m.group(1).strip())
+    if has_behavior_goal and has_summary:
+        return (
+            "pass",
+            "At least one Behavior-domain goal and a non-blank Behavioral Summary section are both present.",
+            None, 0.8,
+        )
+    missing = []
+    if not has_behavior_goal:
+        missing.append("no goal with a Behavior-related Skill Domain found")
+    if not has_summary:
+        missing.append("Behavioral Summary section is missing or blank")
+    return "fail", "; ".join(missing) + ".", None, 0.75
+
+
+# Fix Round, Section 1: QA-GIP-26's own real false-pass bug -- confirmed
+# real document shape, OT/PT/speech mentioned as background context ("Zyaan
+# currently receives OT 2x per week...") is completely normal and must NOT
+# fail this rule; only an actual GOAL whose own Target Goal/Skill Domain
+# text is itself OT/PT/speech-flavored is the real violation. Scoped to
+# each goal block's own text, never the whole document, for exactly that
+# reason -- same false-positive-avoidance discipline as QA-GIP-30/31/33.
+_OTHER_DISCIPLINE_GOAL_RE = re.compile(
+    r"\boccupational therapy\b|\bphysical therapy\b|\bspeech therapy\b|\bspeech-language\b"
+    r"|\bOT goal\b|\bPT goal\b",
+    re.IGNORECASE,
+)
+
+
+def _check_GIP26(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-26: "No OT, PT, or speech therapy goals included." REAL BUG,
+    ROOT-CAUSED: this rule's own confirmed real false-pass shape is a
+    goal WITHIN the Goals in Progress section whose own Target Goal/
+    Skill Domain text is itself OT/PT/speech-flavored (a goal that
+    belongs to a different discipline, miscategorized into ABA's own
+    goal list) -- judgment, reading the whole document at once, has
+    reportedly passed this even when such a goal is present. Scoped
+    strictly to each goal block's OWN text (never the whole document),
+    since a completely normal, unrelated mention elsewhere in the
+    document (e.g. "Zyaan currently receives OT 2x per week" as
+    background/biopsychosocial context) must never trigger this --
+    confirmed as real, benign content on the real sample TP.
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text) + [len(text)]
+    hits = []
+    for i in range(len(starts) - 1):
+        block = text[starts[i]:starts[i + 1]]
+        tg_m = re.search(r"(?:Target Goal|Target Name):[ \t]*([^\n]*)", block)
+        sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block)
+        combined = " ".join(filter(None, [tg_m.group(1) if tg_m else None, sd_m.group(1) if sd_m else None]))
+        if combined and _OTHER_DISCIPLINE_GOAL_RE.search(combined):
+            page = _page_for_offset(fields, starts[i])
+            hits.append((page, combined.strip()[:150]))
+    if not hits:
+        return (
+            "pass",
+            "No goal's own Target Goal/Skill Domain text mentions OT, PT, or speech therapy.",
+            None, 0.8,
+        )
+    if len(hits) == 1:
+        page, detail = hits[0]
+        return "fail", f"Goal appears to be an OT/PT/speech goal, not ABA: '{detail}'.", page, 0.75
+    evidence = [
+        {"page": p, "detail": f"Goal appears to be an OT/PT/speech goal, not ABA: '{d}'."} for p, d in hits
+    ]
+    return "fail", evidence, None, 0.75
+
+
+# --- Fix Round, Section 1 Bucket D (2026-08-27) ----------------------------
+
+
+def _check_GIP13(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-13: "At least 1 goal per hour (excl. Parent Training and
+    Behavior Reduction)." REAL BUG FOUND AND FIXED: an HF-01/QA-SCH-06-
+    style silent gap -- this rule was already labeled check_type=
+    "deterministic" in rules.json, but had ZERO checker registered in
+    DET_CHECKS, so every real document silently fell through to the
+    generic not_checkable fallback regardless of content.
+
+    Counts skill-acquisition goal blocks ('Target Goal:' -- this
+    codebase's own established convention already excludes Behavior
+    Reduction Goals, which use 'Target Name:' instead, per
+    _goal_block_starts's own docstring), further excluding any goal whose
+    own Skill Domain names Parent Training specifically, and compares
+    against 97153 (Direct Care) hours requested. Confirmed reproducible
+    with a synthetic 13-goal/15-hour fixture (the round's own concrete
+    example): 13 < 15 -> fail, matching the real reported miss.
+    """
+    text = fields["full_text"]
+    hours = _find_weekly_hours_for_code(text, "97153")
+    if hours is None:
+        return (
+            "not_checkable",
+            "Could not find 97153 (Direct Care) hours requested to compare against the goal count.",
+            None, 0.0,
+        )
+    starts = _goal_block_starts(text) + [len(text)]
+    goal_count = 0
+    for i in range(len(starts) - 1):
+        block = text[starts[i]:starts[i + 1]]
+        if not block.startswith("Target Goal:"):
+            continue  # 'Target Name:' (Behavior Reduction Goals) are excluded by this rule's own scope
+        sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block)
+        if sd_m and "parent training" in sd_m.group(1).lower():
+            continue  # Parent Training goals are excluded by this rule's own scope
+        goal_count += 1
+    if goal_count == 0:
+        return "not_checkable", "No qualifying skill-acquisition goal blocks found to count.", None, 0.0
+    if goal_count < hours:
+        return (
+            "fail",
+            f"{goal_count} qualifying goal(s) found (excl. Parent Training/Behavior Reduction), but "
+            f"{hours} hours/week of 97153 requested -- fewer than 1 goal per hour.",
+            None, 0.75,
+        )
+    return (
+        "pass",
+        f"{goal_count} qualifying goal(s) found for {hours} hours/week of 97153 requested -- at least "
+        f"1 goal per hour.",
+        None, 0.75,
+    )
+
+
+def _check_GIP21(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-21: "Behavior goals include an explanation and indicate
+    'mastered by' status." Deliberately a HYBRID checker, same shape as
+    QA-BIP-05/QA-PROB-02 -- this rule's own current description bundles
+    TWO real, separately-verifiable facts, and only ONE of them is
+    genuinely extractable text right now:
+
+    - "indicate 'mastered by' status" -- a real, extractable field:
+      'Anticipated Mastery Date:' (confirmed present per goal block on
+      the real sample TP, e.g. 'Anticipated Mastery Date: 11/03/2026').
+      Checked deterministically for every Behavior Reduction Goal
+      ('Target Name:') block.
+    - "include an explanation" -- genuinely ambiguous without a real
+      document showing what counts as a real explanation vs. a missing
+      one (no established field/pattern for this in this codebase, and
+      inventing a 'confirmed real phrasing' example without one would be
+      dishonest -- every other concrete-example note in this file cites
+      an actual real document). NOT attempted deterministically; when the
+      mastery-date half is satisfied, this still escalates (not_checkable)
+      for the explanation-adequacy half, which stays genuinely judgment.
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text) + [len(text)]
+    problems = []
+    checked = 0
+    for i in range(len(starts) - 1):
+        block = text[starts[i]:starts[i + 1]]
+        if not block.startswith("Target Name:"):
+            continue  # skill-acquisition ("Target Goal:") blocks aren't behavior goals
+        checked += 1
+        goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
+        amd_m = re.search(r"Anticipated Mastery Date:[ \t]*([^\n]*)", block)
+        amd_val = amd_m.group(1).strip() if amd_m else ""
+        if not amd_val:
+            page = _page_for_offset(fields, starts[i])
+            problems.append((page, f"Goal '{goal_name[:120]}' has no 'Anticipated Mastery Date' (mastered-by status) indicated."))
+
+    if checked == 0:
+        return "not_checkable", "No Behavior Reduction Goal ('Target Name:') blocks found in this document.", None, 0.0
+    if problems:
+        if len(problems) == 1:
+            page, detail = problems[0]
+            return "fail", detail, page, 0.8
+        evidence = [{"page": page, "detail": detail} for page, detail in problems]
+        return "fail", evidence, None, 0.8
+    return (
+        "not_checkable",
+        f"All {checked} Behavior Reduction Goal(s) indicate an Anticipated Mastery Date -- but whether "
+        f"each also includes a real explanation still requires reading the full narrative.",
+        None, 0.0,
+    )
+
+
 DET_CHECKS = {
     "QA-TEMP-05": _check_TEMP05,
     "QA-RPT-01": _check_RPT01,
@@ -4629,6 +5287,25 @@ DET_CHECKS = {
     "QA-GIP-31": _check_GIP31,
     "QA-GIP-33": _check_GIP33,
     "QA-COC-08": _check_COC08,
+    # Fix Round, Section 1 (2026-08-27): 7 real deterministic checkers --
+    # see each function's own docstring, and the report for this round for
+    # why QA-HRS-09/QA-COC-02/QA-BIP-02/QA-GIP-07/QA-BIP-14/CIG-01/
+    # QA-PAR-03/QA-MAST-04 are NOT in this dict (judgment, for confirmed
+    # real reasons, not left unbuilt by omission).
+    "QA-BAR-01": _check_BAR01,
+    "HF-05": _check_HF05,
+    "QA-COC-06": _check_COC06,
+    "QA-RPT-07": _check_RPT07,
+    "QA-SCH-06": _check_SCH06,
+    "QA-GIP-19": _check_GIP19,
+    "QA-GIP-26": _check_GIP26,
+    # Fix Round, Section 1 Bucket D (2026-08-27): 2 real deterministic
+    # checkers (see each function's own docstring above DET_CHECKS's own
+    # definition) -- QA-GIP-13 closes a silent HF-01-style gap, QA-GIP-21
+    # is a hybrid (mastered-by-date half is real DET, explanation-adequacy
+    # half stays judgment).
+    "QA-GIP-13": _check_GIP13,
+    "QA-GIP-21": _check_GIP21,
     # QA-BIO-03 relabeled from judgment to deterministic this round -- see
     # its rules.json notes for why the old BIO-01-derived "needs external
     # diagnostic report" dependency didn't actually apply to this rule.

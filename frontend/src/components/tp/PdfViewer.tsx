@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { ApiError } from "@/lib/api-client";
 
 // Real PDF pane (Round 42) -- fetches GET /uploads/:id/file as a Blob (needs
@@ -51,16 +51,59 @@ import { ApiError } from "@/lib/api-client";
 // effect's re-fetch trigger -- callers pass whatever value actually
 // identifies "this is a different file now" (an upload id, a session-note
 // file id, etc.).
+//
+// Fix Round, Item 4 (ma'am's real UI feedback -- viewer too small to read):
+// two changes, both working within the real fixed frame size (this
+// component never controls its own width/height -- the caller's layout
+// does), not a redesign:
+//   1. `#toolbar=0&view=FitH` appended to the initial (no-hash) load --
+//      the SAME PDF "open parameters" spec goToPage's `#page=N` already
+//      relies on (see Round 70/72 comments above), so this needed no new
+//      library either. `toolbar=0` hides the embedded viewer's own
+//      top toolbar (reclaims real vertical pixels that were previously
+//      spent on chrome, not content, inside the same frame).
+//      `view=FitH` forces "fit page width" as the initial zoom instead of
+//      whatever "Automatic" zoom the browser's PDF plugin happens to
+//      default to -- in Chrome/Edge's PDFium this reliably renders the
+//      page noticeably larger than the untouched default when the frame
+//      is the narrow half-width split this viewer normally renders into
+//      (confirmed live this round, real local PDF, both browsers'
+//      built-in viewers honor it). A `goToPage()` jump still overrides
+//      this with its own `#page=N` (page-jump intent wins, as before) --
+//      it does not also carry view=FitH forward, since the browser
+//      preserves the zoom level a user has since set for that jump rather
+//      than resetting it.
+//   2. `onToggleMaximize`/`isMaximized` are OPTIONAL props, not new state
+//      owned by this component -- PdfViewer only renders the actual
+//      maximize/restore button (so it's visually part of the same PDF
+//      pane's chrome, not a second disconnected control elsewhere), and
+//      calls back up; the CALLER (plans.$refId.index.tsx) owns whether
+//      the pane is currently maximized, because only the caller's layout
+//      knows how to actually grow the pane (it's the caller's grid/flex
+//      split, not this component's own box). Omitting both props (as the
+//      Session Notes reuse of this same component still does) simply
+//      hides the button -- no behavior change for that caller.
 export interface PdfViewerHandle {
   goToPage: (page: number) => void;
 }
 
 export const PdfViewer = forwardRef<
   PdfViewerHandle,
-  { fetchBlob: () => Promise<Blob>; cacheKey: string; title?: string }
->(function PdfViewer({ fetchBlob, cacheKey, title }, ref) {
+  {
+    fetchBlob: () => Promise<Blob>; cacheKey: string; title?: string;
+    // Fix Round, Item 4: see the class-level comment above -- optional,
+    // caller-owned maximize toggle. Both present together or both absent.
+    isMaximized?: boolean; onToggleMaximize?: () => void;
+  }
+>(function PdfViewer({ fetchBlob, cacheKey, title, isMaximized, onToggleMaximize }, ref) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
-  const [hash, setHash] = useState("");
+  // Fix Round, Item 4: default hash is no longer empty -- "#toolbar=0&view=FitH"
+  // reclaims the embedded viewer's own toolbar chrome and forces an
+  // initial fit-to-width zoom, both real open-parameters the browser's
+  // native PDF viewer already honors (see the class comment above). A
+  // goToPage() jump below still fully replaces this with its own
+  // "#page=N" -- page-jump intent wins, same as before this round.
+  const [hash, setHash] = useState("#toolbar=0&view=FitH");
   // Incremented on every goToPage() call, even a repeat click on the SAME
   // page number -- included in the iframe's `key` below so re-clicking an
   // already-current page still forces a fresh remount/re-navigation
@@ -84,7 +127,7 @@ export const PdfViewer = forwardRef<
     setLoading(true);
     setError(null);
     setBaseUrl(null);
-    setHash("");
+    setHash("#toolbar=0&view=FitH"); // Fix Round, Item 4: same default as initial state, reset on every new file
     setJumpCount(0);
 
     fetchBlob()
@@ -121,11 +164,23 @@ export const PdfViewer = forwardRef<
   if (!baseUrl) return null;
 
   return (
-    <iframe
-      key={`${hash}-${jumpCount}`}
-      src={`${baseUrl}${hash}`}
-      title={title ?? "PDF"}
-      className="h-full w-full border-0"
-    />
+    <div className="relative h-full w-full">
+      {onToggleMaximize && (
+        <button
+          type="button"
+          onClick={onToggleMaximize}
+          title={isMaximized ? "Restore split view" : "Maximize (view full width)"}
+          className="absolute top-2 right-2 z-10 rounded-md border border-slate-300 bg-white/90 p-1.5 text-slate-600 shadow-sm hover:bg-white hover:text-slate-900"
+        >
+          {isMaximized ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+        </button>
+      )}
+      <iframe
+        key={`${hash}-${jumpCount}`}
+        src={`${baseUrl}${hash}`}
+        title={title ?? "PDF"}
+        className="h-full w-full border-0"
+      />
+    </div>
   );
 });

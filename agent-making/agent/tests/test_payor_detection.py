@@ -36,7 +36,11 @@ N_UNIVERSAL = sum(1 for r in ACTIVE_RULES if r["applies_to_payor"] == "ALL")
 # N_UNIVERSAL's live count, not this fixed set. Removing HF-04 here rather
 # than leaving a now-inactive rule id in a set meant to describe the
 # ACTIVE rule set's shape.
-HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-05", "HF-06", "HF-07", "HF-09"}
+# HF-09 deactivated (Fix Round, Section 1 Bucket C, 2026-08-27) -- retired
+# as genuinely redundant with (and in real, confirmed contradiction
+# against) HF-01's own age-conditional split. Same reasoning as HF-04's
+# own removal from this set a round ago.
+HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-05", "HF-06", "HF-07"}
 STRAIGHT_MEDICAID_ONLY_IDS = {"SM-01", "SM-02"}
 AETNA_ONLY_IDS = {"AET-01"}
 EMBLEM_ONLY_IDS = {"EMB-01", "EMB-02"}

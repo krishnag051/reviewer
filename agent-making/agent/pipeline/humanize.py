@@ -160,17 +160,42 @@ _OUTPUT_COST_PER_MTOK = 5.00
 # to a plain, unmistakable ASCII token instead -- a small, cheap model is
 # far more likely to recognize "keep PAGEREF0 exactly as-is" as a literal
 # copy instruction than to treat oddball Unicode as something to describe.
-_PLACEHOLDER_TEMPLATE = "PAGEREF{i}"
-_PLACEHOLDER_RE = re.compile(r"\bPAGEREF(\d+)\b")
+# Fix Round (2026-08-27): REAL BUG FOUND AND FIXED, confirmed via a real
+# completed review (30 of 181 findings across a wide, unrelated spread of
+# rule_ids showed raw, un-restored "PAGEREF0PAGEREF1PAGEREF2"-style tokens
+# directly in reviewer-facing evidence). Root cause: the OLD template
+# ("PAGEREF{i}") relied on \b word-boundary anchors on both sides, which
+# silently fails whenever two placeholders sit directly adjacent with no
+# separator -- e.g. a source evidence string with "[Page 1][Page 4][Page
+# 71]" (no whitespace between citations, a real, common shape -- tie-
+# break/merge summaries in particular concatenate sub-evidence strings
+# that may already end and begin with a page tag) becomes
+# "PAGEREF0PAGEREF1PAGEREF2" once protected. Confirmed directly:
+# re.compile(r"\bPAGEREF(\d+)\b").findall("PAGEREF0PAGEREF1PAGEREF2")
+# returns [] -- a digit immediately followed by the next token's leading
+# "P" is a word-char-to-word-char transition, so \b never matches there,
+# for ANY of the tokens except possibly ones at the very start/end of the
+# whole string. _restore_page_tags's own re.sub() silently performs ZERO
+# substitutions in this case (no error raised) -- the placeholders simply
+# pass through unrestored. WORSE: the safety net below couldn't catch it
+# either, for the exact same reason (it uses this same regex to scan for
+# stray tokens) -- an empty findall() looks identical to "nothing to worry
+# about," not "the tokens are unreadable." Fixed by making the template
+# self-delimiting -- a fixed non-digit terminator ("X") after the number
+# means adjacent tokens are still unambiguous with NO boundary check
+# needed at all, so this can never happen regardless of how many
+# citations are adjacent or where in the string they fall.
+_PLACEHOLDER_TEMPLATE = "PAGEREF{i}X"
+_PLACEHOLDER_RE = re.compile(r"PAGEREF(\d+)X")
 
 _REWRITE_SYSTEM_PROMPT = (
     "You rewrite a compliance checklist's evidence text so it reads the way a BCBA would explain the finding "
     "to a colleague out loud, in one breath. Rules, no exceptions:\n"
     "1. Keep every real fact already in the text -- every date, number, name, and page reference. Never drop, "
     "round, or change a fact. This is a tone and length rewrite, never a summary that loses information.\n"
-    "2. Some tokens look like PAGEREF0, PAGEREF1, etc. These are literal placeholder tokens standing in for a "
-    "page citation. Treat each one as an opaque, unbreakable word -- copy it through byte-for-byte, in the same "
-    "position relative to the surrounding words, exactly as spelled (same digits, same capitalization, no space "
+    "2. Some tokens look like PAGEREF0X, PAGEREF1X, etc. (always ending in the letter X). These are literal "
+    "placeholder tokens standing in for a page citation. Treat each one as an opaque, unbreakable word -- copy it "
+    "through byte-for-byte, in the same position relative to the surrounding words, exactly as spelled (same digits, same capitalization, no space "
     "inside it). Never describe, explain, translate, renumber, or refer to what a PAGEREF token 'means' -- it is "
     "not a location number or an index for you to interpret, it is a literal string you must reproduce unchanged.\n"
     "3. SHORT. Your rewrite's word count must not exceed the original's word count -- shorter is the goal, "
@@ -233,9 +258,20 @@ def humanize_evidence_with_llm(
     protected, tags = _protect_page_tags(cleaned)
 
     real_client = client or anthropic.Anthropic()
+    # Fix Round (2026-08-27): REAL BUG FOUND AND FIXED -- confirmed on a
+    # real completed review, several genuinely long tie-break/merge
+    # disagreement summaries (which concatenate 2-3 calls' own evidence
+    # into one string) got cut off mid-sentence with no ellipsis or any
+    # indication, because the rewrite call's own max_tokens=200 was too
+    # small for a real 3-way summary's rewritten length, and nothing
+    # checked whether the response actually finished. Raised to a
+    # genuinely comfortable ceiling for the longest real inputs this
+    # pipeline produces (a 3-way disagreement summary joining three real
+    # evidence strings) -- still bounded, just no longer tight enough to
+    # bite on a real, common case.
     response = real_client.messages.create(
         model=REWRITE_MODEL,
-        max_tokens=200,
+        max_tokens=500,
         system=_REWRITE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": protected}],
     )
@@ -272,7 +308,16 @@ def humanize_evidence_with_llm(
     all_expected_present_once = all(rewritten_protected.count(tok) == 1 for tok in expected_tokens)
     found_indices = [int(m) for m in _PLACEHOLDER_RE.findall(rewritten_protected)]
     has_stray_out_of_range_token = any(i < 0 or i >= len(tags) for i in found_indices)
-    if all_expected_present_once and not has_stray_out_of_range_token:
+    # Fix Round (2026-08-27): REAL BUG FOUND AND FIXED -- a response cut
+    # off by hitting max_tokens mid-sentence (Bug 2, above) could still
+    # pass BOTH the checks above if the cutoff happened to land after
+    # every page tag was already restated (a genuinely real case -- a
+    # trailing clause with no further citation in it). The two checks
+    # above alone are not a complete safety net; a truncated response is
+    # its own real problem regardless of whether the page tags survived,
+    # and must never ship silently either.
+    was_truncated = response.stop_reason == "max_tokens"
+    if all_expected_present_once and not has_stray_out_of_range_token and not was_truncated:
         rewritten = _restore_page_tags(rewritten_protected, tags).strip()
         usage["rejected_missing_page_ref"] = False
         usage["rejection_reason"] = None
@@ -280,7 +325,12 @@ def humanize_evidence_with_llm(
     usage["rejected_missing_page_ref"] = True
     # Next Round (2026-08-27), item 3: a specific, loud reason, not just a
     # boolean -- lets a caller log/report WHY a rewrite was rejected
-    # (missing vs. stray token are different failure modes worth telling
-    # apart), rather than only knowing that it was.
-    usage["rejection_reason"] = "stray_page_ref" if has_stray_out_of_range_token else "missing_page_ref"
+    # (missing vs. stray vs. truncated are different failure modes worth
+    # telling apart), rather than only knowing that it was.
+    if was_truncated:
+        usage["rejection_reason"] = "truncated"
+    elif has_stray_out_of_range_token:
+        usage["rejection_reason"] = "stray_page_ref"
+    else:
+        usage["rejection_reason"] = "missing_page_ref"
     return cleaned, usage

@@ -1215,4 +1215,26 @@ describe("Fix Round: Reference ID auto-fill from Patient Name", () => {
     expect(refIdInput.value).toBe(expectedAfterResume);
     console.log(`STEP C: clearing Reference ID back to empty resumed auto-fill on the next name change -- "${refIdInput.value}"`);
   }, 15000);
+
+  it("only ever auto-fills for a brand-new entry -- there is no Reference ID field at all in the existing-patient (re-upload) flow", async () => {
+    // Fix Round (ma'am's real UI feedback, item 2): root cause of the
+    // report -- ma'am was very likely looking at an EXISTING patient's
+    // re-upload screen, not a fresh new entry. Confirms directly: the
+    // "Re-upload" tab has no Reference ID input to auto-fill at all (an
+    // existing patient's reference_id is permanent, set once at creation,
+    // never re-typed or re-generated on a later upload) -- there was
+    // never a code path where THIS flow was supposed to auto-populate
+    // anything, so nothing was broken there either. No code change was
+    // made for this item; this test locks in the confirmed-working
+    // behavior so a future change can't silently regress it.
+    const token = await adminToken();
+    const user = userEvent.setup();
+
+    renderApp("/upload", token);
+    await screen.findByRole("heading", { name: "Upload Treatment Plan" });
+
+    await user.click(screen.getByRole("button", { name: "Re-upload" }));
+    expect(screen.queryByPlaceholderText("e.g., Jordan Nakamura 8-2026")).toBeNull();
+    console.log("Confirmed: the Re-upload (existing patient) tab has no Reference ID field to auto-fill -- that concept only exists on a brand-new entry.");
+  });
 });

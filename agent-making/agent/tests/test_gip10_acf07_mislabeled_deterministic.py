@@ -95,7 +95,10 @@ def test_gip10_and_acf07_always_escalate_regardless_of_input():
 EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     "QA-ACF-01",
     "QA-COC-03", "QA-COC-05",
-    "QA-GIP-13",
+    # QA-GIP-13 REMOVED from this set (Fix Round, Section 1 Bucket D,
+    # 2026-08-27) -- a real HF-01-style silent gap closed: labeled
+    # deterministic here with zero checker registered, confirmed and
+    # fixed this round (_check_GIP13).
     "QA-HRS-08",
     "QA-MAST-01", "QA-MAST-02",
     # QA-RPT-05 REMOVED from this set (2026-08-08, Round 78, item 4) -- a
@@ -116,7 +119,12 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     # logic beyond the schedule grid itself (overlap detection, a payor
     # exception flag, a second field to compare against), not built this
     # round; see their own updated blocked_status notes in rules.json.
-    "QA-SCH-03", "QA-SCH-05", "QA-SCH-06",
+    # QA-SCH-06 REMOVED from this set (Fix Round, Section 1, 2026-08-27) --
+    # a real HF-01-style silent gap: labeled deterministic here with zero
+    # checker registered, confirmed and fixed this round (_check_SCH06,
+    # with an explicit, honest limitation documented in its own docstring
+    # and this rule's own notes -- see fields.py).
+    "QA-SCH-03", "QA-SCH-05",
     "QA-SIG-06",
     # Added 2026-07-27 (Empire/Emblem/Aetna round): EMP-02 has a confirmed
     # scope ambiguity (see its own notes/blocked_status in rules.json) --
@@ -161,8 +169,19 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_fifty_nine_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...fifty_four..." (Next Round, 2026-08-27) -- five more
+def test_exactly_sixty_eight_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...sixty_six..." (Fix Round, Section 1 Bucket D,
+    2026-08-27) -- two more joined this set this round: QA-GIP-13 (a real
+    HF-01-style silent gap closed) and QA-GIP-21 (a genuinely new hybrid
+    checker).
+
+    Renamed from "...fifty_nine..." (Fix Round, Section 1, 2026-08-27) --
+    seven more joined this set this round: QA-BAR-01, HF-05, QA-COC-06,
+    QA-RPT-07, QA-SCH-06, QA-GIP-19, QA-GIP-26 (six genuinely new, one --
+    QA-SCH-06 -- a real HF-01-style silent gap closed; see the new-entries
+    comment right above the closing brace for the full detail).
+
+    Renamed from "...fifty_four..." (Next Round, 2026-08-27) -- five more
     joined this set this round: QA-HRS-12, QA-GIP-30, QA-GIP-31, QA-GIP-33,
     QA-COC-08 (all genuinely new rule_ids, real deterministic checkers built
     from the start -- see the new-entries comment right above the closing
@@ -351,6 +370,20 @@ def test_exactly_fifty_nine_deterministic_labeled_rules_have_real_checkers():
         # definition) for why these 5 specifically got real checkers while
         # QA-SCH-10/QA-GIP-32/34/35/QA-BIO-17 (also new this round) did not.
         "QA-HRS-12", "QA-GIP-30", "QA-GIP-31", "QA-GIP-33", "QA-COC-08",
+        # Fix Round, Section 1 (2026-08-27): 7 more -- 6 genuinely new
+        # (QA-BAR-01, HF-05, QA-COC-06, QA-RPT-07, QA-GIP-19, QA-GIP-26,
+        # each built as a real deterministic checker from the start -- see
+        # each one's own docstring in pipeline/fields.py) plus QA-SCH-06
+        # (NOT new -- already labeled deterministic, but had zero checker
+        # registered until this round; see EXPECTED_MISMATCHED_RULE_IDS's
+        # own comment above for that real gap).
+        "QA-BAR-01", "HF-05", "QA-COC-06", "QA-RPT-07", "QA-SCH-06", "QA-GIP-19", "QA-GIP-26",
+        # Fix Round, Section 1 Bucket D (2026-08-27): 2 more -- QA-GIP-13
+        # (a real HF-01-style silent gap closed, see
+        # EXPECTED_MISMATCHED_RULE_IDS's own comment above) and QA-GIP-21
+        # (a genuinely NEW hybrid checker, mastered-by-date half only --
+        # see fields.py::_check_GIP21's own docstring).
+        "QA-GIP-13", "QA-GIP-21",
     }
 
 

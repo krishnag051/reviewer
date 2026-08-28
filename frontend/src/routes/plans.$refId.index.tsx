@@ -151,6 +151,17 @@ function PlanDetail() {
   // Round 70, Item 2: real page-jump target -- PdfViewer.tsx exposes
   // goToPage via forwardRef/useImperativeHandle.
   const pdfViewerRef = useRef<PdfViewerHandle>(null);
+  // Fix Round, Item 4 (ma'am's real UI feedback -- viewer too small to
+  // read): the frame's real constraint is that this page is a fixed
+  // 50/50 split with the rule-results panel -- there's no spare margin/
+  // padding to reclaim beyond what PdfViewer.tsx's own toolbar=0/FitH
+  // default already reclaims. What IS realistically achievable within
+  // that same frame: an explicit maximize toggle that temporarily grows
+  // the PDF pane to the full width of the frame (hiding the rule-results
+  // pane rather than shrinking it), for someone who needs to read a dense
+  // page closely. Not a redesign -- same page, same components, one more
+  // piece of local state.
+  const [pdfMaximized, setPdfMaximized] = useState(false);
   function goToPage(page: number) {
     pdfViewerRef.current?.goToPage(page);
   }
@@ -708,15 +719,17 @@ function PlanDetail() {
           </div>
         ) : (
           <div className="h-full flex">
-            <div className="w-1/2 h-full border-r border-slate-200 bg-slate-100">
+            <div className={`h-full border-r border-slate-200 bg-slate-100 ${pdfMaximized ? "w-full" : "w-1/2"}`}>
               <PdfViewer
                 ref={pdfViewerRef}
                 cacheKey={finalUpload.id}
                 fetchBlob={() => fetchUploadFileBlob(finalUpload.id)}
                 title="Treatment plan PDF"
+                isMaximized={pdfMaximized}
+                onToggleMaximize={() => setPdfMaximized(v => !v)}
               />
             </div>
-            <div className="w-1/2 h-full overflow-y-auto">
+            <div className={`h-full overflow-y-auto ${pdfMaximized ? "hidden" : "w-1/2"}`}>
               {uploadDetailQuery.isLoading ? (
                 <div className="flex items-center justify-center gap-2 text-sm text-slate-500 p-8">
                   <Loader2 className="h-4 w-4 animate-spin" />Loading real rule results…

@@ -130,6 +130,21 @@ def test_uncertain_when_session_date_unparseable():
     assert result["result"] == "uncertain"
 
 
+def test_unparseable_session_date_evidence_has_no_raw_field_name_or_python_none():
+    """Fix Round (2026-08-27): REAL BUG FOUND AND FIXED, confirmed via a
+    real completed review -- this evidence used to read 'Could not
+    determine a specific calendar date from the session note's
+    session_date (None).', exposing the literal internal field name
+    'session_date' and Python's repr() of the raw value directly to a
+    reviewer. Plain language now, regardless of why the date couldn't be
+    determined."""
+    result = check_date_in_current_report_period(None, YISROEL_AUTHORIZATION_PERIOD)
+    assert "session_date" not in result["evidence"]
+    assert "None" not in result["evidence"]
+    result2 = check_date_in_current_report_period("some Tuesday", YISROEL_AUTHORIZATION_PERIOD)
+    assert "session_date" not in result2["evidence"]
+
+
 def test_uncertain_when_current_report_period_unparseable():
     result = check_date_in_current_report_period("09/15/2026", "sometime next year")
     assert result["result"] == "uncertain"

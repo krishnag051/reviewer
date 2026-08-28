@@ -73,21 +73,49 @@ type StructuredPayload = { intakeAnswers: IntakeAnswers; sessionNotes: File[] };
 // session-notes uploader) on the other. Same fields, same state, same
 // validation as before -- purely a layout split, no behavior change.
 
+// Fix Round, Item 1 (ma'am's real UI feedback): Payor now displays as part
+// of this same Patient Central Reach Information section/card, alongside
+// the other structured intake answers -- same visual grouping, same field
+// styling -- rather than sitting in its own separate spot near Patient
+// Name/Reference ID. Only meaningful under supporting_doc_mode=
+// "structured_form" (the only mode this section exists in at all); under
+// "document" mode (or while the live mode is still loading), Payor still
+// needs to render SOMEWHERE (it's always required, regardless of intake
+// mode -- it seeds client_insurance at submit time and is required for
+// patient creation), so the caller falls back to rendering it in its old
+// standalone spot for that case. See the two call sites below.
 function IntakeQAFields({
-  mode, qaAnswers, setQaAnswers,
+  mode, qaAnswers, setQaAnswers, payor, setPayor, payorDisabled,
 }: {
   mode: "document" | "structured_form" | undefined;
   qaAnswers: IntakeAnswers;
   setQaAnswers: (a: IntakeAnswers) => void;
+  payor: Payor;
+  // Fix Round, Item 1: the existing-patient (re-upload) flow has no
+  // editable Payor of its own -- a patient's payor is set once, at
+  // creation, and this flow deliberately reuses selectedExisting.payor
+  // read-only (see submitUpload's own comment on payorValue). setPayor is
+  // still required (never optional) so callers can't accidentally wire up
+  // a broken no-op that silently swallows a real edit -- payorDisabled is
+  // the explicit signal for the read-only case instead.
+  setPayor: (p: Payor) => void;
+  payorDisabled?: boolean;
 }) {
   if (mode !== "structured_form") return null;
   return (
     <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 h-full">
       <div>
-        <div className="text-sm font-medium text-slate-900">Patient Central Reach Information <span className="text-slate-400 font-normal">(required, 4 fields)</span></div>
+        <div className="text-sm font-medium text-slate-900">Patient Central Reach Information <span className="text-slate-400 font-normal">(required, 5 fields)</span></div>
         <div className="text-xs text-slate-500 mt-0.5">Plain text — no document upload needed for these.</div>
       </div>
       <div className="grid grid-cols-1 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs">Payor{payorDisabled ? " (set at patient creation)" : ""}</Label>
+          <Select value={payor} onValueChange={v => setPayor(v as Payor)} disabled={payorDisabled}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>{PAYORS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
         {QA_FIELDS.map(f => (
           <div key={f.key} className="space-y-1">
             <Label className="text-xs">{f.label}</Label>
@@ -99,6 +127,20 @@ function IntakeQAFields({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Fallback location for the "document" mode case (or while the live mode
+// is still loading) -- see IntakeQAFields' own comment above for why
+// Payor can't just disappear in that case.
+function StandalonePayorField({ payor, setPayor }: { payor: Payor; setPayor: (p: Payor) => void }) {
+  return (
+    <div className="space-y-1.5"><Label>Payor</Label>
+      <Select value={payor} onValueChange={v => setPayor(v as Payor)}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>{PAYORS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+      </Select>
     </div>
   );
 }
@@ -164,16 +206,28 @@ function SupportingUploads({
  * document or structured_form flow, never gated on it), and never
  * required -- a first-ever patient genuinely has no prior TP to attach.
  */
+// Fix Round, Item 3 (ma'am's real UI feedback): real drag-and-drop, reusing
+// the EXACT SAME FileDropZone component (and therefore the exact same
+// validation -- PDF only, 25 MB max, single file) the primary TP upload
+// already uses, rather than a second, separate implementation. Before this
+// round, this was a plain <label><input type="file")> with no drop
+// handling at all -- the "Drop the patient's prior TP here" copy was
+// aspirational, not real; a genuine drag-and-drop never did anything.
 function PreviousTpUpload({ previousTp, setPreviousTp }: { previousTp: File | null; setPreviousTp: (f: File | null) => void }) {
   return (
     <div className="space-y-1.5">
       <Label>Previous Treatment Plan <span className="text-slate-400">(optional)</span></Label>
-      <label className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 py-6 cursor-pointer hover:bg-slate-100 transition-colors">
-        <UploadIcon className="h-5 w-5 text-slate-400" />
+      <FileDropZone
+        accept="application/pdf"
+        acceptLabel="PDF"
+        maxSizeBytes={TP_MAX_SIZE_BYTES}
+        multiple={false}
+        onFiles={files => setPreviousTp(files[0] ?? null)}
+        className="py-6 bg-slate-50 hover:bg-slate-100"
+      >
         <div className="text-sm text-slate-700">{previousTp ? previousTp.name : "Drop the patient's prior TP here, or click to browse"}</div>
-        <div className="text-xs text-slate-500">PDF only · optional -- leave blank if there is no prior TP</div>
-        <input type="file" accept="application/pdf" className="hidden" onChange={e => setPreviousTp(e.target.files?.[0] ?? null)} />
-      </label>
+        <div className="text-xs text-slate-500">PDF only · max 25 MB · optional -- leave blank if there is no prior TP</div>
+      </FileDropZone>
     </div>
   );
 }
@@ -414,12 +468,15 @@ function UploadPage() {
                     <div className="space-y-1.5"><Label>Patient Name</Label><Input value={name} onChange={e => handleNameChange(e.target.value)} placeholder="e.g., Jordan Nakamura" /></div>
                     <div className="space-y-1.5"><Label>Reference ID (permanent)</Label><Input value={refId} onChange={e => handleRefIdChange(e.target.value)} placeholder="e.g., Jordan Nakamura 8-2026" /></div>
                   </div>
-                  <div className="space-y-1.5"><Label>Payor</Label>
-                    <Select value={payor} onValueChange={v => setPayor(v as Payor)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>{PAYORS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </div>
+                  {/* Fix Round, Item 1: Payor moved into the Patient Central
+                      Reach Information card (right column) under
+                      structured_form mode -- only shown here, in its old
+                      spot, as a fallback for "document" mode (or while the
+                      live mode is still loading), where that card doesn't
+                      render at all. See IntakeQAFields' own comment. */}
+                  {supportingDocMode !== "structured_form" && (
+                    <StandalonePayorField payor={payor} setPayor={setPayor} />
+                  )}
                   <div className="space-y-1.5">
                     <Label>Treatment Plan</Label>
                     {/* Fix Round, Item 1: real drag-and-drop, same
@@ -449,7 +506,7 @@ function UploadPage() {
                 </div>
                 <div>
                   {requiresSupportingInfo && (
-                    <IntakeQAFields mode={supportingDocMode} qaAnswers={qaAnswers} setQaAnswers={setQaAnswers} />
+                    <IntakeQAFields mode={supportingDocMode} qaAnswers={qaAnswers} setQaAnswers={setQaAnswers} payor={payor} setPayor={setPayor} />
                   )}
                 </div>
               </div>
@@ -528,7 +585,10 @@ function UploadPage() {
                         <div className="text-xs text-slate-500 mb-1.5">Prefilled from this patient's most recent submission — edit any field as needed.</div>
                       )}
                       {requiresSupportingInfo && (
-                        <IntakeQAFields mode={supportingDocMode} qaAnswers={existingQaAnswers} setQaAnswers={setExistingQaAnswers} />
+                        <IntakeQAFields
+                          mode={supportingDocMode} qaAnswers={existingQaAnswers} setQaAnswers={setExistingQaAnswers}
+                          payor={(selectedExisting?.payor as Payor) ?? PAYORS[0]} setPayor={() => {}} payorDisabled
+                        />
                       )}
                     </div>
                   </div>
