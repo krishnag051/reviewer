@@ -78,6 +78,8 @@ from pipeline.session_note_extraction import extract_session_note_file as _extra
 from pipeline.schedule_hours import check_schedule_hours_against_intake as _check_schedule_hours_against_intake  # noqa: E402
 from pipeline.humanize import humanize_evidence_with_llm as _humanize_evidence_with_llm  # noqa: E402
 from pipeline.humanize import humanize_evidence as _humanize_evidence  # noqa: E402
+from pipeline.previous_tp_extraction import extract_previous_tp_fields as _extract_previous_tp_fields  # noqa: E402
+from pipeline.previous_tp_comparison import compare_previous_tp_to_tp as _compare_previous_tp_to_tp  # noqa: E402
 
 RuleCheckStatus = Literal["pass", "fail", "uncertain", "not_applicable", "not_checkable"]
 
@@ -96,6 +98,20 @@ _SESSION_NOTES_RULE_IDS = ("QA-RPT-03", "QA-ACF-02", "QA-ACF-08", "QA-COC-01", "
 # as QA-COC-01) -- see pipeline/session_note_comparison.py::
 # compare_session_notes_to_tp's own docstring for the real gap this closes.
 _SESSION_NOTES_COMPOUND_RULE_IDS = ("QA-COC-01", "QA-ACF-12")
+
+# Previous TP round (comparison logic): a SEPARATE set, deliberately not
+# folded into _SESSION_NOTES_* above -- this data source is the previous
+# TP file, not a session note, and the two must never be conflated (see
+# review_previous_tp's own docstring). QA-MAST-01/QA-MAST-02 are PURE
+# OVERRIDES (their existing TP-only phase-1 answer is always a blind guess
+# absent previous-TP data, per their own rules.json notes -- nothing
+# meaningful to combine, same shape as QA-RPT-03/QA-ACF-02/QA-ACF-08
+# above). QA-RPT-05/QA-ACF-04/QA-PROB-04 are COMPOUND (each has a real,
+# meaningful TP-only phase-1 half already) -- combined via
+# combine_compound_rule_result, same as QA-COC-01/QA-ACF-12.
+_PREVIOUS_TP_RULE_IDS = ("QA-MAST-01", "QA-MAST-02", "QA-RPT-05", "QA-ACF-04", "QA-PROB-04")
+_PREVIOUS_TP_COMPOUND_RULE_IDS = ("QA-RPT-05", "QA-ACF-04", "QA-PROB-04")
+
 _AGENT_MAKING_RULES_BY_ID = {r["rule_id"]: r for r in _load_agent_making_rules()}
 
 
@@ -224,6 +240,8 @@ def review_treatment_plan(
     max_calls: int | None = None,
     extra_rule_context: dict[str, str] | None = None,
     extra_fields: dict[str, str] | None = None,
+    use_cache: bool = True,
+    force_refresh: bool = False,
 ) -> ReviewResult:
     """The one function this backend calls to run a real TP review.
 
@@ -258,6 +276,15 @@ def review_treatment_plan(
     unchanged to agent-making's own same-named param, for a DETERMINISTIC
     checker to read (e.g. _check_PPI05's real cross-check against the
     intake's "BCBA Name, Credentials & NPI" answer).
+
+    `use_cache`/`force_refresh` (Fix Round, Judgment Layer Stability):
+    forwarded unchanged to agent-making's own same-named params (see that
+    function's own docstring) -- a real, content-hash-keyed local cache
+    that makes re-submitting a byte-identical document return the exact
+    same stored result with zero new model calls. `use_cache=True` is
+    this wrapper's own default too, matching agent-making's -- the real
+    backend call site (app/rule_engine/client.py::run_rule_checks) relies
+    on this default; nothing needs to opt in.
     """
     raw = _raw_review_treatment_plan(
         pdf_path,
@@ -268,6 +295,8 @@ def review_treatment_plan(
         max_calls=max_calls,
         extra_rule_context=extra_rule_context,
         extra_fields=extra_fields,
+        use_cache=use_cache,
+        force_refresh=force_refresh,
     )
     return _to_review_result(raw)
 
@@ -456,6 +485,128 @@ def review_intake_answers(
             page=[page] if page is not None else [],
             evidence=combined["evidence"],
             confidence=combined.get("confidence"),
+            action_lane=rule_meta.get("action_lane"),
+            action_tag=rule_meta.get("action_tag"),
+        ))
+    return results
+
+
+def get_previous_tp_fields(previous_tp_path: str) -> dict:
+    """Thin wrapper around agent-making's own extract_previous_tp_fields --
+    same role as every other function in this file: adapt whatever
+    agent-making hands back, no rule-checking logic of its own. Works on
+    ANY TP PDF path, current or previous (see that function's own
+    docstring) -- `review_previous_tp` below calls this twice, once per
+    document.
+
+    `previous_tp_path` must already be a real, resolved, on-disk path (the
+    caller is responsible for resolving `Upload.previous_tp_path`/
+    `Upload.file_path` via `app.storage.resolve_stored_path` first -- this
+    function doesn't know about this backend's storage convention, same
+    separation of concerns every other function here keeps).
+    """
+    return _extract_previous_tp_fields(previous_tp_path)
+
+
+def review_previous_tp(
+    tp_pdf_path: str,
+    previous_tp_pdf_path: str | None,
+    *,
+    model_override: str | None = None,
+    max_calls: int | None = None,
+    phase1_results: dict[str, RuleResult] | None = None,
+) -> list[RuleResult]:
+    """Previous TP round (comparison logic) -- same structural role as
+    `review_session_notes` above, for a SEPARATE data source (the previous
+    TP file, not a session note). Returns `[]` immediately (no extraction,
+    no model call) when `previous_tp_pdf_path` is None -- there is no
+    previous TP to compare against, and QA-MAST-01/QA-MAST-02/QA-RPT-05/
+    QA-ACF-04/QA-PROB-04 must resolve to not_checkable exactly as they do
+    today (their own existing phase-1 answer, untouched) -- this function
+    contributes nothing to `run_rule_checks`'s drafts list in that case,
+    same as `review_session_notes` returning `[]` when there are no session
+    notes.
+
+    `model_override`: per this round's OWN explicit instruction ("the real
+    pipeline -- including real Claude API calls wherever this rule set
+    already uses judgment, same as every other rule -- produces the final
+    answer... do not disable, mock, or route around the real API"), this
+    is passed through unchanged to `compare_previous_tp_to_tp`'s own two
+    real-call comparisons (QA-ACF-04's narrative-score fallback,
+    QA-PROB-04's near-identical semantic read) -- UNLIKE
+    `review_session_notes` above, which deliberately hardcodes the free
+    OpenRouter tier for its own extraction call. The real backend call
+    site (`app/rule_engine/client.py::run_rule_checks`) passes
+    `"anthropic:claude-sonnet-5"` here, matching judge.py's own real,
+    billed default for the rest of this rule set -- a genuine, STANDING
+    per-upload cost (a few cents, only for an upload that both has a
+    previous TP AND hits one of the two fallback/judgment paths), not a
+    one-time test toggle. Flagged plainly in this round's own report,
+    same as every other real-API architecture decision in this codebase.
+
+    Returns up to 5 `RuleResult`s (QA-MAST-01, QA-MAST-02, QA-RPT-05,
+    QA-ACF-04, QA-PROB-04). `page` is always `[]` -- same reasoning as
+    `review_session_notes`: the evidence is a cross-document comparison,
+    not a single page reference.
+    """
+    if not previous_tp_pdf_path:
+        return []
+
+    tracker = _CallTracker(max_calls=max_calls)
+
+    current_fields = _extract_previous_tp_fields(tp_pdf_path)
+    previous_fields = _extract_previous_tp_fields(previous_tp_pdf_path)
+
+    raw_results = _compare_previous_tp_to_tp(
+        current_fields, previous_fields, tracker=tracker, model_override=model_override,
+    )
+
+    results = []
+    for rule_id in _PREVIOUS_TP_RULE_IDS:
+        raw = raw_results.get(rule_id)
+        if raw is None:
+            continue
+        if rule_id in _PREVIOUS_TP_COMPOUND_RULE_IDS:
+            # Fix Round (Previous TP: 3 Real Bugs, Jacob F), Bug 2's
+            # smaller fix: QA-ACF-04's phase-1 answer (the main pipeline's
+            # blind, previous-TP-unaware judgment attempt) routinely says
+            # something like "No prior TP version exists to compare" --
+            # true when phase-1 ran, but this function is ONLY ever called
+            # with a real previous_tp_pdf_path (see the early-return
+            # above), so that phrase is stale/wrong the moment we're here
+            # at all. combine_compound_rule_result's generic policy
+            # concatenates both halves' evidence unconditionally (correct
+            # for QA-RPT-05/QA-PROB-04, where phase-1's own text is still
+            # accurate). For QA-ACF-04 specifically, when BOTH halves are
+            # not_checkable (combine_compound_rule_result's own rule #5 --
+            # the exact branch that concatenates both evidence strings),
+            # THIS module's own evidence is already self-sufficient and
+            # accurate on its own (see _compare_acf04's own docstring) --
+            # skip blending in phase-1's stale claim rather than let it
+            # mislead a reviewer. Any OTHER phase1/raw combination (e.g.
+            # phase1 genuinely answered pass/fail despite its blind
+            # prompt) still goes through the normal, unmodified combine
+            # policy -- this is narrowly scoped to the one stale-text
+            # case, not a blanket bypass.
+            phase1 = (phase1_results or {}).get(rule_id)
+            phase1_plain = (
+                {"result": phase1.status, "evidence": phase1.evidence, "confidence": phase1.confidence}
+                if phase1 is not None else None
+            )
+            skip_stale_phase1 = (
+                rule_id == "QA-ACF-04" and raw["result"] == "not_checkable"
+                and (phase1_plain is None or phase1_plain["result"] == "not_checkable")
+            )
+            if not skip_stale_phase1:
+                raw = _combine_compound_rule_result(phase1_plain, raw)
+        rule_meta = _AGENT_MAKING_RULES_BY_ID.get(rule_id, {})
+        results.append(RuleResult(
+            rule_id=rule_id,
+            category=rule_meta.get("category", "Unknown"),
+            status=raw["result"],
+            page=[],
+            evidence=raw["evidence"],
+            confidence=raw.get("confidence"),
             action_lane=rule_meta.get("action_lane"),
             action_tag=rule_meta.get("action_tag"),
         ))

@@ -80,11 +80,31 @@ def run_judgment_with_integrity_check(
     call this makes — defaults to None, which keeps this function's
     behavior identical to before this round for every caller that doesn't
     pass it (see judge.py's own docstring on this same parameter).
+
+    Fix Round (Judgment Layer Stability) -- the INITIAL batch call now
+    goes through `judge.run_judgment_checks_majority_vote` (5-way vote,
+    4-of-5 required to commit to an answer, else "uncertain") instead of
+    the old 2-call-plus-conditional-3rd-tie-break `run_judgment_checks`.
+    This round's own real measurement (a pool of 7 independent raw calls
+    against a real document, see this round's report) found the OLD
+    2-3-sample mechanism was genuinely too small a window for several
+    rules sitting at a real ~70-80%-of-the-time majority in their raw
+    per-call distribution -- 4-of-5 reliably captures that real majority
+    where 2-of-3 didn't, at a measured flip-rate reduction close to what a
+    more expensive 7-way/5-of-7 vote achieved (see this round's own
+    report for the real numbers from both configurations) -- chosen over
+    7-way for the better cost/benefit trade-off. The retry pass below
+    (for rule_ids still missing after the initial batch) is UNCHANGED,
+    still `run_judgment_checks` -- that's a different problem (a rule_id
+    the model dropped/rejected entirely, not a disagreement to vote on),
+    and keeping it as a cheap 2-call retry (rather than a 5-call one)
+    keeps the missing-rule-id recovery path's own cost from ballooning
+    for what's usually a small handful of rule_ids.
     """
     sent_ids = [r["rule_id"] for r in judgment_rules]
-    results = judge.run_judgment_checks(
+    results = judge.run_judgment_checks_majority_vote(
         judgment_rules, fields, rendered_images, tracker=tracker, call_reason="initial batch",
-        model_override=model_override,
+        model_override=model_override, n_calls=5, min_agreement=4,
     )
 
     attempt = 0

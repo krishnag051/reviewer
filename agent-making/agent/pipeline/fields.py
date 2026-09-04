@@ -1969,6 +1969,28 @@ VISION_ELIGIBLE_RULE_SECTIONS: dict[str, str] = {
     # _ablls_grid_page_range below, same vision dependency as ACF's own
     # VB-MAPP/Vineland grid.
     "CIG-01": "ablls_grid",
+    # Fix Round (Previous TP round, Bug 2; corrected in the U3 re-run
+    # round): QA-ACF-04 ("Score lower than previous assessment -> Director
+    # tag") -- the VB-MAPP/ABLLS-style score grid is an embedded
+    # image/vector chart with no extractable score value in the text layer
+    # at all. Originally registered under a new "milestone_grid" section
+    # (phrase-search only, see _milestone_grid_page_range below) -- U3
+    # re-run against the REAL Jacob Freund pair confirmed that phrase
+    # ("Below you will find the milestone grid") only appears before the
+    # grid on SOME documents; Jacob's own previous TP has no such phrase
+    # at all before its grid, so that finder found zero pages on it.
+    # Registered under "acf" instead -- the SAME section CIG-01/QA-ACF-03/
+    # 06/07/11 already use, confirmed by direct testing to correctly cover
+    # the grid's real pages on BOTH of Jacob's documents (the milestone
+    # grid lives inside the "Assessment of Current Functioning:" section
+    # on both, just at a different page offset within it) -- a more
+    # robust, already-proven mechanism, not a second fragile one. Adding
+    # QA-ACF-04 here also means its own phase-1, TP-only judgment attempt
+    # (blind to the previous TP, made by the main per-document judgment
+    # batch this registry feeds) now sees the grid image too, not just the
+    # previous-TP-comparison layer -- a real, correct side effect of
+    # registering this rule properly, not scope creep.
+    "QA-ACF-04": "acf",
 }
 
 
@@ -1985,6 +2007,27 @@ def _ablls_grid_page_range(fields: dict) -> set[int]:
     text = fields["full_text"]
     pages: set[int] = set()
     for m in re.finditer(r"ABLLS grid", text, re.IGNORECASE):
+        page = _page_for_offset(fields, m.start())
+        if page is not None:
+            pages.add(page)
+            pages.add(page + 1)
+    return pages
+
+
+def _milestone_grid_page_range(fields: dict) -> set[int]:
+    """Section-page-range finder for "milestone_grid" (QA-ACF-04) -- Fix
+    Round (Previous TP round, Bug 2), confirmed real document shape:
+    "Below you will find the milestone grid" appears in extractable text
+    immediately before the VB-MAPP/ABLLS-style score grid itself, which is
+    an embedded image with no extractable score value in the text layer at
+    all -- exact same shape _ablls_grid_page_range already handles for
+    CIG-01's ABLLS grid, just a different literal phrase. Copied verbatim
+    (page + next page, same reasoning: the grid image reliably starts on
+    the page right after this phrase).
+    """
+    text = fields["full_text"]
+    pages: set[int] = set()
+    for m in re.finditer(r"milestone grid", text, re.IGNORECASE):
         page = _page_for_offset(fields, m.start())
         if page is not None:
             pages.add(page)
@@ -2056,6 +2099,7 @@ _SECTION_PAGE_RANGE_FINDERS = {
     "acf": _acf_section_page_range,
     "gip_graph": _gip_graph_page_range,
     "ablls_grid": _ablls_grid_page_range,
+    "milestone_grid": _milestone_grid_page_range,
 }
 
 
@@ -2405,6 +2449,45 @@ def extract_acf_fields(fields: dict) -> dict[str, str | None]:
             or _labeled_value_maybe_next_line("Patient Location during Assessment:", text),
         "assessment_tool": assessment_tool,
     }
+
+
+# Previous TP round: QA-ACF-04 needs the assessment tool's own numeric
+# SCORE, which nothing in this file extracted before (confirmed by a full
+# grep -- extract_acf_fields/_check_ACF07 only ever capture the tool's NAME
+# and administration DATE, never a score value; _check_ACF07's own
+# "Total Score on <date>:" pattern, fields.py's _DATE_PATTERNS, stops at
+# the date and never looks at what number follows it). This is the
+# STRUCTURED/boxed case only -- a numeric score printed directly after a
+# "Total Score"/"Score:"-style label, same section-boundary discipline as
+# extract_acf_fields (_find_acf_section). Ms. Yachnes's own real note (this
+# round's brief) is that some documents state the score in narrative prose
+# instead -- that case is NOT attempted here (regex can't reliably do it);
+# see pipeline/previous_tp_comparison.py's own judgment-layer fallback for
+# that half, used only when this boxed extraction comes back None.
+_ACF_SCORE_RE = re.compile(
+    r"(?:Total\s+Score|Standard\s+Score|Score)(?:\s+on\s+\d{1,2}/\d{1,2}/\d{2,4})?\s*[:\-–]\s*(\d{1,3}(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def extract_acf_score_boxed(fields: dict) -> float | None:
+    """Best-effort STRUCTURED score extraction only -- a number directly
+    labeled "Score:"/"Total Score:"/"Standard Score:" inside the
+    Assessment of Current Functioning section (falls back to the whole
+    document if that section isn't found, same fallback discipline
+    extract_acf_fields itself already uses elsewhere). Returns None (never
+    guesses) if no such labeled number is found -- the narrative-text case
+    is a separate, judgment-layer concern, not this function's job.
+    """
+    text = fields["full_text"]
+    section = _find_acf_section(text) or text
+    m = _ACF_SCORE_RE.search(section)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
 
 
 def _check_ACF12(rule: dict, fields: dict) -> tuple:
@@ -2931,6 +3014,117 @@ def _extract_mastered_goal_names(text: str) -> list[tuple[str, int]]:
     section = m.group(1)
     base_offset = m.start(1)
     return [(sm.group(1).strip(), base_offset + sm.start(1)) for sm in _MASTERED_SKILL_RE.finditer(section)]
+
+
+# Previous TP round (extraction plumbing only -- see this round's own
+# brief): _extract_mastered_goal_names above only ever captured the goal
+# NAME -- its regex uses "Date Mastered:" purely as a lookahead boundary,
+# never captures the date value itself, because its one existing caller
+# (_check_GIP05) never needed the date. QA-MAST-01/QA-MAST-02 (a future
+# round's job, not this one) will need the actual date value to compare
+# against a previous TP's own authorization window / mastered-goals list,
+# so this pairs each name with its date, reusing the exact same
+# "Mastered Goals:" section boundary and per-entry regex as
+# _extract_mastered_goal_names -- not new judgment logic, just capturing a
+# value the existing boundary already sits right next to.
+_MASTERED_SKILL_WITH_DATE_RE = re.compile(
+    r"Name of Skill:[ \t]*([\s\S]{1,400}?)\s*Date Mastered:[ \t]*(\d{1,2}/\d{1,2}/\d{2,4})?",
+)
+
+
+def _extract_mastered_goals_with_dates(text: str) -> list[dict]:
+    """Same 'Mastered Goals:' section boundary as
+    _extract_mastered_goal_names (kept as a separate function rather than
+    changed in place, so _check_GIP05's existing (name, offset)-tuple shape
+    and behavior stay byte-for-byte unchanged). Returns one dict per entry:
+    {"name": str, "date_mastered": str | None, "offset": int} -- offset is
+    the goal name's own text offset, same convention as
+    _extract_mastered_goal_names, for page-mapping. `date_mastered` is the
+    raw "MM/DD/YYYY"-shaped string as it appears in the document (no date
+    parsing/validation here -- that's a future round's job, same as the
+    actual comparison logic).
+    """
+    m = re.search(
+        r"Mastered Goals:([\s\S]{0,20000}?)(?:Goals in Progress:|Target Goal:|Target Name:|Goal Progress:|"
+        r"Areas of Focus|Clinical Interpretation)",
+        text,
+    )
+    if not m:
+        return []
+    section = m.group(1)
+    base_offset = m.start(1)
+    return [
+        {"name": sm.group(1).strip(), "date_mastered": sm.group(2), "offset": base_offset + sm.start(1)}
+        for sm in _MASTERED_SKILL_WITH_DATE_RE.finditer(section)
+    ]
+
+
+# Previous TP round (extraction plumbing only): "Problem Area:"/"Problem
+# Areas:" was already used elsewhere in this file (_EVIDENCED_BY_BLOCK_RE,
+# _NARRATIVE_SECTION_END_RE) purely as a STOP marker for other sections'
+# extraction -- nothing ever extracted the Problem Area label's own text.
+# QA-PROB-04 ("Problem Areas should not be identical to the previous TP")
+# will need each entry's own text to compare later; this locates them the
+# same way the rest of this file locates repeating labeled blocks (see
+# _find_acf_section's own boundary style) -- a section locator, not
+# comparison logic. A real TP has one or more "Problem Area:"/"Problem
+# Areas:" entries, each typically followed by its own "As evidenced by:"
+# block (see _EVIDENCED_BY_BLOCK_RE above) -- bounded here to end at the
+# next Problem Area entry, the next "As evidenced by:", or a known
+# following-section marker, whichever comes first.
+_PROBLEM_AREA_RE = re.compile(
+    r"Problem Areas?:[ \t]*([\s\S]{0,3000}?)"
+    r"(?=\n\s*(?:Problem Area:|Problem Areas:|As evidenced by:|Areas of Focus|Goal Progress:|"
+    r"Assessment of Current Functioning:)|\Z)",
+)
+
+
+def _extract_problem_areas(text: str) -> list[dict]:
+    """Every 'Problem Area(s): X' entry in the document, in document order.
+    Returns [{"text": str, "offset": int}, ...] -- offset is this entry's
+    own text offset (for page-mapping), same convention as the mastered-
+    goals extractors above. Returns [] if the document has no 'Problem
+    Area:'/'Problem Areas:' label at all.
+
+    REAL BUG FOUND (Fix Round, Previous TP round, Bug 3), confirmed against
+    real documents (Jacob Freund): this captures the CATEGORY/RUBRIC label
+    text itself (the DSM-style boilerplate description, e.g. "Deficits in
+    social-emotional reciprocity, ranging, for example...") -- which is a
+    FIXED TEMPLATE, identical for every patient's document by design, not
+    patient-specific content. QA-PROB-04's real cross-document "are these
+    identical" comparison needs the "As evidenced by:" block instead (the
+    genuinely patient-specific findings) -- see
+    _extract_evidenced_by_blocks below, which
+    pipeline/previous_tp_comparison.py::_compare_prob04 now uses instead of
+    this function's own output. Kept as-is (not removed) since nothing else
+    in this codebase was ever wrong to use it for anything else -- it
+    genuinely is "every Problem Area category label's own rubric text," just
+    not what a cross-document identity check needs.
+    """
+    return [
+        {"text": m.group(1).strip(), "offset": m.start(1)}
+        for m in _PROBLEM_AREA_RE.finditer(text)
+        if m.group(1).strip()
+    ]
+
+
+def _extract_evidenced_by_blocks(text: str) -> list[dict]:
+    """The REAL fix for Bug 3 above -- reuses _EVIDENCED_BY_BLOCK_RE
+    VERBATIM (already defined above, already used by _check_PROB01; not a
+    new regex, per this round's own explicit instruction). Returns
+    [{"text": str, "offset": int}, ...], one entry per "As evidenced by:"
+    occurrence in the document, in document order -- the genuinely
+    patient-specific findings text (confirmed real: "Jacob struggles to
+    approach peers - improved since last auth", "(in progress)", etc. --
+    exactly the content that SHOULD differ between a current and previous
+    TP when there's been real progress, unlike the fixed rubric text
+    _extract_problem_areas above captures).
+    """
+    return [
+        {"text": m.group(1).strip(), "offset": m.start(1)}
+        for m in _EVIDENCED_BY_BLOCK_RE.finditer(text)
+        if m.group(1).strip()
+    ]
 
 
 def _check_GIP05(rule: dict, fields: dict) -> tuple:

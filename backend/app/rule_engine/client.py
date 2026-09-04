@@ -33,10 +33,13 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent_client import ReviewResult, RuleResult, review_intake_answers, review_session_notes, review_treatment_plan
+from app.agent_client import (
+    ReviewResult, RuleResult, review_intake_answers, review_previous_tp, review_session_notes, review_treatment_plan,
+)
 from app.config import settings
 from app.db.models import Rule, RuleSnapshot, Upload
 from app.rule_engine.contract import RuleResultDraft
+from app.storage import resolve_stored_path
 
 # agent-making's real result vocabulary -> this backend's rule_result_status
 # enum. "not_applicable" collapses to the pre-existing "na" spelling;
@@ -284,6 +287,61 @@ def run_rule_checks(
         version_by_backend_id = {entry["rule_id"]: entry["version"] for entry in snapshot.rule_ids_and_versions}
         draft_by_rule_id = dict(draft_by_rule_id_pre)
         for rr in session_note_results:
+            backend_rule_id = rule_id_by_code.get(rr.rule_id)
+            if backend_rule_id is None or backend_rule_id not in version_by_backend_id:
+                continue  # this rule_code isn't part of the pinned snapshot -- nothing to override
+            draft_by_rule_id[backend_rule_id] = _draft_from_session_notes_result(
+                rr, backend_rule_id, version_by_backend_id[backend_rule_id],
+            )
+        drafts = list(draft_by_rule_id.values())  # dict overwrite preserves original insertion order
+
+    # Previous TP round (comparison logic): same override/combine mechanism
+    # as session notes above, for a SEPARATE data source (the previous TP
+    # file). `upload.previous_tp_path` is None for the vast majority of
+    # uploads today (this field is display-only until this round) -- in
+    # that case review_previous_tp returns [] immediately (no extraction,
+    # no model call, no draft touched), and QA-MAST-01/QA-MAST-02/
+    # QA-RPT-05/QA-ACF-04/QA-PROB-04 stay exactly as review_treatment_plan
+    # already answered them today, per this round's own explicit
+    # requirement.
+    if upload.previous_tp_path:
+        rule_id_by_code = {code: backend_id for backend_id, code in rule_codes_by_id.items()}
+        draft_by_rule_id_pre_prev = {d.rule_id: d for d in drafts}
+        # QA-RPT-05/QA-ACF-04/QA-PROB-04's own phase-1 draft (whatever the
+        # main TP-only call already decided, blind to previous-TP data),
+        # translated back to agent-making's own vocabulary -- same combine
+        # reasoning as QA-COC-01/QA-ACF-12 above. QA-MAST-01/QA-MAST-02 are
+        # NOT in this dict -- see app/agent_client.py's own
+        # _PREVIOUS_TP_COMPOUND_RULE_IDS comment for why they're pure
+        # overrides instead.
+        previous_tp_phase1_results: dict[str, RuleResult] = {}
+        for compound_code in ("QA-RPT-05", "QA-ACF-04", "QA-PROB-04"):
+            backend_id = rule_id_by_code.get(compound_code)
+            draft = draft_by_rule_id_pre_prev.get(backend_id) if backend_id else None
+            if draft is not None:
+                previous_tp_phase1_results[compound_code] = RuleResult(
+                    rule_id=compound_code,
+                    category="Unknown",  # unused by the combine step -- never sent back out
+                    status=_MODEL_STATUS_TO_RESULT[draft.model_status],
+                    page=draft.model_pages,
+                    evidence=draft.model_finding,
+                    confidence=None,
+                )
+        # Real Anthropic, not the free OpenRouter tier session notes use --
+        # see review_previous_tp's own docstring for why this round's own
+        # explicit instruction ("do not disable, mock, or route around the
+        # real API... same as every other rule") makes this a deliberate,
+        # standing architecture choice, not an oversight.
+        previous_tp_results = review_previous_tp(
+            upload.file_path,
+            str(resolve_stored_path(upload.previous_tp_path)),
+            model_override="anthropic:claude-sonnet-5",
+            max_calls=settings.previous_tp_max_calls,
+            phase1_results=previous_tp_phase1_results,
+        )
+        version_by_backend_id = {entry["rule_id"]: entry["version"] for entry in snapshot.rule_ids_and_versions}
+        draft_by_rule_id = dict(draft_by_rule_id_pre_prev)
+        for rr in previous_tp_results:
             backend_rule_id = rule_id_by_code.get(rr.rule_id)
             if backend_rule_id is None or backend_rule_id not in version_by_backend_id:
                 continue  # this rule_code isn't part of the pinned snapshot -- nothing to override

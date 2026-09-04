@@ -35,6 +35,7 @@ site in this pipeline hardcodes "call Anthropic" anymore. Two providers:
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -490,6 +491,83 @@ def _call_anthropic(
             "output_tokens": getattr(response.usage, "output_tokens", 0),
         },
     }
+
+
+def call_tool_json_with_images(
+    *,
+    prompt_text: str,
+    images: dict[int, bytes],
+    tool_name: str,
+    tool_description: str,
+    input_schema: dict,
+    tracker: "CallTracker",
+    model_override: str | None = None,
+    max_tokens: int = 1024,
+    call_reason: str = "call",
+) -> dict[str, Any]:
+    """Fix Round (Previous TP round, Bug 2): a real vision-capable sibling
+    of call_tool_json above -- that function's `prompt_text: str` only
+    parameter has no way to attach an image (confirmed: neither
+    _call_openrouter nor _call_anthropic accepts anything but a plain
+    string `content`). This is for exactly the case call_tool_json can't
+    handle: a narrow, single-purpose question about a SPECIFIC rendered
+    page image (e.g. "what score is shown in this milestone grid?"),
+    reusing the SAME real image content-block construction judge.py's own
+    vision-eligible judgment path already uses (`_build_prompt`'s
+    "type": "image" blocks, base64-encoded PNG) -- not a new mechanism.
+
+    Anthropic ONLY, always -- OpenRouter's free-tier model this pipeline
+    defaults to has no confirmed vision support in this codebase, and
+    nothing here builds an OpenRouter-shaped image message. Raises
+    ModelCallError immediately (before any call) if `model_override`
+    doesn't explicitly resolve to the "anthropic" provider -- silently
+    falling back to a text-only call would mean quietly losing the one
+    thing this function exists for, not a graceful degradation.
+
+    No retry/backoff/fallback logic (unlike call_tool_json) -- a single
+    narrow vision call for a real production path; kept simple rather than
+    duplicating that machinery for a call shape that isn't the main
+    judgment batch's own high-volume path.
+    """
+    provider, model = resolve_provider_and_model(model_override)
+    if provider != "anthropic":
+        raise ModelCallError(
+            f"call_tool_json_with_images requires the 'anthropic' provider explicitly "
+            f"(got {provider!r} from model_override={model_override!r}) -- image content isn't "
+            f"supported through the OpenRouter path in this codebase."
+        )
+
+    tracker.check_before_call()
+
+    import anthropic
+
+    content: list[dict] = [{"type": "text", "text": prompt_text}]
+    for page_number in sorted(images):
+        content.append({"type": "text", "text": f"--- Rendered page {page_number} ---"})
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.standard_b64encode(images[page_number]).decode("utf-8"),
+            },
+        })
+
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        tools=[{"name": tool_name, "description": tool_description, "input_schema": input_schema}],
+        tool_choice={"type": "tool", "name": tool_name},
+        messages=[{"role": "user", "content": content}],
+    )
+    tool_use_block = next(b for b in response.content if b.type == "tool_use")
+    usage = {
+        "input_tokens": getattr(response.usage, "input_tokens", 0),
+        "output_tokens": getattr(response.usage, "output_tokens", 0),
+    }
+    tracker.record(reason=call_reason, provider=provider, model=model, usage=usage)
+    return tool_use_block.input
 
 
 class CallTracker:

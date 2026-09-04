@@ -630,7 +630,17 @@ def run_judgment_checks(
     for rule_id in set(first) & set(second):
         f, s = first[rule_id], second[rule_id]
         if f["result"] == s["result"]:
-            reconciled[rule_id] = f
+            # Fix Round: same unguarded-raw-dict gap as
+            # _three_way_majority_finding's majority branch (see
+            # _coerce_evidence_to_string's own docstring for the real
+            # crash this fixes) -- the plain 2-call agreement path had the
+            # identical exposure, just not the one that actually crashed
+            # this time. _coerce_evidence_for_finding (not
+            # _coerce_evidence_to_string) -- this is a pass-through
+            # branch, so a legitimate list-shaped evidence must survive
+            # unflattened (see that function's own docstring for the real
+            # bug this distinction fixes).
+            reconciled[rule_id] = {**f, "evidence": _coerce_evidence_for_finding(f["evidence"])}
         else:
             disagreed_ids.append(rule_id)
 
@@ -677,6 +687,65 @@ def _natural_result_phrase(result: str) -> str:
     return _RESULT_TO_NATURAL_PHRASE.get(result, result)
 
 
+def _coerce_evidence_for_finding(evidence):
+    """Fix Round (Judgment Layer Stability) -- REAL BUG FOUND AND FIXED,
+    caught by this round's own test suite the moment
+    run_judgment_checks_majority_vote's reconciliation path was actually
+    wired into the real pipeline for the first time: `_coerce_evidence_
+    to_string` below is correct for embedding evidence INSIDE a natural-
+    language summary sentence (must always be a plain string there), but
+    it was ALSO being applied, wrongly, to the WINNING/pass-through
+    branches of `_three_way_majority_finding`, `_reconcile_majority_vote`,
+    and `run_judgment_checks`'s plain-agreement path -- flattening a
+    genuinely legitimate `[{page, detail}, ...]` multi-page evidence list
+    (FINDINGS_TOOL's own documented alternate shape, explicitly handled
+    downstream by merge.py::_explode_to_rows's own `isinstance(...,
+    list)` branch) into a single JSON string, silently discarding the
+    real per-page evidence breakdown a reviewer needs. Those three call
+    sites now use THIS function instead: only coerce a genuinely
+    unexpected shape (the real dict-instead-of-string crash this round
+    already fixed); a legitimate `str` or `list` passes through exactly
+    as the model returned it, same as this whole reconciliation mechanism
+    always did before `_coerce_evidence_to_string` existed.
+    """
+    if isinstance(evidence, (str, list)):
+        return evidence
+    return _coerce_evidence_to_string(evidence)
+
+
+def _coerce_evidence_to_string(evidence) -> str:
+    """REAL BUG FOUND AND FIXED (Fix Round, this round): confirmed live,
+    real production crash -- QA-PROB-01, a 2-of-3 tie-break majority
+    (_three_way_majority_finding's own majority branch, below) returned one
+    of the three raw per-call finding dicts completely unvalidated, and
+    that call's own `evidence` value was some non-string shape (not the
+    FINDINGS_TOOL schema's advertised str, and not even that schema's own
+    {page, detail} list-item shape) -- crashed downstream in
+    humanize.py's `_PAGE_TAG_RE.split(text)` (expects a str), discarding
+    the whole review's results, ~$1.17 of real spend already made.
+
+    The schema (FINDINGS_TOOL, below) is advisory to the model, not
+    runtime-enforced on the response side -- exactly the same class of gap
+    merge.py::_format_page_display already found and fixed for the `page`
+    field in a previous round (its own docstring documents an earlier,
+    separate real crash from this same root cause). This is that same fix
+    for `evidence`: every finding-dict consumer in this file must coerce
+    through this, not silently trust the model's shape.
+
+    Order of preference: already a string -> unchanged. A dict with its
+    own "detail" key (the one shape this schema's OWN docs teach the model
+    for the list-evidence form, so a mis-shaped single-value response most
+    plausibly still uses this key) -> that string, if it itself is a
+    string. Otherwise -> a JSON dump, so a reviewer sees the real raw
+    content instead of a crash.
+    """
+    if isinstance(evidence, str):
+        return evidence
+    if isinstance(evidence, dict) and isinstance(evidence.get("detail"), str):
+        return evidence["detail"]
+    return json.dumps(evidence)
+
+
 def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
     """The original (pre-Round-93) two-call disagreement fallback,
     extracted unchanged so both run_judgment_checks' own two-call path and
@@ -686,8 +755,8 @@ def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
     call must fall back to today's existing "uncertain" behavior, not a
     new or different one.
     """
-    f_evidence = f["evidence"] if isinstance(f["evidence"], str) else json.dumps(f["evidence"])
-    s_evidence = s["evidence"] if isinstance(s["evidence"], str) else json.dumps(s["evidence"])
+    f_evidence = _coerce_evidence_to_string(f["evidence"])
+    s_evidence = _coerce_evidence_to_string(s["evidence"])
     return {
         "result": "uncertain",
         "evidence": (
@@ -715,10 +784,22 @@ def _three_way_majority_finding(f: dict, s: dict, t: dict) -> dict:
     counts = Counter(e["result"] for e in entries)
     winning_result, winning_count = counts.most_common(1)[0]
     if winning_count >= 2:
-        return next(e for e in entries if e["result"] == winning_result)
+        # Fix Round: this is the exact line that crashed downstream in a
+        # real production run (see _coerce_evidence_to_string's own
+        # docstring) -- the winning call's raw dict, `evidence` included,
+        # was returned completely unvalidated. Return a coerced COPY, not
+        # the original dict mutated in place (it may still be referenced
+        # elsewhere via `first`/`second`/`third`).
+        winner = next(e for e in entries if e["result"] == winning_result)
+        # Pass-through branch -- _coerce_evidence_for_finding, not
+        # _coerce_evidence_to_string, so a legitimate list-shaped evidence
+        # (FINDINGS_TOOL's own {page, detail} multi-page form) survives
+        # unflattened (real bug found and fixed this round -- see that
+        # function's own docstring).
+        return {**winner, "evidence": _coerce_evidence_for_finding(winner["evidence"])}
     summaries = []
     for i, e in enumerate(entries):
-        ev = e["evidence"] if isinstance(e["evidence"], str) else json.dumps(e["evidence"])
+        ev = _coerce_evidence_to_string(e["evidence"])
         summaries.append(f"call {i + 1} said {_natural_result_phrase(e['result'])} ({ev})")
     return {
         "result": "uncertain",
@@ -756,41 +837,64 @@ def run_judgment_checks_majority_vote(
     n_calls: int = 3,
     tracker=None,
     call_reason: str = "call",
+    min_agreement: int | None = None,
+    model_override: str | None = None,
 ) -> dict[str, dict]:
-    """TESTABLE ALTERNATIVE to the production 2-call run_judgment_checks —
-    not wired into the pipeline, used only to measure whether an N-way
-    majority vote catches real failures the 2-call tie-break throws away
-    (2026-07-28 round: found that in several confirmed real-document cases,
-    the FIRST of the 2 calls was already correct and got dragged to
-    "uncertain" only because the second call happened to disagree — a 3rd
-    call breaks that tie in the direction of whichever answer the majority
-    actually landed on, rather than always deferring to "uncertain").
+    """Fix Round (Judgment Layer Stability) -- REAL BUG CONFIRMED (not by
+    theory, by direct measurement): a real-data investigation this round
+    (see this round's own report) found that at the RAW single-call level,
+    11 of 14 known-unstable rules already produced 2-3 DIFFERENT verdicts
+    across just 7 independent calls with identical input and zero code
+    change -- confirming genuine per-call sampling variance (temperature=0
+    is not available on this model, confirmed in an earlier round) as a
+    real, dominant cause, on top of (not instead of) the small-sample-size
+    problem this function's own original docstring already flagged: with
+    only 2-3 samples, a rule sitting near a real decision boundary flips
+    on essentially every run.
 
-    Makes n_calls real API calls per batch (default 3, vs. run_judgment_checks'
-    fixed 2) — a real, larger cost increase, which is exactly why this is a
-    separate function to test rather than a silent change to production.
+    Was previously an untested, not-wired-in alternative to the production
+    2-call `run_judgment_checks` -- this round wires it in for real (see
+    `pipeline/__init__.py`'s own call site) after measuring real flip-rate
+    reductions at n_calls=5 and n_calls=7 against a pool of independent raw
+    calls (this round's own report has the exact numbers).
 
-    For each rule_id present in ALL n_calls responses: if a strict majority
-    (> n_calls/2) share the same result, that result wins (kept from
-    whichever call first produced it). If every call disagrees (no
-    majority), falls back to "uncertain" — same honesty principle as the
-    2-way version, just with a higher bar before giving up. A rule_id
-    missing from any single call is left out of the returned dict entirely,
-    same as the 2-way version — integrity.py's retry logic handles it.
+    Makes n_calls real API calls per batch (default 3, vs. the old
+    production default's 2 + conditional 3rd) — a real, larger cost
+    increase per document, traded for real, measured stability.
+
+    `min_agreement` (new this round): the minimum number of the n_calls
+    that must agree before their shared result is trusted, instead of the
+    old, implicit "simple majority" (`> n_calls/2`) every time. `None`
+    (the default) preserves that exact original behavior byte-for-byte --
+    passing an explicit stricter threshold (e.g. `min_agreement=4` with
+    `n_calls=5`, this round's own "4-of-5, else uncertain" ask) requires
+    MORE than a bare majority before committing to an answer, falling back
+    to "uncertain" more readily on a genuinely close call rather than
+    picking whichever side narrowly won this particular sample.
+
+    For each rule_id present in ALL n_calls responses: if `min_agreement`
+    (or the default simple-majority bar) is met, that result wins (kept
+    from whichever call first produced it). Otherwise falls back to
+    "uncertain" — same honesty principle as the 2-way version, just with a
+    configurable bar before giving up. A rule_id missing from any single
+    call is left out of the returned dict entirely, same as the 2-way
+    version — integrity.py's retry logic handles it.
     """
     if not judgment_rules:
         return {}
     all_results = [
         _run_judgment_checks_once(
             judgment_rules, fields, rendered_images, tracker=tracker,
-            call_reason=f"{call_reason} (majority vote {i + 1}/{n_calls})",
+            call_reason=f"{call_reason} (majority vote {i + 1}/{n_calls})", model_override=model_override,
         )
         for i in range(n_calls)
     ]
-    return _reconcile_majority_vote(all_results)
+    return _reconcile_majority_vote(all_results, min_agreement=min_agreement)
 
 
-def _reconcile_majority_vote(all_results: list[dict[str, dict]]) -> dict[str, dict]:
+def _reconcile_majority_vote(
+    all_results: list[dict[str, dict]], *, min_agreement: int | None = None,
+) -> dict[str, dict]:
     if not all_results:
         return {}
     common_ids = set.intersection(*(set(r) for r in all_results))
@@ -799,17 +903,27 @@ def _reconcile_majority_vote(all_results: list[dict[str, dict]]) -> dict[str, di
         entries = [r[rule_id] for r in all_results]
         counts = Counter(e["result"] for e in entries)
         winning_result, winning_count = counts.most_common(1)[0]
-        if winning_count > len(all_results) / 2:
-            reconciled[rule_id] = next(e for e in entries if e["result"] == winning_result)
+        required = min_agreement if min_agreement is not None else (len(all_results) / 2)
+        meets_bar = winning_count >= required if min_agreement is not None else winning_count > required
+        if meets_bar:
+            # Pass-through branch -- _coerce_evidence_for_finding, not
+            # _coerce_evidence_to_string (real bug found and fixed this
+            # round, the moment this function was actually wired into the
+            # real pipeline for the first time: a legitimate list-shaped
+            # evidence was being silently flattened here -- see that
+            # function's own docstring).
+            winner = next(e for e in entries if e["result"] == winning_result)
+            reconciled[rule_id] = {**winner, "evidence": _coerce_evidence_for_finding(winner["evidence"])}
             continue
         summaries = []
         for i, e in enumerate(entries):
-            ev = e["evidence"] if isinstance(e["evidence"], str) else json.dumps(e["evidence"])
+            ev = _coerce_evidence_to_string(e["evidence"])
             summaries.append(f"call {i + 1} said {_natural_result_phrase(e['result'])} ({ev})")
+        bar_desc = f"needed {int(required)}+ agreeing" if min_agreement is not None else "no majority"
         reconciled[rule_id] = {
             "result": "uncertain",
             "evidence": (
-                f"Judgment layer split with no majority across {len(all_results)} "
+                f"Judgment layer split ({bar_desc}) across {len(all_results)} "
                 f"consistency-check calls for this rule with identical input: "
                 + "; ".join(summaries)
                 + ". Flagged uncertain rather than silently keeping one answer."

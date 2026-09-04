@@ -84,7 +84,7 @@ def test_escalated_rule_keeps_deterministic_page_when_judgment_disagrees(minimal
         }
 
     monkeypatch.setattr(fields_module, "run_deterministic_checks", fake_run_deterministic_checks)
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     result = pipeline_module.run_full_pipeline(minimal_pdf, rules)
     finding = result["findings"]["QA-FAKE-01"]
@@ -123,7 +123,7 @@ def test_escalated_rule_uses_judgment_page_when_det_had_none(minimal_pdf, monkey
         }
 
     monkeypatch.setattr(fields_module, "run_deterministic_checks", fake_run_deterministic_checks)
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     result = pipeline_module.run_full_pipeline(minimal_pdf, rules)
     finding = result["findings"]["QA-FAKE-02"]
@@ -161,7 +161,7 @@ def test_escalated_rule_with_multi_page_judgment_evidence_is_left_alone(minimal_
         }
 
     monkeypatch.setattr(fields_module, "run_deterministic_checks", fake_run_deterministic_checks)
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     result = pipeline_module.run_full_pipeline(minimal_pdf, rules)
     finding = result["findings"]["QA-FAKE-03"]
@@ -203,7 +203,7 @@ def test_escalated_rule_keeps_its_multipage_page_when_judgment_returns_one(minim
         }
 
     monkeypatch.setattr(fields_module, "run_deterministic_checks", fake_run_deterministic_checks)
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     result = pipeline_module.run_full_pipeline(minimal_pdf, rules)
     finding = result["findings"]["QA-FAKE-04"]

@@ -389,13 +389,13 @@ def test_end_to_end_phase_2_fires_and_resolves_a_tagged_finding(monkeypatch, tmp
     hrs01_finding = next(f for f in result["findings"] if f["rule_id"] == "QA-HRS-01")
     assert hrs01_finding["result"] == "fail"
     assert "25 hrs/week" in hrs01_finding["detail"]
-    # Same shared tracker counts everything: 1 extraction .create() + 2
-    # judgment .stream() (the self-consistency pair, both calls agreeing
-    # since the fake always returns the same finding) + 1 resolution
-    # .create() = 4.
-    assert result["usage"]["api_calls"] == 4
+    # Same shared tracker counts everything: 1 extraction .create() + 5
+    # judgment .stream() (Fix Round, Judgment Layer Stability: the initial
+    # batch is now a 5-way vote, all 5 calls agreeing since the fake
+    # always returns the same finding) + 1 resolution .create() = 7.
+    assert result["usage"]["api_calls"] == 7
     assert messages.create_call_count == 2  # extraction + resolution
-    assert messages.stream_call_count == 2  # judgment self-consistency pair
+    assert messages.stream_call_count == 5  # judgment 5-way vote
 
 
 def test_end_to_end_phase_2_does_not_fire_when_no_supporting_doc_given(monkeypatch, tmp_path):

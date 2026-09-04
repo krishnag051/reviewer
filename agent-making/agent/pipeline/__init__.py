@@ -8,6 +8,86 @@ from .extract import extract_pdf_text
 from .flag_pages import flag_image_only_pages, flagged_page_numbers
 from .render import render_flagged_pages
 
+# Fix Round (Eliminate Coin-Flipping, For Real, Before Production), Part 1
+# -- REAL, CONFIRMED near-50/50 raw per-call splits (a pool of 7
+# independent real calls against a real document, Fix Round: Judgment
+# Layer Stability's own report has the exact numbers: 4-of-7, ~57%
+# dominant, for all 5 rule_ids originally in this set) -- not fixable by
+# voting harder, only by rewriting the rule's own criteria (Part 2 of this
+# same round). Until a given rule_id is confirmed genuinely stable under
+# rewritten criteria and removed from this set, it is held OUT of the real
+# judgment call entirely (zero model calls, zero variance by construction,
+# not just "usually stable") and given a fixed finding instead -- "we are
+# not accepting coin-flip sometimes... even temporarily" was this round's
+# own explicit standing instruction. A stable, honest "needs human review"
+# beats an unstable pass/fail for a compliance tool, full stop.
+#
+# Part 2 RESULT (same round, real 7-call re-test against 4 rewritten
+# rules, ISOLATED/narrow context -- see this round's own report):
+# QA-GIP-27 (0.57 -> 0.86), QA-GIP-22 (0.57 -> 1.00), QA-GIP-28
+# (0.57 -> 1.00) all looked genuinely fixed in that narrow test.
+# QA-MAST-04 was not attempted (a PRIOR round's own notes already
+# concluded real ma'am clarification is needed, still honored). QA-GIP-14
+# was rewritten too but showed no improvement (real clinical judgment,
+# this rule's own notes call it "the canonical LLM-judgment example").
+#
+# Fix Round (Eliminate Coin-Flipping, For Real, Before Production), Part
+# 3 -- REAL BUG IN THE TESTING METHODOLOGY ITSELF, FOUND: the narrow-
+# context isolated re-test above does NOT reliably predict full ~120-rule
+# production-batch behavior. Confirmed directly: a real 3-run test of the
+# FULL rule set (not just the 14 originally suspect ones) found 21 of 181
+# rule_ids produced a different verdict across 3 identical runs --
+# INCLUDING QA-GIP-22 (isolated test: 7/7 unanimous pass; full batch:
+# uncertain/uncertain/not_applicable -- the isolated result did not
+# transfer) and QA-GIP-27 (isolated: 6/7; full batch: pass/pass/
+# uncertain -- improved, but still a real flip). QA-GIP-28 DID hold up
+# (no flip across all 3 full-batch runs) -- stays off this set, genuinely
+# confirmed at the scale that actually matters. QA-MAST-04/QA-GIP-14
+# (never left this set) also correctly showed zero flips, confirming
+# Part 1's own mechanism works for real at full scale too.
+#
+# The other 15 rule_ids below were NEVER part of the originally-suspected
+# 14 -- discovered only by finally running a real full-rule-set repeat
+# test, exactly the risk this round's own brief anticipated ("don't
+# assume the list of 14 is exhaustive"). Given this round's own explicit,
+# standing bar ("No rule should be capable of returning pass one run and
+# fail the next by the end of this round, full stop") and this round's
+# real spend already at ~$7 of its $8 cap (not enough left for a genuine
+# rewrite-and-reverify cycle on 20 more rules), EVERY rule_id confirmed
+# unstable by this real test is held here now, same zero-model-call
+# mechanism as QA-MAST-04/QA-GIP-14 -- a real, immediate, structurally-
+# guaranteed stop to the coin-flipping, even though the REAL fix (Part
+# 2-style rewrite-and-reverify, or a deterministic conversion) for these
+# 20 is genuinely not done and is this round's own clearly-flagged
+# follow-up, not something to silently claim finished. See this round's
+# own report for the exact real data behind every rule_id here.
+STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
+    "QA-MAST-04", "QA-GIP-14",  # original 2, unchanged (see Part 2 above)
+    "QA-AI-03", "QA-AI-05", "QA-BIP-03", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
+    "QA-COC-07", "QA-GIP-02", "QA-GIP-17", "QA-GIP-20", "QA-GIP-22", "QA-GIP-23",
+    "QA-GIP-25", "QA-GIP-27", "QA-GIP-29", "QA-GIP-34", "QA-GIP-35", "QA-HRS-07",
+    "QA-PAR-02", "QA-SCH-09", "QA-TEMP-06",
+})
+
+_STABILIZED_UNCERTAIN_EVIDENCE = (
+    "Uncertain — needs human review. This rule's judgment criteria were confirmed (real, "
+    "repeated sampling against real documents) to produce a near-random verdict across "
+    "identical input, and are being rewritten to remove that ambiguity. Until the rewrite is "
+    "confirmed genuinely stable, this rule is intentionally held at a fixed, honest "
+    "\"needs human review\" status rather than risk reporting an unstable pass/fail that could "
+    "differ from one review of the same document to the next."
+)
+
+
+def _stabilized_uncertain_finding() -> dict:
+    """Same finding, every single call, every single rule_id in
+    STABILIZED_UNCERTAIN_RULE_IDS -- byte-identical evidence text too (not
+    just the same result label with different reasoning each time), per
+    this round's own explicit verification requirement. No randomness
+    anywhere in this function -- that's the entire point.
+    """
+    return {"result": "uncertain", "evidence": _STABILIZED_UNCERTAIN_EVIDENCE, "page": None, "confidence": 0.0}
+
 
 def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
     """Runs extract -> flag -> render -> scope filter -> deterministic ->
@@ -61,11 +141,25 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     escalated_rules = [rules_by_id[rid] for rid in escalated_ids]
 
     judgment_rules = [r for r in applicable_rules if r["check_type"] == "judgment" and r["active"]]
+
+    # Fix Round (Eliminate Coin-Flipping, For Real, Before Production),
+    # Part 1: pull the confirmed-near-50/50 rule_ids OUT of the real
+    # judgment call entirely -- see STABILIZED_UNCERTAIN_RULE_IDS's own
+    # comment above for why this is a real, zero-model-call, zero-
+    # variance-by-construction override, not just "the vote usually lands
+    # on uncertain for these." None of these 5 are escalated_rules (all
+    # confirmed check_type="judgment" in rules.json, never det-checked),
+    # so this filter alone is sufficient -- no interaction with the
+    # det-escalation merge below.
+    stabilized_rule_ids = {r["rule_id"] for r in judgment_rules if r["rule_id"] in STABILIZED_UNCERTAIN_RULE_IDS}
+    judgment_rules = [r for r in judgment_rules if r["rule_id"] not in STABILIZED_UNCERTAIN_RULE_IDS]
     full_judgment_batch = judgment_rules + escalated_rules
 
     judgment_results = integrity.run_judgment_with_integrity_check(
         full_judgment_batch, extracted_fields, rendered_images, tracker=tracker, model_override=model_override,
     )
+    for rule_id in stabilized_rule_ids:
+        judgment_results[rule_id] = _stabilized_uncertain_finding()
 
     # For escalated rules, the judgment result wins (more context to work
     # with) — but the original deterministic attempt is kept as a secondary

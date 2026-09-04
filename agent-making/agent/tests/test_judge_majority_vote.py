@@ -74,10 +74,16 @@ def test_run_judgment_checks_majority_vote_with_no_rules_makes_zero_calls(monkey
     assert judge.run_judgment_checks_majority_vote([], {"pages": []}, {}) == {}
 
 
-def test_majority_vote_is_not_wired_into_production_run_judgment_checks(monkeypatch):
-    """Confirms this stays a testable alternative, not a silent production
-    change -- run_judgment_checks (the real pipeline path) still makes
-    exactly 2 calls, not 3."""
+def test_majority_vote_does_not_change_the_plain_run_judgment_checks_function(monkeypatch):
+    """Fix Round (Judgment Layer Stability) renamed/re-scoped this test:
+    `run_judgment_checks_majority_vote` IS now wired into the real
+    pipeline (via integrity.py's own initial-batch call site -- see
+    test_integrity.py's own confirmation of that) -- what this test still
+    confirms is narrower and still true: the PLAIN `run_judgment_checks`
+    function itself is untouched, still makes exactly 2 calls, not 3 --
+    integrity.py's retry pass for missing rule_ids still uses this exact
+    function, deliberately kept cheap/unchanged (see integrity.py's own
+    updated docstring for why)."""
     call_log = []
 
     def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
@@ -88,3 +94,47 @@ def test_majority_vote_is_not_wired_into_production_run_judgment_checks(monkeypa
     rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]
     judge.run_judgment_checks(rules, {"pages": []}, {})
     assert len(call_log) == 2
+
+
+# --- Fix Round (Judgment Layer Stability): min_agreement -------------------
+
+
+def test_min_agreement_none_preserves_old_simple_majority_behavior():
+    """4-of-7 is a simple majority (> 3.5) -- must still win with
+    min_agreement=None, byte-identical to before this round."""
+    results = [{"A-1": _finding("fail")}] * 4 + [{"A-1": _finding("pass")}] * 3
+    reconciled = judge._reconcile_majority_vote(results, min_agreement=None)
+    assert reconciled["A-1"]["result"] == "fail"
+
+
+def test_min_agreement_stricter_than_simple_majority_falls_back_to_uncertain():
+    """4-of-7 IS a simple majority, but is NOT >= min_agreement=5 -- must
+    fall back to uncertain under the stricter bar, even though the old
+    default would have committed to 'fail'."""
+    results = [{"A-1": _finding("fail")}] * 4 + [{"A-1": _finding("pass")}] * 3
+    reconciled = judge._reconcile_majority_vote(results, min_agreement=5)
+    assert reconciled["A-1"]["result"] == "uncertain"
+    assert "needed 5+ agreeing" in reconciled["A-1"]["evidence"]
+
+
+def test_min_agreement_exactly_met_commits_to_the_answer():
+    results = [{"A-1": _finding("fail")}] * 5 + [{"A-1": _finding("pass")}] * 2
+    reconciled = judge._reconcile_majority_vote(results, min_agreement=5)
+    assert reconciled["A-1"]["result"] == "fail"
+
+
+def test_run_judgment_checks_majority_vote_forwards_min_agreement_and_model_override(monkeypatch):
+    captured = []
+
+    def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
+        captured.append(model_override)
+        return {"A-1": _finding("fail")}
+
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_once)
+    rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]
+    result = judge.run_judgment_checks_majority_vote(
+        rules, {"pages": []}, {}, n_calls=7, min_agreement=5, model_override="anthropic:claude-sonnet-5",
+    )
+    assert len(captured) == 7
+    assert all(m == "anthropic:claude-sonnet-5" for m in captured)
+    assert result["A-1"]["result"] == "fail"

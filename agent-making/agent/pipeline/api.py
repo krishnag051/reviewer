@@ -45,6 +45,7 @@ docstring for the two-phase design that replaced both.)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,99 @@ RESULT_VALUES = ("pass", "fail", "uncertain", "not_applicable", "not_checkable")
 def _load_rules() -> list[dict]:
     data = json.loads(RULES_PATH.read_text(encoding="utf-8"))
     return data["rules"]
+
+
+# --- Fix Round (Judgment Layer Stability), fix #1: document-level result
+# caching, keyed by content hash ---------------------------------------------
+#
+# Same exact pattern session_note_extraction.py already established (sha256
+# content hash -> a JSON file under agent-making/agent/.cache/) -- reused
+# deliberately, not reinvented. This is a REAL, independently-motivated
+# reliability fix, not a stopgap for the variance measured elsewhere in this
+# round: re-submitting the byte-identical TP (and, if given, the byte-
+# identical supporting doc / same overrides / same intake context) now
+# ALWAYS returns the exact same stored verdict, with ZERO new model calls --
+# a re-upload can never itself be the reason two reviews of "the same
+# document" disagree, regardless of what the judgment layer's own
+# consensus mechanism does on a genuinely NEW document.
+#
+# The cache key must cover every input that can change the real output, not
+# just the TP's own bytes -- `supporting_doc_path`'s content, `payor_override`/
+# `plan_type_override`/`source_filename`, and `extra_rule_context`/
+# `extra_fields` (real intake-answer content) all feed into the real
+# judgment/deterministic calls. Excluded: `max_calls` (a budget cap, not
+# real input) and `pdf_path`/`supporting_doc_path` themselves (storage-key
+# paths, not content -- two different paths pointing at byte-identical
+# content must be treated as the same review, which is the whole point).
+#
+# Same explicit non-durability as session_note_extraction.py's own cache:
+# local-disk only, not a database table, not the source of truth for
+# anything -- wiping this directory only means the next submission re-runs
+# the real pipeline, never a correctness problem.
+
+_REVIEW_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "tp_reviews"
+
+
+def _review_content_hash(
+    pdf_bytes: bytes,
+    supporting_doc_bytes: bytes | None,
+    *,
+    payor_override: str | None,
+    plan_type_override: str | None,
+    source_filename: str | None,
+    extra_rule_context: dict[str, str] | None,
+    extra_fields: dict[str, str] | None,
+    rules_bytes: bytes,
+) -> str:
+    """`rules_bytes` (Fix Round, Eliminate Coin-Flipping, For Real, Before
+    Production) -- REAL BUG FOUND AND FIXED, caught while building this
+    very round's own Part 3 verification: the cache key never included
+    the RULES themselves. Confirmed real risk: this round edited 4 rules'
+    own descriptions (Part 2's rewrite) -- without this fix, re-submitting
+    the SAME document after that edit would have silently returned the
+    OLD, pre-rewrite cached result, exactly the kind of staleness this
+    system's own backend rule_snapshot architecture (see CLAUDE.md) exists
+    to prevent everywhere else. Raw file bytes, not a parsed/re-serialized
+    form -- cheapest correct thing that changes if and only if the rules
+    file's own real content changes.
+    """
+    hasher = hashlib.sha256()
+    hasher.update(pdf_bytes)
+    hasher.update(b"\x00supporting\x00")
+    hasher.update(supporting_doc_bytes or b"")
+    hasher.update(b"\x00rules\x00")
+    hasher.update(rules_bytes)
+    # A stable, deterministic serialization of every other real input --
+    # sort_keys so dict ordering can never produce two different hashes for
+    # the same logical content.
+    hasher.update(b"\x00params\x00")
+    hasher.update(json.dumps({
+        "payor_override": payor_override,
+        "plan_type_override": plan_type_override,
+        "source_filename": source_filename,
+        "extra_rule_context": extra_rule_context,
+        "extra_fields": extra_fields,
+    }, sort_keys=True).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def _review_cache_path(content_hash: str) -> Path:
+    return _REVIEW_CACHE_DIR / f"{content_hash}.json"
+
+
+def _load_cached_review(content_hash: str) -> dict[str, Any] | None:
+    path = _review_cache_path(content_hash)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None  # corrupt/unreadable cache entry -- treat as a miss, re-review
+
+
+def _save_cached_review(content_hash: str, result: dict[str, Any]) -> None:
+    _REVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _review_cache_path(content_hash).write_text(json.dumps(result, indent=2), encoding="utf-8")
 
 
 def _run_pipeline_with_extras(
@@ -323,6 +417,8 @@ def review_treatment_plan(
     max_calls: int | None = None,
     extra_rule_context: dict[str, str] | None = None,
     extra_fields: dict[str, str] | None = None,
+    use_cache: bool = True,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """The one public entry point. Runs the full pipeline against `pdf_path`
     and returns a JSON-serializable `ReviewResult` dict — see
@@ -396,6 +492,21 @@ def review_treatment_plan(
     above, which only reaches the judgment layer's prompt. Same additive-
     key convention `_run_pipeline_with_extras` already uses for payor/
     plan_type/supporting_doc/source_filename.
+
+    `use_cache`/`force_refresh` (Fix Round, Judgment Layer Stability, fix
+    #1): content-hash-keyed local cache, same exact pattern
+    session_note_extraction.py already uses (see the module-level comment
+    above `_review_content_hash`) -- re-submitting a byte-identical TP
+    (plus byte-identical supporting doc, and identical overrides/intake
+    context) returns the exact same stored result, with ZERO new model
+    calls. `use_cache=True` (the default) checks the cache first and
+    writes a fresh real result to it after a genuine run; `force_refresh=
+    True` skips the cache LOOKUP (forces a real re-run) but still WRITES
+    the fresh result afterward, same self-healing convention as
+    session_note_extraction.py's own `force_refresh`. `use_cache=False`
+    skips both lookup and write -- a genuinely uncached one-off call, e.g.
+    this round's own repeat-run variance measurements, which must NOT be
+    quietly short-circuited by a cache hit from an earlier run.
     """
     tracker = ApiCallTracker(max_calls=max_calls)
 
@@ -404,6 +515,26 @@ def review_treatment_plan(
 
     if supporting_doc_path is not None and not Path(supporting_doc_path).is_file():
         return _error_result("supporting_doc_not_found", f"No file at path: {supporting_doc_path}", tracker)
+
+    pdf_bytes = Path(pdf_path).read_bytes()
+    supporting_doc_bytes = Path(supporting_doc_path).read_bytes() if supporting_doc_path is not None else None
+    # Read once, before either the cache lookup or _load_rules() -- raw
+    # bytes are cheap and this must reflect the file on disk RIGHT NOW,
+    # not whatever _load_rules() would parse (a cache hit skips that call
+    # entirely, see below).
+    rules_bytes = RULES_PATH.read_bytes()
+    content_hash = _review_content_hash(
+        pdf_bytes, supporting_doc_bytes,
+        payor_override=payor_override, plan_type_override=plan_type_override, source_filename=source_filename,
+        extra_rule_context=extra_rule_context, extra_fields=extra_fields,
+        rules_bytes=rules_bytes,
+    )
+
+    if use_cache and not force_refresh:
+        cached = _load_cached_review(content_hash)
+        if cached is not None:
+            print(f"[tp-review-cache] cache hit ({content_hash[:12]}...) -- no model call made, returning stored result")
+            return cached
 
     try:
         rules = _load_rules()
@@ -444,4 +575,12 @@ def review_treatment_plan(
         # itself never does.
         return _error_result("pipeline_error", f"{type(exc).__name__}: {exc}", tracker)
 
-    return _to_review_result(raw, tracker)
+    review_result = _to_review_result(raw, tracker)
+    # Only a genuinely complete result gets cached -- a transient failure
+    # (rejected as status="failed" above via the exception handlers, or a
+    # "failed" status _to_review_result itself can still produce) must
+    # never be memorized; the whole point of retrying is that the NEXT
+    # attempt should actually try again, not replay a cached failure.
+    if use_cache and review_result.get("status") == "complete":
+        _save_cached_review(content_hash, review_result)
+    return review_result

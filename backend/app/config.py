@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     # pipeline's own cap.
     session_notes_max_calls: int = 10
 
+    # Previous TP round: separate, small ceiling for the previous-TP
+    # comparison call site (app.agent_client.review_previous_tp). Real
+    # calls only happen for QA-ACF-04 (narrative-score fallback, only when
+    # the boxed/structured score isn't found on one or both documents) and
+    # QA-PROB-04 (near-identical semantic check) -- at most 2-3 real calls
+    # per upload that actually has a previous TP attached, never per every
+    # upload (review_previous_tp returns immediately with zero calls when
+    # previous_tp_path is None). Same discipline as session_notes_max_calls
+    # above: a real, enforced number, never uncapped.
+    previous_tp_max_calls: int = 6
+
     # Next Round, Part 2: the real LLM humanize pass, one real call per
     # finding a real upload produces (~170ish rules today). This is a
     # DIFFERENT real-call surface than either cap above -- not a per-rule

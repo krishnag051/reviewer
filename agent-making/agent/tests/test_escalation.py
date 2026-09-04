@@ -67,7 +67,7 @@ def test_low_confidence_det_result_escalates_and_judgment_wins(minimal_pdf, monk
             }
         }
 
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     result = pipeline_module.run_full_pipeline(minimal_pdf, rules)
     findings = result["findings"]
@@ -100,7 +100,7 @@ def test_escalated_rule_confirmed_not_checkable_by_judgment_too(minimal_pdf, mon
             }
         }
 
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     result = pipeline_module.run_full_pipeline(minimal_pdf, rules)
     finding = result["findings"]["HF-02"]

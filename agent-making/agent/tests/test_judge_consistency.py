@@ -70,18 +70,28 @@ def test_rejected_finding_triggers_retry_then_integrity_error(monkeypatch):
     rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]
 
     call_count = {"n": 0}
+    attempt_labels = set()
 
-    def fake_run_judgment_checks(judgment_rules, fields, rendered_images, **kwargs):
+    def fake_run_judgment_checks(judgment_rules, fields, rendered_images, call_reason="call", **kwargs):
         call_count["n"] += 1
+        # Fix Round (Judgment Layer Stability): the initial batch is now 5
+        # real calls (run_judgment_checks_majority_vote), not 1 -- track
+        # LOGICAL attempts (initial batch, retry 1, retry 2) via the
+        # attempt-level call_reason prefix (stripping each call's own
+        # "(majority vote N/5)"/"(consistency check N/2)" suffix), not raw
+        # call count, since that's what this test actually means by
+        # "attempt."
+        attempt_labels.add(call_reason.split(" (")[0])
         # Always comes back inconsistent -> always filtered out -> always "missing".
         return judge._findings_dict_from_list([_finding("A-1", evidence_supports_result=False)])
 
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     with pytest.raises(IntegrityError):
         run_judgment_with_integrity_check(rules, fields={}, rendered_images={}, max_retries=2)
 
-    assert call_count["n"] == 3  # initial attempt + 2 retries
+    assert len(attempt_labels) == 3  # initial attempt + 2 retries
+    assert call_count["n"] == 5 + 2 + 2  # 5-way initial batch + 2-call retry x 2
 
 
 def test_one_persistently_missing_rule_id_among_many_degrades_gracefully_not_raise(monkeypatch):
@@ -108,7 +118,7 @@ def test_one_persistently_missing_rule_id_among_many_degrades_gracefully_not_rai
             findings.append(_finding("A-3", evidence_supports_result=False))
         return judge._findings_dict_from_list(findings)
 
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     results = run_judgment_with_integrity_check(rules, fields={}, rendered_images={}, max_retries=2)
 
@@ -128,14 +138,21 @@ def test_finding_that_becomes_consistent_on_retry_is_accepted(monkeypatch):
     rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]
     call_count = {"n": 0}
 
-    def fake_run_judgment_checks(judgment_rules, fields, rendered_images, **kwargs):
+    def fake_run_judgment_checks(judgment_rules, fields, rendered_images, call_reason="call", **kwargs):
         call_count["n"] += 1
-        if call_count["n"] == 1:
+        # Fix Round (Judgment Layer Stability): every call during the
+        # INITIAL batch (now 5 calls, not 1) must reject, so the whole
+        # attempt genuinely comes back "missing" -- only the retry
+        # (a real, later, distinct attempt) accepts. Branching on
+        # call_reason's own "initial batch" vs "retry" text is what this
+        # test actually means by "first attempt" vs "on retry," not raw
+        # call count.
+        if "initial batch" in call_reason:
             return judge._findings_dict_from_list([_finding("A-1", evidence_supports_result=False)])
         return judge._findings_dict_from_list([_finding("A-1", result="fail", evidence_supports_result=True)])
 
-    monkeypatch.setattr(judge, "run_judgment_checks", fake_run_judgment_checks)
+    monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_run_judgment_checks)  # Fix Round (Judgment Layer Stability): the initial-batch call site is now run_judgment_checks_majority_vote, which itself calls _run_judgment_checks_once repeatedly -- mocking at this shared, lower-level primitive keeps this fixture correct across BOTH the retry path (still run_judgment_checks) and the new majority-vote path.
 
     results = run_judgment_with_integrity_check(rules, fields={}, rendered_images={}, max_retries=2)
     assert results["A-1"]["result"] == "fail"
-    assert call_count["n"] == 2
+    assert call_count["n"] == 5 + 2  # 5-way initial batch (all rejected) + the retry's own 2-call consistency check (both agree, no tie-break needed)

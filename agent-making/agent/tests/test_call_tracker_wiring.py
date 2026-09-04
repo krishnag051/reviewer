@@ -107,12 +107,14 @@ def test_single_clean_call_increments_tracker_by_two(monkeypatch):
 
 
 def test_retry_increments_tracker_for_each_real_call(monkeypatch):
-    # Attempt 1 (real calls 1-2, the consistency pair): both agree A-2 is
-    # simply absent (model dropped it both times) -> A-1 present, A-2 missing.
-    # Retry attempt (real calls 3-4): both agree A-2 comes back fine.
+    # Fix Round (Judgment Layer Stability): the initial batch is now a
+    # 5-way vote (real calls 1-5), all agreeing A-2 is simply absent
+    # (model dropped it every time) -> A-1 present, A-2 missing. Retry
+    # attempt (real calls 6-7, still the cheap 2-call consistency pair):
+    # both agree A-2 comes back fine.
     def response_fn(kwargs, n):
-        if n in (1, 2):
-            return _FakeResponse([_finding("A-1")])  # A-2 missing entirely, both times
+        if n <= 5:
+            return _FakeResponse([_finding("A-1")])  # A-2 missing entirely, every initial-batch call
         return _FakeResponse([_finding("A-2")])
 
     fake_client = _FakeClient(response_fn)
@@ -123,17 +125,19 @@ def test_retry_increments_tracker_for_each_real_call(monkeypatch):
         [_rule("A-1"), _rule("A-2")], {"pages": []}, {}, max_retries=2, tracker=tracker
     )
 
-    assert tracker.count == 4  # 2 (initial consistency pair) + 2 (1 retry's consistency pair)
-    assert fake_client.messages.call_count == 4
+    assert tracker.count == 7  # 5 (initial 5-way vote) + 2 (1 retry's consistency pair)
+    assert fake_client.messages.call_count == 7
     assert set(results.keys()) == {"A-1", "A-2"}
 
 
 def test_rejected_evidence_supports_result_also_counts_as_a_retry_call(monkeypatch):
-    # Attempt 1 (real calls 1-2): both reject A-1 (evidence_supports_result=False)
-    # -> _findings_dict_from_list drops it from both -> treated as missing.
-    # Retry attempt (real calls 3-4): both agree A-1 is consistent (pass).
+    # Fix Round (Judgment Layer Stability): initial batch (real calls
+    # 1-5, the 5-way vote) all reject A-1 (evidence_supports_result=False)
+    # -> _findings_dict_from_list drops it every time -> treated as
+    # missing. Retry attempt (real calls 6-7): both agree A-1 is
+    # consistent (pass).
     def response_fn(kwargs, n):
-        if n in (1, 2):
+        if n <= 5:
             return _FakeResponse([_finding("A-1", evidence_supports_result=False)])
         return _FakeResponse([_finding("A-1", evidence_supports_result=True)])
 
@@ -143,7 +147,7 @@ def test_rejected_evidence_supports_result_also_counts_as_a_retry_call(monkeypat
     tracker = ApiCallTracker(max_calls=8)
     results = run_judgment_with_integrity_check([_rule("A-1")], {"pages": []}, {}, max_retries=2, tracker=tracker)
 
-    assert tracker.count == 4
+    assert tracker.count == 7
     assert results["A-1"]["result"] == "pass"
 
 
@@ -172,8 +176,11 @@ def test_without_cap_this_scenario_would_raise_integrity_error_instead(monkeypat
     """Sanity check that the cap-stopping test above isn't just coincidentally
     matching IntegrityError's own retry limit — confirms that with no cap,
     the SAME never-resolves scenario runs all the way to IntegrityError.
-    max_retries=2 means 3 attempts (initial + 2 retries), each attempt now
-    spending 2 real calls on its own consistency pair -> 6 real calls total.
+    max_retries=2 means 3 attempts (initial + 2 retries) -- Fix Round
+    (Judgment Layer Stability): the INITIAL attempt is now the 5-way vote
+    (5 real calls), each of the 2 RETRY attempts still spends 2 real calls
+    on its own cheap consistency pair (unchanged) -> 5 + 2 + 2 = 9 real
+    calls total.
     """
     def response_fn(kwargs, n):
         return _FakeResponse([])
@@ -186,8 +193,8 @@ def test_without_cap_this_scenario_would_raise_integrity_error_instead(monkeypat
     with pytest.raises(IntegrityError):
         run_judgment_with_integrity_check([_rule("A-1")], {"pages": []}, {}, max_retries=2, tracker=tracker)
 
-    assert tracker.count == 6  # 3 attempts x 2 real calls each
-    assert fake_client.messages.call_count == 6
+    assert tracker.count == 9  # 1 initial 5-way attempt + 2 retries x 2 real calls each
+    assert fake_client.messages.call_count == 9
 
 
 def test_tracker_is_optional_backward_compatible(monkeypatch):

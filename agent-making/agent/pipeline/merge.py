@@ -1,6 +1,7 @@
 """Step 7 of the pipeline (Section 4): combine the deterministic and judgment
 layers into one findings object, split by each rule's action_lane/action_tag.
 """
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,33 @@ def _format_page_display(page) -> str | int | None:
     return ", ".join(str(p) for p in pages)
 
 
+def _coerce_detail_to_string(evidence) -> str:
+    """Defense-in-depth, mirroring _format_page_display's own real,
+    already-fixed precedent for `page` above -- this is the LAST
+    centralized chokepoint before `_to_review_result`/humanize.py for
+    EVERY check_type (not just judgment-layer ones, which
+    judge.py::_coerce_evidence_to_string already guards at its own,
+    earlier point). A real production crash (Fix Round, this round:
+    QA-PROB-01) reached exactly this line with `entry["evidence"]` as a
+    dict, not a string -- humanize.py's `_PAGE_TAG_RE.split(text)` cannot
+    accept one. Same coercion policy as judge.py's own helper (kept
+    duplicated rather than imported, since merge.py has no other
+    dependency on judge.py and this module's own docstring scopes it to
+    "combine the deterministic and judgment layers," not reach back into
+    either layer's internals).
+    """
+    if isinstance(evidence, str):
+        return evidence
+    if isinstance(evidence, dict) and isinstance(evidence.get("detail"), str):
+        return evidence["detail"]
+    logger.warning(
+        "merge._explode_to_rows: malformed evidence value %r (expected str) -- "
+        "coercing to its JSON representation rather than crashing.",
+        evidence,
+    )
+    return json.dumps(evidence)
+
+
 def _explode_to_rows(rule_id: str, entry: dict) -> list[dict]:
     """One export row per page-level entry when `evidence` is the
     {page, detail} list form; a single row (unchanged) when it's a plain
@@ -70,7 +98,7 @@ def _explode_to_rows(rule_id: str, entry: dict) -> list[dict]:
             {**base, "page": item["page"], "detail": item["detail"]}
             for item in entry["evidence"]
         ]
-    return [{**base, "page": _format_page_display(entry["page"]), "detail": entry["evidence"]}]
+    return [{**base, "page": _format_page_display(entry["page"]), "detail": _coerce_detail_to_string(entry["evidence"])}]
 
 
 def merge_findings(rules: list[dict], det_results: dict[str, dict], judgment_results: dict[str, dict]) -> dict:
