@@ -168,15 +168,16 @@ def test_hrs03_pass_using_reedas_real_numbers():
     assert result == "pass", evidence
 
 
-def test_hrs03_uncertain_when_ceiling_exceeded():
+def test_hrs03_fails_when_ceiling_exceeded():
     """10 direct hrs -> ceiling 1.5 hrs of supervision. 5 hrs of
-    supervision is well over that ceiling -- this needs documented
-    director approval, which the checker can't verify from a text pattern
-    alone, so it escalates to judgment rather than auto-failing."""
+    supervision is well over that ceiling -- Master Fix Round (2026-09-08):
+    ma'am confirmed a second time, directly, that this is a pure threshold
+    with no director-approval exception, so exceeding the ceiling is now
+    an unconditional fail (previously escalated to judgment/"uncertain")."""
     text = "10  hours per week.\n97153-Direct Care Behavior Technician\n5  hours per week.\n97155-Supervision/Behavior Treatment"
     result, evidence, page, confidence = fields._check_HRS03(_rule("QA-HRS-03", HRS03_PARAMS), _fields(text))
-    assert result == "uncertain"
-    assert "director approval" in evidence.lower()
+    assert result == "fail"
+    assert "director approval" not in evidence.lower()
 
 
 def test_hrs03_pass_at_exactly_the_ceiling():

@@ -1296,20 +1296,21 @@ def _check_HRS02(rule: dict, fields: dict) -> tuple:
 
 
 def _check_HRS03(rule: dict, fields: dict) -> tuple:
-    """This is a CEILING, not a minimum-supervision floor: the checklist
-    says supervision must not EXCEED the ratio (1.5 hrs per 10 direct-care
-    hrs), and if it does, needs documented clinical director approval. A
-    prior round had this backwards (treated it as "supervision must be AT
-    LEAST this much"), which incorrectly failed Reeda's TP -- her real
-    ratio is 2.5 supervision / 25 direct = 0.10/hr, under the 0.15/hr
-    ceiling, which Eliana's manual review correctly marked Pass.
+    """This is a CEILING, not a minimum-supervision floor: supervision must
+    not EXCEED the ratio (1.5 hrs per 10 direct-care hrs). A prior round
+    had this backwards (treated it as "supervision must be AT LEAST this
+    much"), which incorrectly failed Reeda's TP -- her real ratio is 2.5
+    supervision / 25 direct = 0.10/hr, under the 0.15/hr ceiling, which
+    Eliana's manual review correctly marked Pass.
 
-    When the ceiling IS exceeded, this returns "uncertain" rather than an
-    automatic fail: whether director approval was documented requires
-    reading the actual document, and there's no confirmed real-sample text
-    pattern for what that approval note looks like to search for -- so
-    this escalates to judgment (which has full page context) instead of
-    guessing at a regex for something never yet seen in a real document.
+    Master Fix Round (2026-09-08): pure threshold, no exception path.
+    Ma'am confirmed directly, a second time, that this should be an
+    unconditional fail when the ceiling is exceeded -- no
+    director-approval escalation to judgment. (An earlier round had left
+    the director-approval escalation in place on the reasoning that the
+    rule's own then-current wording still described it as a real
+    requirement rather than an exception to remove; this round's repeated,
+    direct ask supersedes that -- see this rule's own rules.json notes.)
     """
     direct_code = rule["params"]["direct_cpt_code"]
     supervision_code = rule["params"]["supervision_cpt_code"]
@@ -1331,12 +1332,11 @@ def _check_HRS03(rule: dict, fields: dict) -> tuple:
             None, 0.75,
         )
     return (
-        "uncertain",
+        "fail",
         f"{direct_code} direct care: {direct_hours} hrs/week; {supervision_code} supervision: "
-        f"{supervision_hours} hrs/week exceeds the ceiling of {max_allowed_supervision} — this "
-        f"needs documented clinical director approval, which requires reading the actual "
-        f"document rather than a text-pattern check.",
-        None, 0.3,
+        f"{supervision_hours} hrs/week exceeds the ceiling of {max_allowed_supervision} — a pure "
+        f"threshold violation, no director-approval exception.",
+        None, 0.85,
     )
 
 
@@ -2625,29 +2625,50 @@ def _check_ACF05(rule: dict, fields: dict) -> tuple:
     return "not_checkable", "No 'Assessment Summary Statement:' field found anywhere in this TP.", None, 0.0
 
 
+_BIO03_DIAGNOSIS_LABELS = [
+    "Secondary Diagnosis", "Additional Diagnosis", "Other Diagnosis",
+    "Comorbid Diagnosis", "Co-occurring Diagnosis", "Additional Diagnoses",
+]
+_BIO03_LABEL_RE = re.compile(
+    r"(" + "|".join(re.escape(l) for l in _BIO03_DIAGNOSIS_LABELS) + r"):[ \t]*(\S[^\n]*)?",
+    re.IGNORECASE,
+)
+
+
 def _check_BIO03(rule: dict, fields: dict) -> tuple:
-    """'Includes any other diagnosis if applicable' -- confirmed against real
-    documents this is a plain presence check on the 'Secondary Diagnosis:'
-    field, not a clinical-applicability judgment (see the rule's own notes
-    for why the old BIO-01-derived dependency didn't actually apply here).
-    A blank field is genuinely ambiguous -- could mean 'no secondary
-    diagnosis' or an omission -- so that case is left to judgment rather
-    than guessed at here."""
-    # [ \t]* (not \s*) so this doesn't consume the trailing newline and bleed
-    # into matching the start of the NEXT line's content as if it were the
-    # value on this line.
-    m = re.search(r"Secondary Diagnosis:[ \t]*(\S[^\n]*)", fields["full_text"], re.IGNORECASE)
-    if m:
-        return "pass", f"Secondary Diagnosis is documented: {m.group(1).strip()}.", None, 0.75
-    if re.search(r"Secondary Diagnosis:", fields["full_text"], re.IGNORECASE):
+    """Master Fix Round (2026-09-08): broadened per ma'am's explicit ask
+    ('mentioned ANYWHERE in the report, not just if applicable') -- checks
+    every labeled diagnosis field this codebase has ever seen a real
+    document use (not only 'Secondary Diagnosis:'), scanning the WHOLE
+    document rather than a single fixed field. Still a plain presence
+    check, not a clinical-applicability judgment (see the rule's own
+    notes for why the old BIO-01-derived dependency didn't apply here). A
+    labeled field present but blank is genuinely ambiguous -- could mean
+    'no additional diagnosis' or an omission -- left to judgment.
+
+    [ \\t]* (not \\s*) so a match doesn't consume the trailing newline and
+    bleed into the start of the NEXT line's content as if it were this
+    line's own value.
+    """
+    filled, blank = [], []
+    for m in _BIO03_LABEL_RE.finditer(fields["full_text"]):
+        label, value = m.group(1), m.group(2)
+        if value and value.strip():
+            filled.append(f"{label}: {value.strip()}")
+        else:
+            blank.append(label)
+
+    if filled:
+        return "pass", f"A diagnosis is documented: {'; '.join(filled)}.", None, 0.75
+    if blank:
         return (
             "uncertain",
-            "The 'Secondary Diagnosis:' field is present but blank -- could mean no "
-            "secondary diagnosis applies, or could be an omission; not determinable "
-            "from the field alone.",
+            f"A diagnosis field is present but blank ({'; '.join(blank)}) -- could mean no "
+            f"additional diagnosis applies, or could be an omission; not determinable from "
+            f"the field alone.",
             None, 0.3,
         )
-    return "not_checkable", "No 'Secondary Diagnosis:' field found anywhere in this TP.", None, 0.0
+    return "not_checkable", "No labeled diagnosis field found anywhere in this TP.", None, 0.0
 
 
 _VALID_SAMPLING_METHODS = {

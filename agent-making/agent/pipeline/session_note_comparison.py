@@ -247,9 +247,18 @@ def _combine_acf02_subchecks(sub_results: dict[str, dict[str, Any]]) -> dict[str
     results into one overall finding. All 3 pass -> pass. Any fail ->
     fail (the rule failed if ANY of the three facts disagree). Otherwise
     (some uncertain, none failing) -> uncertain.
+
+    Master Fix Round (2026-09-08) -- REAL BUG FOUND AND FIXED: this used to
+    re-prefix each sub-result with `sub_results`'s own dict key (e.g.
+    "assessment date: ..."), but check_field_match already embeds its own
+    field_label in the evidence text it returns (e.g. "Assessment date:
+    session note (...) matches..."), so the combined evidence duplicated
+    the label -- "assessment date: Assessment date: session note...".
+    Each sub-result's evidence is already a complete, correctly-labeled
+    sentence; just join them, don't add a second label.
     """
     findings = list(sub_results.values())
-    evidence = " | ".join(f"{label}: {r['evidence']}" for label, r in sub_results.items())
+    evidence = " | ".join(r["evidence"] for r in sub_results.values())
     if all(f["result"] == "pass" for f in findings):
         return _finding("pass", evidence, min(f["confidence"] for f in findings))
     failing = [f for f in findings if f["result"] == "fail"]

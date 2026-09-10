@@ -72,7 +72,18 @@ def test_rules_json_notes_for_hrs01_and_bio01_carry_no_round54_instruction():
     assert "supporting document" not in rules["QA-BIO-01"]["notes"].lower()
     assert rules["QA-HRS-01"]["notes"] == (
         "Coordinator email content isn't captured anywhere in the system today. Needs either a "
-        "pre-upload 'approved hours' field or this rule is dropped for V1."
+        "pre-upload 'approved hours' field or this rule is dropped for V1. | Master Fix Round "
+        "(2026-09-08) -- DECISION MADE, flagged for review: this has been left undecided across "
+        "two prior rounds; building a real pre-upload 'approved hours' field is a genuine new "
+        "feature (new DB column, new intake UI, new wiring through to the pipeline), out of "
+        "scope for a fix round, and it can't be honestly checked today the other way either -- "
+        "there is no coordinator-email content anywhere in the system for the judge to compare "
+        "against, so every real run of this rule today is an ungrounded guess with nothing "
+        "behind it. Deactivated (active=false) rather than left producing an ungrounded answer "
+        "indefinitely -- same precedent as HF-09's own prior retirement. This is a real, "
+        "immediately-reversible product decision, not a code judgment call: reactivate "
+        "(active=true) the moment either (a) a real pre-upload 'approved hours' field is built, "
+        "or (b) ma'am confirms she wants this left on despite the ungrounded-judgment gap."
     )
     assert rules["QA-BIO-01"]["notes"] == (
         "Needs the diagnostic report as a supporting upload; not checkable against TP alone. | "

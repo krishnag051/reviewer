@@ -529,8 +529,11 @@ def _run_judgment_checks_once(
 #   on both documents independently.
 # - QA-GIP-07 ("Goals open >6mo have rationale reviewed by Eliana"):
 #   confirmed tie-break miss on Charny in an earlier round.
-# - QA-PROB-01 ("At least 2 each of social/communication/behavior,
-#   narrative format"): confirmed unstable THIS round, live -- came back
+# - QA-PROB-01 ("At least 3 Social/3 Communication/2 Behavior entries,
+#   narrative format" -- Master Fix Round, 2026-09-08: this comment's own
+#   numbers were stale/wrong, fixed to match the rule's real, confirmed
+#   asymmetric split, see rules.json's own notes): confirmed unstable THIS
+#   round, live -- came back
 #   "fail" in one ground-truth harness run and "uncertain" in a later run
 #   against the identical document and code, after its notes fix already
 #   landed (see rules.json) -- instability survived the content fix, which

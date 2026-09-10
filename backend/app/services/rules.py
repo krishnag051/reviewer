@@ -140,12 +140,17 @@ def edit_rule(
     rule_id: uuid.UUID,
     *,
     changes: dict,
-    actor_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None,
 ) -> Rule | None:
     """PATCH /rules/:id. `changes` is whatever subset of {category,
     question_set, question_text, rule_type, payor} the request included. Returns
     None if the rule doesn't exist. Does not commit — caller controls the
     transaction boundary (matches create_rule's convention).
+
+    actor_user_id=None is for a scheduled/system job only (e.g.
+    scripts/sync_rules_from_agent_making.py syncing rules.json into the DB)
+    — same convention as the rule_snapshots sync tick's own audit entries.
+    The PATCH /rules/:id route itself always passes a real admin's id.
 
     Order matters, per the tp-review-invariants skill file — do not reorder:
     1. diff computed BEFORE any mutation. Empty diff -> true no-op: no
@@ -195,11 +200,14 @@ def set_rule_active(
     rule_id: uuid.UUID,
     active: bool,
     *,
-    actor_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None,
 ) -> Rule | None:
     """POST /rules/:id/deactivate or /reactivate. Returns None if the rule
     doesn't exist. Does not commit — caller controls the transaction
     boundary (matches create_rule's convention).
+
+    actor_user_id=None is for a scheduled/system job only (see edit_rule's
+    own docstring) -- the two real HTTP routes always pass a real admin's id.
     """
     rule = session.get(Rule, rule_id)
     if rule is None:

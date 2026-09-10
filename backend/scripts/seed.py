@@ -1,7 +1,7 @@
 """Idempotent dev seed script — Master Build Doc §8.
 
 Seeds: 1 organization, 5 users (matching the frontend mock names/roles),
-the 120 real rules from agent-making/agent/rules/rules.json (each via the
+the real rules from agent-making/agent/rules/rules.json (each via the
 create_rule service, so history v1 + audit are never skipped), 1
 app_config row, and Snapshot 0 + rule_sync_state (gap A4 bootstrap).
 
@@ -10,12 +10,25 @@ previous ~24 hand-written placeholder rules (R-001, R-010, etc) — this is
 required for app/rule_engine/client.py's real implementation to produce
 anything but "not_checkable" fallbacks, since it maps agent-making's
 findings back onto backend Rule rows by rule_code, and the old placeholder
-codes don't exist in agent-making's rule set at all. NOT a hard delete of
-the old rows — this script only ever INSERTs (idempotent by rule_code) —
-so a dev DB that already has the old 24 seeded will end up with BOTH sets
-present unless someone separately deactivates the old ones by hand. A
-fresh DB (this round's own verification, and any new dev setup) only ever
-sees the real 120.
+codes don't exist in agent-making's rule set at all.
+
+Master Fix Round (Priority 0), 2026-09-08 — CORRECTED: this script only
+ever INSERTs new rule_codes, by design (it's the initial-bootstrap path,
+run once against a fresh DB) — it deliberately never touches an existing
+row's question_text/rule_type/active/etc, because re-running it must stay
+side-effect-free against a DB that's already been synced. That insert-only
+behavior was previously the ONLY mechanism keeping the DB in sync with
+rules.json at all, which is exactly what let question_text (and other
+fields) silently go stale every time rules.json was edited afterward
+(confirmed real: QA-TEMP-05, HF-01, QA-ACF-03, QA-GIP-01, QA-BIP-03, all
+found serving pre-edit DB text during the master checklist audit). The
+real fix is scripts/sync_rules_from_agent_making.py, a genuine upsert that
+updates an existing row to match rules.json exactly — run that (not this
+script) whenever rules.json changes after the initial seed, and run it as
+a required step in every deploy (see that script's own docstring for the
+proposed mechanism). This script and that one now share one loader
+(scripts/_rules_source.py) so the mapping itself can never drift between
+the two entry points.
 
 Safe to re-run: every insert is preceded by an existence check on its
 natural key, so running this twice creates zero duplicate rows.
@@ -23,7 +36,6 @@ natural key, so running this twice creates zero duplicate rows.
 Run from backend/:
     .venv/Scripts/python.exe scripts/seed.py
 """
-import json
 import sys
 from pathlib import Path
 
@@ -37,46 +49,7 @@ from app.db.models import AppConfig, Organization, Rule, User
 from app.security import hash_password
 from app.services.rule_snapshots import bootstrap_snapshot_zero
 from app.services.rules import create_rule
-
-# Relative to this backend/ directory, matching app/rule_engine/client.py's
-# own path resolution -- kept independent (not imported from there) so this
-# script has no import-time dependency on that module's sys.path/dotenv
-# side effects.
-_AGENT_MAKING_RULES_JSON = Path(__file__).resolve().parent.parent / settings.agent_making_agent_path / "rules" / "rules.json"
-
-# agent-making's check_type has no equivalent axis in this backend's schema
-# (rule_type is structural/semantic/cross_reference, not
-# deterministic/judgment) -- this is a judgment call made for this reseed,
-# not a given mapping: "structural" for pattern/field-based deterministic
-# checks, "semantic" for meaning-requiring judgment checks. cross_reference
-# stays unused, same as before (blocked on the CentralReach integration).
-_CHECK_TYPE_TO_RULE_TYPE = {"deterministic": "structural", "judgment": "semantic"}
-
-
-def _load_rules_from_agent_making() -> list[dict]:
-    data = json.loads(_AGENT_MAKING_RULES_JSON.read_text(encoding="utf-8"))
-    return [
-        dict(
-            rule_code=r["rule_id"],
-            category=r["category"],
-            # No equivalent field exists in agent-making's rules -- category
-            # is reused here rather than inventing a fake grouping.
-            question_set=r["category"],
-            question_text=r["description"],
-            rule_type=_CHECK_TYPE_TO_RULE_TYPE[r["check_type"]],
-            # Round 50: seeded from agent-making's own applies_to_payor for a
-            # real initial value rather than leaving every rule NULL --
-            # "ALL" maps to NULL (this backend's own universal sentinel,
-            # matching the pre-existing mock's "ALL"), any real payor value
-            # maps straight through (agent-making's own values are already
-            # a subset of this backend's 10-value rule_payor enum). This is
-            # a one-time seed convenience, not a live link -- editing payor
-            # here afterward never reaches agent-making's rules.json.
-            payor=None if r["applies_to_payor"] == "ALL" else r["applies_to_payor"],
-            active=r["active"],
-        )
-        for r in data["rules"]
-    ]
+from scripts._rules_source import load_rules_from_agent_making as _load_rules_from_agent_making
 
 # Dev-only default password for every seeded user. Never reuse this in a
 # shared/staging/prod environment — it exists purely so a fresh local dev DB

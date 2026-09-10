@@ -61,6 +61,32 @@ from .render import render_flagged_pages
 # 20 is genuinely not done and is this round's own clearly-flagged
 # follow-up, not something to silently claim finished. See this round's
 # own report for the exact real data behind every rule_id here.
+# Master Fix Round (2026-09-08), Priority 5 -- explicit decision, not left
+# implicit: the master checklist audit found QA-BIP-03's rules.json
+# description was stale/wrong ("Medical BIP -> all medical causes ruled
+# out" instead of the real behavior-list wording), and fixed it. That fix
+# does NOT change whether QA-BIP-03 belongs in this set -- it's parked here
+# because real, repeated sampling showed near-random verdicts, a property
+# of how the model reasons about this rule's CONTENT under repetition, not
+# of a stale label. Fixing the label corrects what a reviewer sees this
+# rule is nominally checking; it does not touch, and cannot by itself
+# resolve, the coin-flip risk. Re-running the same real sampling test this
+# round's Part 2 used, against the corrected wording, would be needed
+# before removing QA-BIP-03 from this set -- not done this round (no
+# budget approved for it), so it stays here, correctly labeled but still
+# inert.
+#
+# QA-GIP-34/QA-GIP-35 (graph-final-data-point-matches-current-data;
+# target-name-matches-x-axis) are parked here for a different, structural
+# reason: both need real GRAPH-VALUE extraction (reading actual plotted
+# values off a rendered image) to ever produce a grounded answer at all --
+# no such extraction primitive exists anywhere in this codebase (confirmed
+# during the master checklist audit). This isn't a wording-ambiguity
+# problem Part-2-style rewriting can fix; it needs real vision/graph-
+# reading engineering, which is out of scope for a fix round. Whether
+# that's built in a future round, or these two are accepted as permanent
+# manual-review items, is a real product-scope decision for the user to
+# make explicitly -- not assumed here either way.
 STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
     "QA-MAST-04", "QA-GIP-14",  # original 2, unchanged (see Part 2 above)
     "QA-AI-03", "QA-AI-05", "QA-BIP-03", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",

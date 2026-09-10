@@ -20,6 +20,14 @@ That audit's rules were triaged into two tiers and acted on:
   exist yet, or schedule-table parsing too fragile for pypdf's raw text
   extraction to be trusted without much more engineering).
 
+Master Fix Round (2026-09-08): QA-SIG-06 moved from the "15 left flagged"
+group into Tier 2 (relabeled to "judgment") -- the master checklist audit
+confirmed it was the exact same silent-gap shape as GIP-10/ACF-07/HF-01
+(deterministic label, zero checker), and there's still no real dual-
+signature sample to build a detector from, so honest relabeling (not a
+guessed detector) is the right fix here too. 14 rules remain in the
+"left flagged" group.
+
 This file now audits the FULL current state, not just GIP-10/ACF-07.
 """
 from pipeline import fields
@@ -125,7 +133,11 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     # with an explicit, honest limitation documented in its own docstring
     # and this rule's own notes -- see fields.py).
     "QA-SCH-03", "QA-SCH-05",
-    "QA-SIG-06",
+    # QA-SIG-06 REMOVED from this set (Master Fix Round, 2026-09-08) -- the
+    # same silent-gap shape (deterministic label, zero checker), but this
+    # round relabeled it to "judgment" (honest correction) instead of
+    # leaving it mislabeled, since there's still no real sample to build a
+    # detector from. See its own updated notes in rules.json.
     # Added 2026-07-27 (Empire/Emblem/Aetna round): EMP-02 has a confirmed
     # scope ambiguity (see its own notes/blocked_status in rules.json) --
     # deliberately not built, unlike EMP-01/EMP-03 which were.
@@ -138,7 +150,7 @@ def _rules_labeled_deterministic():
 
 
 def test_full_deterministic_label_audit_matches_known_snapshot():
-    """15 rules are still labeled check_type "deterministic" with no real
+    """14 rules are still labeled check_type "deterministic" with no real
     checker -- each deliberately left that way (not a code gap to close
     reflexively), still subject to the same always-escalates-to-judgment
     fallback as the original GIP-10/ACF-07 finding."""
@@ -156,7 +168,7 @@ def test_full_deterministic_label_audit_matches_known_snapshot():
 
 
 def test_every_flagged_mismatch_has_a_blocked_status_note():
-    """Each of the 15 rules left deliberately unbuilt carries a one-line
+    """Each of the 14 rules left deliberately unbuilt carries a one-line
     blocked_status explaining why, so the next round doesn't have to
     rediscover the same gap from scratch. Checked against the same
     snapshot as the mismatch audit above, not a separately maintained list
