@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -696,6 +697,17 @@ def extract_session_note(
         return SessionNoteExtraction(**raw)
 
 
+# Fix Round (Performance, 2026-09-11): bounded concurrency for
+# humanize_findings' thread pool -- a real review can have ~120-188
+# findings; running all of them at once would fire that many simultaneous
+# requests at Anthropic. 8 concurrent calls is a reasonable starting
+# point per this round's own instruction ("8-10, tune based on real
+# rate-limit behavior observed during testing") -- confirmed against the
+# real verification run this round, see that run's own report for
+# whether this needed adjusting.
+_HUMANIZE_MAX_WORKERS = 8
+
+
 def humanize_finding(text: str, *, tracker: "_CallTracker | None" = None) -> tuple[str, str, dict]:
     """Next Round, Part 2: real, wired-in call for the LLM humanize pass --
     see pipeline/humanize.py::humanize_evidence_with_llm's own docstring
@@ -769,13 +781,32 @@ def humanize_findings(
     own rule_id) makes a failure loud and specific in the log, not just
     "something in this batch failed" -- see the log line below. Falls
     back to a positional index when not given.
+
+    Fix Round (Performance, 2026-09-11): this loop used to make one real
+    call per finding SEQUENTIALLY -- for a real review (~120-188
+    findings), the single largest contributor to total upload time.
+    Parallelized with a bounded thread pool (_HUMANIZE_MAX_WORKERS
+    concurrent calls, not one worker per finding -- keeps this from
+    firing 100+ simultaneous requests at Anthropic's real rate limits).
+    `tracker` is shared across every worker, same as before -- made
+    thread-safe for this change (see model_provider.py::CallTracker).
+    Per-finding failure isolation is preserved exactly: each finding's
+    own try/except still only affects that one finding's own result slot
+    (now inside the worker function, run once per future, rather than
+    once per loop iteration) -- one finding failing can never drop or
+    corrupt any other finding's already-succeeded result, same guarantee
+    the sequential version had. Results are still returned in the exact
+    same order as `texts`/`labels` (indexed writes into a
+    pre-sized list, not append-as-completed), since callers rely on
+    positional correspondence.
     """
     tracker = _CallTracker(max_calls=max_calls)
-    results: list[tuple[str, str, dict]] = []
-    for i, text in enumerate(texts):
+    results: list[tuple[str, str, dict] | None] = [None] * len(texts)
+
+    def _process_one(i: int, text: str) -> tuple[str, str, dict]:
         label = labels[i] if labels else f"finding at index {i}"
         try:
-            results.append(humanize_finding(text, tracker=tracker))
+            return humanize_finding(text, tracker=tracker)
         except Exception:
             logger.exception(
                 "humanize_finding failed for %s -- falling back to raw/un-humanized text for "
@@ -783,5 +814,11 @@ def humanize_findings(
                 "keeps its own real result, unaffected.",
                 label,
             )
-            results.append((text, text, {}))
-    return results
+            return (text, text, {})
+
+    with ThreadPoolExecutor(max_workers=min(_HUMANIZE_MAX_WORKERS, len(texts) or 1)) as pool:
+        futures = {pool.submit(_process_one, i, text): i for i, text in enumerate(texts)}
+        for future in futures:
+            i = futures[future]
+            results[i] = future.result()
+    return results  # type: ignore[return-value]  -- every slot is filled by the loop above

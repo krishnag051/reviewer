@@ -43,10 +43,12 @@ def test_disagreeing_calls_downgrade_to_uncertain():
     reconciled = judge._reconcile_consistency_check(first, second)
     assert reconciled["A-1"]["result"] == "uncertain"
     assert reconciled["A-1"]["confidence"] == 0.0
-    # Both original evidence texts survive in the explanation, so a
-    # reviewer (or a future diagnosis) can see exactly what each call said.
-    assert "looks fine" in reconciled["A-1"]["evidence"]
-    assert "actually a problem" in reconciled["A-1"]["evidence"]
+    # Fix Round (2026-09-10), item 4: a real usability complaint -- the
+    # evidence used to be a raw per-call transcript dump (each call's own
+    # full evidence text embedded verbatim). Now a short vote-count
+    # summary instead; neither call's own evidence text is expected to
+    # appear here anymore.
+    assert "of 2 calls said" in reconciled["A-1"]["evidence"]
 
 
 def test_rule_id_missing_from_either_call_is_left_out_entirely():
@@ -143,8 +145,9 @@ def test_run_judgment_checks_falls_back_to_two_call_uncertain_when_tiebreak_drop
     assert len(call_log) == 3
     assert "A-1" in result, "must never be silently dropped"
     assert result["A-1"]["result"] == "uncertain"
-    assert "looks fine" in result["A-1"]["evidence"]
-    assert "actually a problem" in result["A-1"]["evidence"]
+    # Fix Round (2026-09-10), item 4: short vote-count summary now, not
+    # each call's own evidence text -- see _short_uncertain_summary.
+    assert "of 2 calls said" in result["A-1"]["evidence"]
 
 
 def test_run_judgment_checks_with_no_rules_makes_zero_calls(monkeypatch):

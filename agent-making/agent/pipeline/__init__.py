@@ -61,20 +61,23 @@ from .render import render_flagged_pages
 # 20 is genuinely not done and is this round's own clearly-flagged
 # follow-up, not something to silently claim finished. See this round's
 # own report for the exact real data behind every rule_id here.
-# Master Fix Round (2026-09-08), Priority 5 -- explicit decision, not left
-# implicit: the master checklist audit found QA-BIP-03's rules.json
-# description was stale/wrong ("Medical BIP -> all medical causes ruled
-# out" instead of the real behavior-list wording), and fixed it. That fix
-# does NOT change whether QA-BIP-03 belongs in this set -- it's parked here
-# because real, repeated sampling showed near-random verdicts, a property
-# of how the model reasons about this rule's CONTENT under repetition, not
-# of a stale label. Fixing the label corrects what a reviewer sees this
-# rule is nominally checking; it does not touch, and cannot by itself
-# resolve, the coin-flip risk. Re-running the same real sampling test this
-# round's Part 2 used, against the corrected wording, would be needed
-# before removing QA-BIP-03 from this set -- not done this round (no
-# budget approved for it), so it stays here, correctly labeled but still
-# inert.
+# Master Fix Round (2026-09-08), Priority 5: QA-BIP-03's rules.json
+# description was fixed (stale "Medical BIP" wording), but the rule
+# stayed pinned here since the coin-flip instability was measured against
+# the SAME underlying question (which listed behaviors trigger BIP
+# scrutiny), just under stale wording -- fixing the label alone couldn't
+# resolve that.
+#
+# Fix Round (2026-09-11), item 17 -- REMOVED, confirmed go-ahead: this
+# round changed the rule to a genuinely DIFFERENT, inverted question (flag
+# a BIP target OUTSIDE the named list, not flag presence of a named
+# behavior) -- see this rule's own rules.json notes for the real-document
+# verification. The old coin-flip instability data was measured against
+# the OLD question and does not carry over to this new one; leaving it
+# stabilized would silently force a fixed "uncertain" on a rule that was
+# never actually tested in its new form. If real sampling later shows
+# THIS question is also unstable, that's a fresh finding needing its own
+# stabilization decision -- not assumed here either way.
 #
 # QA-GIP-34/QA-GIP-35 (graph-final-data-point-matches-current-data;
 # target-name-matches-x-axis) are parked here for a different, structural
@@ -87,12 +90,115 @@ from .render import render_flagged_pages
 # that's built in a future round, or these two are accepted as permanent
 # manual-review items, is a real product-scope decision for the user to
 # make explicitly -- not assumed here either way.
+# Fix Round (2026-09-11 evening), "Stabilize the 13 Newly-Found Flipping
+# Rules Before Production" -- REAL, CONFIRMED via two identical, fresh
+# (force_refresh=True) real runs of the same document: 13 rule_ids
+# produced a different result across the two runs. ROOT CAUSE, FOUND (not
+# a new instability, an existing one this mechanism never actually
+# covered): confirmed directly that THIS frozenset was never filtered out
+# of `escalated_rules` in either orchestration function -- a rule_id
+# whose deterministic checker returns low-confidence/not_checkable (and
+# therefore escalates to judgment) bypassed this safety net completely
+# even when it was already listed here, because the filter only ever
+# applied to `judgment_rules` BEFORE the escalated_rules union. Separately
+# confirmed `_run_pipeline_with_extras` (api.py) -- the orchestration path
+# EVERY real upload actually takes, since a supporting document has been
+# mandatory since Round 51/52 -- never applied this filter AT ALL, to
+# either pool; its own docstring already flagged that it's a hand-
+# duplicated copy of this function's orchestration, but the duplication
+# fell out of sync the moment this stabilization mechanism was added here
+# and never back-ported there. Net effect: this safety net has likely
+# never been active against real production traffic since it was built --
+# QA-GIP-17/QA-GIP-22/QA-GIP-34/QA-SCH-09/QA-TEMP-06 below were ALREADY
+# listed here and STILL flipped on the real two-run test, which is the
+# direct, confirmed proof of this gap, not a coincidence. Fixed in both
+# `run_full_pipeline` below and `api.py::_run_pipeline_with_extras`: the
+# filter now applies to the FULL judgment batch (judgment_rules UNION
+# escalated_rules), in both places, not just judgment_rules pre-union.
+#
+# Fix Round (2026-09-11 night), "Stop Over-Using the Uncertain Safety Net.
+# Only Genuine Graph/Grid Rules Stay Pinned." -- REAL DECISION, applied
+# plainly: this safety net exists for ONE narrow, legitimate reason -- the
+# answer genuinely depends on data that can't be reliably extracted from
+# an image (a rendered graph, a grid of colors/dates in an assessment
+# tool). It is not a general "this rule sometimes disagrees with itself"
+# fix. Every rule_id below was re-examined against that one test.
+#
+# STAYS PINNED -- genuine graph/grid-image dependency, confirmed real,
+# no text extraction can solve this (explicitly approved to stay as-is
+# this round, not touched):
+#   - QA-GIP-34/QA-GIP-35: final graph data point / x-axis label vs. a
+#     rendered graph image -- see their own long-standing comment above.
+#   - HF-05: PRT goal data points, same reason, graph-based.
+#   - QA-ACF-03: assessment grid legend (colors/dates/assessor) is
+#     frequently an embedded IMAGE the text layer can't see at all --
+#     see QA-ACF-03's own rules.json notes and VISION_ELIGIBLE_RULE_SECTIONS.
+#
+# STAYS PINNED -- investigated this round, genuinely NOT fixable yet for
+# a real, specific reason (not just "it's hard") -- flagged, not quietly
+# re-pinned without explanation:
+#   - QA-ACF-11: FLAGGED DISCREPANCY, not silently decided either way --
+#     this rule's OWN rules.json notes describe it as image-dependent for
+#     the EXACT SAME reason as QA-ACF-03 above (the Vineland grid/legend
+#     content is frequently an embedded image; QA-ACF-11 is already in
+#     VISION_ELIGIBLE_RULE_SECTIONS, same "acf" section-page-range finder).
+#     This round's own instruction categorized it as text-based -- that
+#     looks like it conflicts with the rule's own established mechanics.
+#     Left pinned (matching QA-ACF-03's already-approved reasoning) pending
+#     explicit confirmation either way, rather than unilaterally un-pinning
+#     what looks like a genuinely image-dependent rule.
+#   - QA-GIP-17, QA-GIP-11: both ask the model to judge whether a goal's
+#     own free-text wording contains an antecedent/SD, a concrete
+#     deficit/setting statement, and an observable (not internal-state)
+#     expected response -- already have real, detailed 3-part criteria in
+#     their own rules.json notes (not vague to begin with). No further
+#     tightening found this round that would make this a mechanical check
+#     rather than a real reading-comprehension judgment -- same shape as
+#     QA-GIP-14 ("the canonical LLM-judgment example," never successfully
+#     de-flagged by rewriting). Genuine residual judgment call, not a
+#     structural gap.
+#   - QA-BIO-06: "adequacy of stated reason" for a listed medication is
+#     genuinely judgment-shaped, AND the one real document available for
+#     this round's investigation has no current-medication field to
+#     build/verify a deterministic presence-check against (only a
+#     historical, discontinued mention in free narrative, not a labeled
+#     field) -- inventing a "confirmed real phrasing" pattern without a
+#     real example would repeat exactly the dishonesty this project has
+#     deliberately avoided elsewhere.
+#   - QA-SCH-09: already tightened twice in earlier rounds (concrete
+#     "real named location vs. generic placeholder" distinction, plus the
+#     Healthfirst POS/Hours-grid mismatch clause). The remaining ambiguity
+#     -- whether a given free-text location name counts as "specific
+#     enough" -- is a genuine judgment call about natural language, not a
+#     fixed enum or pattern; no further real tightening found this round.
+#   - QA-TEMP-06: "empty fields should be marked N/A rather than left
+#     blank" as a document-wide policy. Investigated reusing this file's
+#     own general blank-label scanner (_find_blank_labels_with_offsets,
+#     built for QA-RPT-01) -- confirmed it also flags genuine SECTION
+#     HEADERS as "blank" (e.g. "Patient Information:", "Goals in
+#     Progress:"), not just real unfilled form fields, so reusing it
+#     as-is would produce real false-positive fails. A safe version needs
+#     a curated allowlist/blocklist of which labels are genuine leaf
+#     fields vs. section headers -- not built this round; flagged as
+#     real, specific remaining work, not silently re-pinned as "hard."
+#
+# UN-PINNED THIS ROUND -- real deterministic/hybrid checkers built or
+# extended, no longer need the safety net (see each function's own
+# docstring in fields.py, right above DET_CHECKS, for the full diagnosis):
+#   QA-COC-06, QA-GIP-21, QA-HRS-08, QA-MAST-03, HF-06, QA-SCH-05, QA-GIP-22.
+#   QA-PPI-05 (from the prior round's list) is NOT included here -- its
+#   own instability comes from a SEPARATE real API call (the supporting-
+#   doc NPI extraction)'s own sampling variance, not this rule's logic;
+#   genuinely out of THIS round's scope (a different call site entirely),
+#   left pinned with that real, specific reason, not silently dropped.
 STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
     "QA-MAST-04", "QA-GIP-14",  # original 2, unchanged (see Part 2 above)
-    "QA-AI-03", "QA-AI-05", "QA-BIP-03", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
-    "QA-COC-07", "QA-GIP-02", "QA-GIP-17", "QA-GIP-20", "QA-GIP-22", "QA-GIP-23",
+    "QA-AI-03", "QA-AI-05", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
+    "QA-COC-07", "QA-GIP-02", "QA-GIP-17", "QA-GIP-20", "QA-GIP-23",
     "QA-GIP-25", "QA-GIP-27", "QA-GIP-29", "QA-GIP-34", "QA-GIP-35", "QA-HRS-07",
     "QA-PAR-02", "QA-SCH-09", "QA-TEMP-06",
+    "HF-05", "QA-ACF-03", "QA-ACF-11", "QA-PPI-05",
+    "QA-BIO-06", "QA-GIP-11",
 })
 
 _STABILIZED_UNCERTAIN_EVIDENCE = (
@@ -167,19 +273,29 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     escalated_rules = [rules_by_id[rid] for rid in escalated_ids]
 
     judgment_rules = [r for r in applicable_rules if r["check_type"] == "judgment" and r["active"]]
+    full_judgment_batch = judgment_rules + escalated_rules
 
     # Fix Round (Eliminate Coin-Flipping, For Real, Before Production),
     # Part 1: pull the confirmed-near-50/50 rule_ids OUT of the real
     # judgment call entirely -- see STABILIZED_UNCERTAIN_RULE_IDS's own
     # comment above for why this is a real, zero-model-call, zero-
     # variance-by-construction override, not just "the vote usually lands
-    # on uncertain for these." None of these 5 are escalated_rules (all
-    # confirmed check_type="judgment" in rules.json, never det-checked),
-    # so this filter alone is sufficient -- no interaction with the
-    # det-escalation merge below.
-    stabilized_rule_ids = {r["rule_id"] for r in judgment_rules if r["rule_id"] in STABILIZED_UNCERTAIN_RULE_IDS}
-    judgment_rules = [r for r in judgment_rules if r["rule_id"] not in STABILIZED_UNCERTAIN_RULE_IDS]
-    full_judgment_batch = judgment_rules + escalated_rules
+    # on uncertain for these."
+    #
+    # Fix Round (2026-09-11 evening) -- REAL BUG FOUND AND FIXED: this
+    # filter used to run BEFORE `escalated_rules` was unioned in, on the
+    # (stated, now-disproven) assumption that none of the stabilized
+    # rule_ids are ever escalated. Confirmed false on a real document:
+    # several rule_ids added to STABILIZED_UNCERTAIN_RULE_IDS this round
+    # (QA-COC-06, QA-GIP-21, QA-HRS-08, QA-PPI-05) are check_type=
+    # "deterministic" with no real checker or a low-confidence result on
+    # this real document, so they ALWAYS escalate -- the old filter order
+    # never touched them even after being added here, since they were
+    # never in `judgment_rules` to begin with. Filtering the FULL union
+    # instead closes this for every rule_id in the set, regardless of
+    # which pool it entered through.
+    stabilized_rule_ids = {r["rule_id"] for r in full_judgment_batch if r["rule_id"] in STABILIZED_UNCERTAIN_RULE_IDS}
+    full_judgment_batch = [r for r in full_judgment_batch if r["rule_id"] not in STABILIZED_UNCERTAIN_RULE_IDS]
 
     judgment_results = integrity.run_judgment_with_integrity_check(
         full_judgment_batch, extracted_fields, rendered_images, tracker=tracker, model_override=model_override,

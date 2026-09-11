@@ -67,21 +67,31 @@ def test_three_way_majority_finding_still_works_normally_with_all_strings():
     assert result["evidence"] == "a"  # unchanged behavior: first matching entry wins, verbatim
 
 
-def test_three_way_majority_finding_no_majority_still_stringifies_dict_evidence():
+def test_three_way_majority_finding_no_majority_still_handles_dict_evidence():
+    """Fix Round (2026-09-10), item 4: the uncertain-branch evidence is now
+    a short vote-count summary, not a per-call evidence dump -- so a
+    dict-shaped evidence on one of the losing calls no longer needs to be
+    stringified for INCLUSION in the text at all; the real thing this
+    test still needs to prove is that a dict-shaped evidence on one of
+    the calls doesn't crash this path."""
     f = _finding("pass", {"odd": "shape"})
     s = _finding("fail", "b")
     t = _finding("uncertain", "c")
     result = judge._three_way_majority_finding(f, s, t)
     assert result["result"] == "uncertain"
-    assert "odd" in result["evidence"]
+    assert isinstance(result["evidence"], str)
 
 
 def test_two_way_uncertain_finding_still_handles_dict_evidence():
+    """Fix Round (2026-09-10), item 4: the uncertain evidence is now a
+    short vote-count summary, not each call's own evidence text -- the
+    real thing this test still proves is that a dict-shaped evidence on
+    one of the two calls doesn't crash this path."""
     f = _finding("pass", {"odd": "shape"})
     s = _finding("fail", "b")
     result = judge._two_way_uncertain_finding(f, s)
     assert result["result"] == "uncertain"
-    assert "odd" in result["evidence"]
+    assert isinstance(result["evidence"], str)
 
 
 # --- run_judgment_checks's plain 2-call agreement path ----------------------

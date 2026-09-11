@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useTP } from "@/lib/tp-context";
-import { reviewers, rules as allRules } from "@/lib/tp-mock";
+import { useState } from "react";
+import { useReportsOverview, useReportsTrends } from "@/lib/real-data";
 import { PageHeader } from "@/components/tp/ui";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,63 +8,49 @@ import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/reports")({ component: Reports });
 
+// Fix Round (2026-09-11): this page used to compute everything from
+// tp-mock.ts's fabricated patients/versions/reviewers via useTP() --
+// confirmed real cause of the round-number placeholder look ("10
+// processed, 10 passed, 0 failed"). Now reads the real backend the exact
+// same way index.tsx's own Dashboard already did (Round 74's
+// GET /reports/overview) plus GET /reports/trends for the matrix tab,
+// which existed on the backend the whole time but nothing in the
+// frontend ever called.
 function Reports() {
-  const { patients } = useTP();
-  const versions = patients.flatMap(p => p.versions);
-  const [range, setRange] = useState("30d");
-
-  const cards = useMemo(() => {
-    const processed = versions.length;
-    const passed = versions.filter(v => v.auditResult === "Pass").length;
-    const failed = versions.filter(v => v.auditResult === "Fail").length;
-    return { processed, passed, failed };
-  }, [versions]);
-
-  const weekly = useMemo(() => {
-    const buckets = [0, 1, 2, 3].map(i => {
-      const label = `W-${4 - i}`;
-      const from = i * 7, to = (i + 1) * 7;
-      const inRange = versions.filter(v => {
-        const days = Math.abs((new Date(v.finalizedAt).getTime() - new Date("2026-07-15").getTime()) / 86400000);
-        return days >= from && days < to;
-      });
-      const passed = inRange.filter(v => v.auditResult === "Pass").length;
-      const failed = inRange.filter(v => v.auditResult === "Fail").length;
-      return { label, passed, failed };
-    }).reverse();
-    return buckets;
-  }, [versions]);
-
-  const maxWeekly = Math.max(1, ...weekly.map(w => w.passed + w.failed));
-
-  const perReviewer = useMemo(() => {
-    return reviewers.map(r => {
-      const items = versions.filter(v => v.reviewerId === r.id);
-      const passed = items.filter(v => v.auditResult === "Pass").length;
-      const failed = items.filter(v => v.auditResult === "Fail").length;
-      const rate = items.length ? Math.round((passed / items.length) * 100) : 0;
-      return { r, processed: items.length, passed, failed, rate };
-    });
-  }, [versions]);
+  const [range, setRange] = useState<"week" | "lastweek" | "30d" | "all" | "custom">("30d");
+  // "custom" needs a real start/end date-picker UI that doesn't exist yet
+  // (the old mock version never actually branched on `range` either -- its
+  // weekly bucket was hardcoded to "last 4 weeks" regardless of selection).
+  // Falls back to "all" under the hood rather than sending an incomplete
+  // custom range the backend would 400 on -- flagged here, not silently
+  // pretended to work.
+  const effectiveRange = range === "custom" ? "all" : range;
+  const overviewQuery = useReportsOverview(effectiveRange);
+  const overview = overviewQuery.data;
 
   const [groupBy, setGroupBy] = useState<"provider" | "questionset">("provider");
-  const matrix = useMemo(() => {
-    const activeRules = allRules.filter(r => r.active).slice(0, 12);
-    const rows = reviewers.map(rev => {
-      const revVersions = versions.filter(v => v.reviewerId === rev.id);
-      const cells = activeRules.map(rule => {
-        const results = revVersions.flatMap(v => v.results.filter(r => r.ruleId === rule.id));
-        const nonNa = results.filter(r => r.status !== "N/A");
-        if (nonNa.length === 0) return null;
-        const passed = nonNa.filter(r => r.status === "Pass").length;
-        return Math.round((passed / nonNa.length) * 100);
-      });
-      const nonNull = cells.filter((c): c is number => c !== null);
-      const avg = nonNull.length ? Math.round(nonNull.reduce((a, b) => a + b, 0) / nonNull.length) : 0;
-      return { label: `${rev.name}, ${rev.credentials}`, cells, avg };
-    });
-    return { rules: activeRules, rows };
-  }, [versions]);
+  const trendsQuery = useReportsTrends(groupBy);
+  const trends = trendsQuery.data;
+
+  const cards = {
+    processed: overview?.processed ?? 0,
+    passed: overview?.passed ?? 0,
+    failed: overview?.failed ?? 0,
+  };
+
+  const weekly = overview?.weekly_volume ?? [];
+  const maxWeekly = Math.max(1, ...weekly.map(w => w.pass_count + w.fail_count));
+
+  const perReviewer = overview?.per_reviewer ?? [];
+
+  // Matrix columns: the union of every rule_code any row's cells actually
+  // has, sorted -- the trends endpoint returns cells as a {rule_code:
+  // pass_rate} map per row (only populated for rule_codes that row has
+  // real data for), not a fixed pre-declared column list.
+  const matrixRuleCodes = Array.from(new Set((trends?.rows ?? []).flatMap(r => Object.keys(r.cells)))).sort();
+
+  const isLoading = overviewQuery.isLoading || trendsQuery.isLoading;
+  const isError = overviewQuery.isError || trendsQuery.isError;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -74,7 +59,7 @@ function Reports() {
           title="Reports"
           description="Audit performance across the team and rule library."
           actions={
-            <Select value={range} onValueChange={setRange}>
+            <Select value={range} onValueChange={v => setRange(v as typeof range)}>
               <SelectTrigger className="w-40 h-9"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="week">This week</SelectItem>
@@ -87,6 +72,12 @@ function Reports() {
           }
         />
 
+        {isError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            Couldn't load real report data from the server.
+          </div>
+        )}
+
         <Tabs defaultValue="overview">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -97,35 +88,41 @@ function Reports() {
             <div className="grid grid-cols-3 gap-4">
               {[
                 { label: "TPs Processed", value: cards.processed, sub: "Across all patients" },
-                { label: "Passed", value: cards.passed, sub: cards.processed ? `${Math.round(cards.passed / cards.processed * 100)}% of total` : "—" },
-                { label: "Failed", value: cards.failed, sub: cards.processed ? `${Math.round(cards.failed / cards.processed * 100)}% of total` : "—" },
+                { label: "Passed", value: cards.passed, sub: overview ? `${overview.passed_pct}% of total` : "—" },
+                { label: "Failed", value: cards.failed, sub: overview ? `${overview.failed_pct}% of total` : "—" },
               ].map(c => (
                 <div key={c.label} className="rounded-lg border border-slate-200 bg-white p-5">
                   <div className="text-sm text-slate-500">{c.label}</div>
-                  <div className="mt-2 text-3xl font-semibold">{c.value}</div>
+                  <div className="mt-2 text-3xl font-semibold">{isLoading ? "—" : c.value}</div>
                   <div className="mt-1 text-xs text-slate-500">{c.sub}</div>
                 </div>
               ))}
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-white p-5">
-              <div className="text-sm font-semibold mb-4">Weekly Pass/Fail volume (last 4 weeks)</div>
-              <div className="flex items-stretch justify-around gap-6 h-48">
-                {weekly.map(w => (
-                  <div key={w.label} className="flex-1 h-full flex flex-col items-center gap-2">
-                    <div className="flex-1 w-full flex items-end gap-1 min-h-0">
-                      <div className="flex-1 bg-emerald-500 rounded-t min-h-[2px]" style={{ height: `${(w.passed / maxWeekly) * 100}%` }} title={`Pass: ${w.passed}`} />
-                      <div className="flex-1 bg-red-400 rounded-t min-h-[2px]" style={{ height: `${(w.failed / maxWeekly) * 100}%` }} title={`Fail: ${w.failed}`} />
-                    </div>
-                    <div className="text-xs text-slate-500">{w.label}</div>
-                    <div className="text-xs text-slate-700 tabular-nums">{w.passed}/{w.failed}</div>
+              <div className="text-sm font-semibold mb-4">Weekly Pass/Fail volume</div>
+              {weekly.length === 0 ? (
+                <div className="text-sm text-slate-400 py-8 text-center">No finalized uploads in this range yet.</div>
+              ) : (
+                <>
+                  <div className="flex items-stretch justify-around gap-6 h-48">
+                    {weekly.map(w => (
+                      <div key={w.week_start} className="flex-1 h-full flex flex-col items-center gap-2">
+                        <div className="flex-1 w-full flex items-end gap-1 min-h-0">
+                          <div className="flex-1 bg-emerald-500 rounded-t min-h-[2px]" style={{ height: `${(w.pass_count / maxWeekly) * 100}%` }} title={`Pass: ${w.pass_count}`} />
+                          <div className="flex-1 bg-red-400 rounded-t min-h-[2px]" style={{ height: `${(w.fail_count / maxWeekly) * 100}%` }} title={`Fail: ${w.fail_count}`} />
+                        </div>
+                        <div className="text-xs text-slate-500">{w.week_start}</div>
+                        <div className="text-xs text-slate-700 tabular-nums">{w.pass_count}/{w.fail_count}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
-                <div className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-sm bg-emerald-500" /> Pass</div>
-                <div className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-sm bg-red-400" /> Fail</div>
-              </div>
+                  <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
+                    <div className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-sm bg-emerald-500" /> Pass</div>
+                    <div className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-sm bg-red-400" /> Fail</div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
@@ -141,18 +138,21 @@ function Reports() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
+                  {perReviewer.length === 0 && (
+                    <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">No finalized uploads in this range yet.</td></tr>
+                  )}
                   {perReviewer.map(row => (
-                    <tr key={row.r.id}>
-                      <td className="px-4 py-2.5">{row.r.name}, {row.r.credentials}</td>
+                    <tr key={row.reviewer_id ?? row.reviewer_name ?? "unknown"}>
+                      <td className="px-4 py-2.5">{row.reviewer_name ?? "Unassigned"}</td>
                       <td className="px-4 py-2.5 text-slate-600 tabular-nums">{row.processed}</td>
                       <td className="px-4 py-2.5 text-slate-600 tabular-nums">{row.passed}</td>
                       <td className="px-4 py-2.5 text-slate-600 tabular-nums">{row.failed}</td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
                           <div className="h-1.5 flex-1 rounded-full bg-slate-100 overflow-hidden">
-                            <div className={`h-full ${row.rate >= 85 ? "bg-emerald-500" : row.rate >= 70 ? "bg-amber-500" : "bg-red-500"}`} style={{ width: `${row.rate}%` }} />
+                            <div className={`h-full ${row.pass_rate >= 85 ? "bg-emerald-500" : row.pass_rate >= 70 ? "bg-amber-500" : "bg-red-500"}`} style={{ width: `${row.pass_rate}%` }} />
                           </div>
-                          <span className="tabular-nums text-xs w-10 text-right">{row.rate}%</span>
+                          <span className="tabular-nums text-xs w-10 text-right">{row.pass_rate}%</span>
                         </div>
                       </td>
                     </tr>
@@ -180,23 +180,29 @@ function Reports() {
                 <thead className="bg-slate-50 uppercase tracking-wide text-slate-500 sticky top-0">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium sticky left-0 bg-slate-50 z-10">{groupBy === "provider" ? "Reviewer" : "Question Set"}</th>
-                    {matrix.rules.map(r => (
-                      <th key={r.id} className="text-center px-2 py-2 font-mono font-medium">{r.id}</th>
+                    {matrixRuleCodes.map(code => (
+                      <th key={code} className="text-center px-2 py-2 font-mono font-medium">{code}</th>
                     ))}
                     <th className="text-center px-3 py-2 font-medium bg-slate-100">Avg</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {matrix.rows.map(row => (
-                    <tr key={row.label}>
-                      <td className="px-3 py-2 font-medium sticky left-0 bg-white z-10 whitespace-nowrap">{row.label}</td>
-                      {row.cells.map((c, i) => (
-                        <td key={i} className={cn("text-center px-2 py-2 tabular-nums",
-                          c === null ? "text-slate-300" : c < 70 ? "bg-red-50 text-red-800" : "text-slate-700")}>
-                          {c === null ? "—" : `${c}%`}
-                        </td>
-                      ))}
-                      <td className="text-center px-3 py-2 tabular-nums font-medium bg-slate-50">{row.avg}%</td>
+                  {(!trends || trends.rows.length === 0) && (
+                    <tr><td colSpan={matrixRuleCodes.length + 2} className="px-4 py-6 text-center text-slate-400">No finalized, overridden audits yet.</td></tr>
+                  )}
+                  {trends?.rows.map(row => (
+                    <tr key={row.row_key}>
+                      <td className="px-3 py-2 font-medium sticky left-0 bg-white z-10 whitespace-nowrap">{row.row_label}</td>
+                      {matrixRuleCodes.map(code => {
+                        const c = row.cells[code] ?? null;
+                        return (
+                          <td key={code} className={cn("text-center px-2 py-2 tabular-nums",
+                            c === null ? "text-slate-300" : c < 70 ? "bg-red-50 text-red-800" : "text-slate-700")}>
+                            {c === null ? "—" : `${c}%`}
+                          </td>
+                        );
+                      })}
+                      <td className="text-center px-3 py-2 tabular-nums font-medium bg-slate-50">{row.average ?? "—"}%</td>
                     </tr>
                   ))}
                 </tbody>

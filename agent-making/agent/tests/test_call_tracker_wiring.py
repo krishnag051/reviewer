@@ -75,13 +75,16 @@ class _FakeClient:
 
 
 def _finding(rule_id, evidence_supports_result=True):
+    # Fix Round (2026-09-11), item 3: page=1 (not None) -- this file tests
+    # call-count/tracker wiring, not page-number enforcement.
     return {
         "rule_id": rule_id,
         "result": "pass",
         "evidence": "ok",
-        "page": None,
+        "page": 1,
         "confidence": 0.9,
         "evidence_supports_result": evidence_supports_result,
+        "nothing_relevant_found_anywhere": False,
     }
 
 

@@ -151,7 +151,19 @@ def _compare_mast01(current_fields: dict, previous_fields: dict) -> dict[str, An
         return _not_checkable(
             "No mastered goal on the current TP has a parseable Date Mastered value to check."
         )
-    window_desc = f"{prev_range[0]} (previous TP's report start) to {current_range[1]} (current TP's report end)"
+    # Fix Round (2026-09-10), item 19 -- confirmed real evidence-labeling
+    # gap: this rule's own description still says "previous AUTHORIZATION
+    # dates," but the real, confirmed-correct window (see this function's
+    # own docstring) is built from each document's "Date of Current
+    # Report" -- a genuinely different field. Labeling every date in the
+    # evidence with its exact source field (not just "report start"/
+    # "report end") so a reader can see precisely which date came from
+    # which document/field, rather than something that could be misread
+    # as an authorization date.
+    window_desc = (
+        f"{prev_range[0]} (previous TP's 'Date of Current Report' start) to "
+        f"{current_range[1]} (current TP's 'Date of Current Report' end)"
+    )
     if out_of_range:
         detail = "; ".join(f"{name!r} (Date Mastered {dm})" for name, dm in out_of_range)
         return _finding(

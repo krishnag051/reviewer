@@ -107,13 +107,16 @@ class _FakeClient:
 
 
 def _finding(rule_id, result="pass"):
+    # Fix Round (2026-09-11), item 3: page=1 (not None) -- this file tests
+    # supporting-doc extraction wiring, not page-number enforcement.
     return {
         "rule_id": rule_id,
         "result": result,
         "evidence": "ok",
-        "page": None,
+        "page": 1,
         "confidence": 0.9,
         "evidence_supports_result": True,
+        "nothing_relevant_found_anywhere": False,
     }
 
 

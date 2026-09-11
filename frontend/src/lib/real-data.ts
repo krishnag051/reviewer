@@ -10,15 +10,20 @@
 // tp-mock.ts's fabricated counts/activity feed entirely), and now Admin
 // Settings' Notifications tab too (deployment round -- real
 // notif_from_name/notif_from_address/notif_default_cc/auto_send, replacing
-// that tab's own hardcoded defaultValue mockup). Everything ELSE in the
-// app (the Reports page itself, Admin Settings' OTHER tabs -- Organization/
-// Company Info specifically has no real backing endpoint at all, flagged
-// not built rather than invented -- correction email, mark-reviewed)
-// still stays on tp-context.tsx's mock data -- see FRONTEND_STATE.md §0.
+// that tab's own hardcoded defaultValue mockup), and now the Reports page
+// itself (Fix Round, 2026-09-11 -- real GET /reports/overview [now with
+// its weekly_volume/per_reviewer fields actually declared and consumed,
+// not just the 3 top-line numbers Dashboard used] + GET /reports/trends,
+// replacing reports.tsx's own tp-mock.ts-backed cards/chart/table/matrix
+// entirely). Everything ELSE in the app (Admin Settings' OTHER tabs --
+// Organization/Company Info specifically has no real backing endpoint at
+// all, flagged not built rather than invented -- correction email,
+// mark-reviewed) still stays on tp-context.tsx's mock data -- see
+// FRONTEND_STATE.md §0.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createPatient, createRule, createSimulatedUpload, createUpload, createVersion, deactivatePatient, finalizeUpload, getAppConfig,
-  getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getSessionNoteExtraction, getUpload, getVersion,
+  getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getReportsTrends, getSessionNoteExtraction, getUpload, getVersion,
   listPatientVersions, listPatients, listRules, listSessionNotes, overrideRuleResult, reactivatePatient, setRuleActive,
   setNotificationSettings, setSupportingDocMode, updateRule,
   type IntakeAnswers, type NotificationSettingsUpdate, type PatientStatusFilter, type RulePayor, type RuleType, type SupportingDocMode,
@@ -50,8 +55,19 @@ export function useReactivatePatient() {
   });
 }
 
-export function useReportsOverview() {
-  return useQuery({ queryKey: ["reports-overview"], queryFn: () => getReportsOverview("all") });
+export function useReportsOverview(range: "week" | "lastweek" | "30d" | "all" | "custom" = "all", start?: string, end?: string) {
+  return useQuery({
+    queryKey: ["reports-overview", range, start, end],
+    queryFn: () => getReportsOverview(range, start, end),
+  });
+}
+
+// Fix Round (2026-09-11): real backing for reports.tsx's "Trend Data" tab
+// (provider/question-set × rule matrix) -- the backend endpoint
+// (app/services/reports.py::get_trends, querying v_override_analytics)
+// already existed; nothing in the frontend ever called it before this.
+export function useReportsTrends(groupBy: "provider" | "questionset") {
+  return useQuery({ queryKey: ["reports-trends", groupBy], queryFn: () => getReportsTrends(groupBy) });
 }
 
 export function useRecentActivity(limit = 8) {

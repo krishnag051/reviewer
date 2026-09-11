@@ -107,7 +107,13 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     # 2026-08-27) -- a real HF-01-style silent gap closed: labeled
     # deterministic here with zero checker registered, confirmed and
     # fixed this round (_check_GIP13).
-    "QA-HRS-08",
+    # QA-HRS-08 REMOVED from this set (Fix Round, 2026-09-11 night, "Stop
+    # Over-Using the Uncertain Safety Net") -- a real checker was built
+    # (_check_HRS08): this rule's own rules.json notes already decided
+    # the real bar (standard, well-formed, internally-consistent CPT
+    # codes = confident pass), it just had zero code behind it, always
+    # escalating to judgment -- the actual root cause of its coin-flip
+    # instability, not a genuine data-dependency gap.
     "QA-MAST-01", "QA-MAST-02",
     # QA-RPT-05 REMOVED from this set (2026-08-08, Round 78, item 4) -- a
     # real checker was built (pipeline/fields.py::_check_RPT05). This
@@ -132,7 +138,12 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     # checker registered, confirmed and fixed this round (_check_SCH06,
     # with an explicit, honest limitation documented in its own docstring
     # and this rule's own notes -- see fields.py).
-    "QA-SCH-03", "QA-SCH-05",
+    # QA-SCH-05 REMOVED from this set (Fix Round, 2026-09-11 night) -- a
+    # real checker built (_check_SCH05), with an honestly-documented
+    # partial limitation (the real numeric-compare branch itself is
+    # unconfirmed against a real qualifying document) -- see that
+    # function's own docstring.
+    "QA-SCH-03",
     # QA-SIG-06 REMOVED from this set (Master Fix Round, 2026-09-08) -- the
     # same silent-gap shape (deterministic label, zero checker), but this
     # round relabeled it to "judgment" (honest correction) instead of
@@ -181,8 +192,28 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_sixty_eight_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...sixty_six..." (Fix Round, Section 1 Bucket D,
+def test_exactly_seventy_three_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...seventy_one..." (Fix Round, 2026-09-11 night,
+    same round) -- 2 more joined: QA-SCH-05, QA-GIP-22.
+
+    Renamed from "...sixty_eight..." (Fix Round, 2026-09-11 night,
+    "Stop Over-Using the Uncertain Safety Net") -- 3 more joined: QA-HRS-08,
+    HF-06, QA-MAST-03 -- see the matched-set literal's own trailing
+    comment below for the full diagnosis of each.
+
+    Renamed from "...sixty_seven..." (Fix Round, 2026-09-11, item 23) --
+    QA-GIP-07 joined this set: converted from judgment to a hybrid DET
+    precondition checker (same shape as QA-HRS-05/QA-GIP-23) -- see
+    _check_GIP07's own docstring.
+
+    Renamed from "...sixty_eight..." (Fix Round, 2026-09-10, item 7) --
+    HF-05 dropped OUT of this set: a real rule-identity mismatch was found
+    (its old checker answered a different question than what the rule now
+    means) and it was relabeled to judgment, same shape as the QA-SIG-06
+    relabeling from the previous round -- see fields.py's own note above
+    HF-05's DET_CHECKS removal, and this rule's rules.json notes.
+
+    Renamed from "...sixty_six..." (Fix Round, Section 1 Bucket D,
     2026-08-27) -- two more joined this set this round: QA-GIP-13 (a real
     HF-01-style silent gap closed) and QA-GIP-21 (a genuinely new hybrid
     checker).
@@ -389,13 +420,29 @@ def test_exactly_sixty_eight_deterministic_labeled_rules_have_real_checkers():
         # (NOT new -- already labeled deterministic, but had zero checker
         # registered until this round; see EXPECTED_MISMATCHED_RULE_IDS's
         # own comment above for that real gap).
-        "QA-BAR-01", "HF-05", "QA-COC-06", "QA-RPT-07", "QA-SCH-06", "QA-GIP-19", "QA-GIP-26",
+        "QA-BAR-01", "QA-COC-06", "QA-RPT-07", "QA-SCH-06", "QA-GIP-19", "QA-GIP-26",
         # Fix Round, Section 1 Bucket D (2026-08-27): 2 more -- QA-GIP-13
         # (a real HF-01-style silent gap closed, see
         # EXPECTED_MISMATCHED_RULE_IDS's own comment above) and QA-GIP-21
         # (a genuinely NEW hybrid checker, mastered-by-date half only --
         # see fields.py::_check_GIP21's own docstring).
         "QA-GIP-13", "QA-GIP-21",
+        # Fix Round (2026-09-11), item 23: QA-GIP-07 converted to a
+        # hybrid DET precondition checker -- see _check_GIP07's own
+        # docstring in fields.py.
+        "QA-GIP-07",
+        # Fix Round (2026-09-11 night), "Stop Over-Using the Uncertain
+        # Safety Net": 3 more joined -- QA-HRS-08 (relabeled from
+        # deterministic-with-no-checker, see EXPECTED_MISMATCHED_RULE_IDS's
+        # own comment above), HF-06 and QA-MAST-03 (both relabeled from
+        # judgment to deterministic, real checkers built from scratch --
+        # see _check_HRS08/_check_HF06/_check_MAST03's own docstrings).
+        "QA-HRS-08", "HF-06", "QA-MAST-03",
+        # Same round: QA-SCH-05 (relabeled from deterministic-with-no-
+        # checker) and QA-GIP-22 (relabeled from judgment to deterministic,
+        # reusing the same Date-Initiated-vs-report-range anchor QA-GIP-07
+        # already proved out) -- see each checker's own docstring.
+        "QA-SCH-05", "QA-GIP-22",
     }
 
 

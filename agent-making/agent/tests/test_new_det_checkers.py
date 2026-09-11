@@ -15,37 +15,39 @@ def _rule(rule_id, params=None):
     return {"rule_id": rule_id, "check_type": "deterministic", "params": params or {}}
 
 
-# --- HF-01: age/date-range math ---
+# --- HF-01: date-range math ---
 
-# Fix Round (2026-08-26): months -> exact weeks -- see fields.py::_check_HF01's
-# own docstring.
-HF01_PARAMS = {"age_threshold": 13, "short_range_weeks": 13, "long_range_weeks": 26}
+# Fix Round (2026-09-10), item 6: the age-conditional split (13wk/26wk by
+# age_threshold) was removed entirely per ma'am's direct ask -- every
+# Healthfirst patient now gets a flat 13-week range, regardless of age.
+# Patient Age is no longer read by this rule at all.
+HF01_PARAMS = {"auth_range_weeks": 13}
 
 
-def test_hf01_pass_over_threshold_with_3_month_range():
+def test_hf01_pass_with_13_week_range_regardless_of_age():
+    """Age is irrelevant now -- a 13-week range passes whether the patient
+    is a minor or an adult."""
     text = "Patient Age:  17 Patient Gender: Female\nAuthorization Dates Requested: 07/30/2026  to 10/30/2026"
     result, evidence, page, confidence = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text))
     assert result == "pass"
 
+    text2 = "Patient Age:  10 Patient Gender: Male\nAuthorization Dates Requested: 02/21/2026  to 05/22/2026"
+    result2, *_ = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text2))
+    assert result2 == "pass"
 
-def test_hf01_fail_over_threshold_with_6_month_range():
-    """This is the exact real-world CD contradiction case: age 17 (>13)
-    but a 6-month range instead of the required 3-month range."""
+
+def test_hf01_fail_with_26_week_range_regardless_of_age():
+    """Master Fix Round's own real-world contradiction case, now inverted:
+    a 6-month/26-week range is a FAIL for every age, since only 13 weeks
+    is ever correct now -- there is no age bracket where 26 weeks passes
+    anymore."""
     text = "Patient Age:  17 Patient Gender: Female\nAuthorization Dates Requested: 07/30/2026  to 01/30/2027"
-    result, evidence, page, confidence = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text))
+    result, *_ = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text))
     assert result == "fail"
 
-
-def test_hf01_pass_under_threshold_with_6_month_range():
-    text = "Patient Age:  10 Patient Gender: Male\nAuthorization Dates Requested: 02/21/2026  to 08/21/2026"
-    result, evidence, page, confidence = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text))
-    assert result == "pass"
-
-
-def test_hf01_fail_under_threshold_with_3_month_range():
-    text = "Patient Age:  10 Patient Gender: Male\nAuthorization Dates Requested: 02/21/2026  to 05/21/2026"
-    result, evidence, page, confidence = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text))
-    assert result == "fail"
+    text2 = "Patient Age:  10 Patient Gender: Male\nAuthorization Dates Requested: 02/21/2026  to 08/21/2026"
+    result2, *_ = fields._check_HF01(_rule("HF-01", HF01_PARAMS), _fields(text2))
+    assert result2 == "fail"
 
 
 def test_hf01_not_checkable_when_fields_missing():

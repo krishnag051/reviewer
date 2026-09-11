@@ -110,17 +110,36 @@ def test_rpt07_passes_when_requested_range_meets_26_weeks():
     assert result == "pass"
 
 
-def test_rpt07_self_excludes_healthfirst_deferring_to_hf01():
-    """REAL BUG FOUND AND FIXED before shipping: confirmed on the real
-    Zyaan Ullah sample TP (Healthfirst, real requested range 12.9 weeks)
-    that without this exclusion, the universal 26-week default would
-    falsely fail every Healthfirst patient correctly on their own real
-    13-week cycle (already validated by HF-01)."""
-    text = "Authorization Dates Requested: 01/01/2026 to 03/01/2026\n"  # would fail the universal default
+def test_rpt07_checks_healthfirst_against_13_weeks_not_26():
+    """Fix Round (2026-09-10), item 10 -- REAL LOGIC BUG FOUND AND FIXED:
+    this rule used to self-exclude (not_applicable) for Healthfirst
+    entirely, deferring to HF-01. Ma'am confirmed directly this rule
+    should check Healthfirst too, against its own 13-week expectation --
+    a real Healthfirst range of ~12.9 weeks (short of 13) must FAIL, not
+    return not_applicable."""
+    text = "Authorization Dates Requested: 01/01/2026 to 03/01/2026\n"  # ~8.4 weeks -- well short of 13
     result, evidence, page, confidence = fields._check_RPT07(
         _rule(_rule_json("QA-RPT-07")["params"]), _fields(text, payor="Healthfirst"),
     )
-    assert result == "not_applicable"
+    assert result == "fail"
+
+
+def test_rpt07_passes_healthfirst_at_a_full_13_week_range():
+    text = "Authorization Dates Requested: 01/01/2026 to 04/02/2026\n"  # ~13 weeks
+    result, evidence, page, confidence = fields._check_RPT07(
+        _rule(_rule_json("QA-RPT-07")["params"]), _fields(text, payor="Healthfirst"),
+    )
+    assert result == "pass"
+
+
+def test_rpt07_does_not_apply_healthfirsts_13_weeks_to_other_payors():
+    """Confirms the 13-week expectation is Healthfirst-specific, not a
+    global change to the default -- every other payor still needs 26."""
+    text = "Authorization Dates Requested: 01/01/2026 to 04/02/2026\n"  # ~13 weeks -- short of 26
+    result, evidence, page, confidence = fields._check_RPT07(
+        _rule(_rule_json("QA-RPT-07")["params"]), _fields(text, payor="Aetna"),
+    )
+    assert result == "fail"
 
 
 # --- 6. QA-COC-02 (stays judgment, confirm state) -----------------------------
@@ -254,11 +273,15 @@ def test_bip02_stays_judgment_confirmed_already_correct():
     assert "no exceptions" in _rule_json("QA-BIP-02")["description"].lower()
 
 
-# --- 16. QA-GIP-07 (confirm already done) -------------------------------------
+# --- 16. QA-GIP-07 --------------------------------------------------------
 
-def test_gip07_stays_judgment_confirmed_already_correct():
-    assert _rule_json("QA-GIP-07")["check_type"] == "judgment"
+def test_gip07_no_eliana_reference():
+    """Fix Round (2026-09-11), item 23: converted to deterministic (see
+    fields._check_GIP07) -- the "stays judgment" half of this test's old
+    name no longer applies; the "no Eliana reference" half still does."""
+    assert _rule_json("QA-GIP-07")["check_type"] == "deterministic"
     assert "eliana" not in _rule_json("QA-GIP-07")["description"].lower()
+    assert "QA-GIP-07" in fields.DET_CHECKS
 
 
 # --- 17. QA-GIP-19 ------------------------------------------------------------
@@ -326,24 +349,31 @@ def test_gip16_still_flags_zero_mastery_criteria_unchanged():
     assert result == "fail"
 
 
-def test_gip16_now_also_flags_zero_current_data():
+def test_gip16_no_longer_flags_zero_current_data():
+    """Fix Round (2026-09-10), item 25 -- REVERSAL, confirmed with ma'am
+    directly: this rule now checks ONLY Mastery Criteria. A zero-endpoint
+    Current Data value must no longer fail this rule at all."""
     text = "Target Goal: X\nMastery Criteria: 80% accuracy\nCurrent Data: 0 Percent Correct\n"
     result, evidence, page, confidence = fields._check_GIP16(_rule(), _fields(text))
-    assert result == "fail"
-    assert "current data" in evidence.lower()
+    assert result == "pass"
 
 
-def test_gip16_does_not_fail_a_blank_current_data_unlike_blank_mastery_criteria():
-    """Deliberate asymmetry: a blank Current Data commonly just means no
-    data collected yet for a newly-started goal -- different from a
-    blank Mastery Criteria, which is a real setup problem regardless of
-    goal age."""
+def test_gip16_ignores_current_data_entirely_blank_or_not():
+    """A blank OR zero-endpoint Current Data is equally irrelevant now --
+    this rule no longer reads that field at all."""
     text = "Target Goal: X\nMastery Criteria: 80% accuracy\nCurrent Data:\n"
     result, evidence, page, confidence = fields._check_GIP16(_rule(), _fields(text))
     assert result == "pass"
 
 
-def test_gip16_passes_when_neither_field_has_a_zero_endpoint():
+def test_gip16_passes_when_mastery_criteria_has_no_zero_endpoint():
     text = "Target Goal: X\nMastery Criteria: 80% accuracy\nCurrent Data: 45% Percent Correct\n"
     result, evidence, page, confidence = fields._check_GIP16(_rule(), _fields(text))
     assert result == "pass"
+
+
+def test_gip16_still_fails_a_zero_mastery_criteria_after_the_reversal():
+    text = "Target Goal: X\nMastery Criteria: 0% accuracy\nCurrent Data: 45% Percent Correct\n"
+    result, evidence, page, confidence = fields._check_GIP16(_rule(), _fields(text))
+    assert result == "fail"
+    assert "mastery criteria" in evidence.lower()

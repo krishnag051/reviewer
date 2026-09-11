@@ -10,13 +10,18 @@ from pipeline.integrity import IntegrityError, run_judgment_with_integrity_check
 
 
 def _finding(rule_id, result="pass", evidence="ok", evidence_supports_result=True):
+    # Fix Round (2026-09-11), item 3: page=1 (not None) -- this file tests
+    # evidence_supports_result rejection specifically, not page-number
+    # enforcement (that's test_page_number_enforcement.py); a real page
+    # keeps these fixtures from also tripping the new page-number gate.
     return {
         "rule_id": rule_id,
         "result": result,
         "evidence": evidence,
-        "page": None,
+        "page": 1,
         "confidence": 0.8,
         "evidence_supports_result": evidence_supports_result,
+        "nothing_relevant_found_anywhere": False,
     }
 
 

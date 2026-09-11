@@ -82,16 +82,19 @@ def test_acf12_is_present_alongside_the_other_3_session_notes_rules():
 
 # --- Bucket C, item 2: HF-01/HF-09 agreement --------------------------------
 
-_HF01_PARAMS = {"age_threshold": 13, "short_range_weeks": 13, "long_range_weeks": 26}
+_HF01_PARAMS = {"auth_range_weeks": 13}
 
 
-def test_hf01_correctly_flags_a_13_week_range_for_a_young_patient_as_wrong():
-    """The exact real contradiction that triggered this fix: a 5-year-old
-    patient (age <= 13, expects 26 weeks) with a 90-day (~13-week) range
-    must FAIL under HF-01's own real, deliberate age split."""
+def test_hf01_13_week_range_now_passes_regardless_of_age():
+    """Fix Round (2026-09-10), item 6: the age split this test used to
+    cover was removed entirely per ma'am's direct ask -- a 13-week range
+    is correct for EVERY Healthfirst patient now, age irrelevant. What was
+    a real contradiction fix under the old age-conditional logic (a young
+    patient's ~13-week range had to FAIL) is now simply a pass, for every
+    age, since 13 weeks is the only correct range."""
     text = "Patient Age: 5\nAuthorization Dates Requested: 01/01/2026 to 04/01/2026\n"  # ~13 weeks
     result, evidence, page, confidence = fields._check_HF01(_rule(_HF01_PARAMS), _fields(text))
-    assert result == "fail"
+    assert result == "pass"
 
 
 def test_hf01_correctly_passes_a_13_week_range_for_an_older_patient():
@@ -223,10 +226,40 @@ def test_gip21_fails_when_no_anticipated_mastery_date():
     assert result == "fail"
 
 
-def test_gip21_escalates_to_judgment_for_the_explanation_half_when_mastery_date_present():
-    text = "Target Name: Reduce Tantrum\nAnticipated Mastery Date: 11/03/2026\n"
+def test_gip21_fails_when_mastery_date_present_but_no_real_explanation():
+    """Fix Round (2026-09-11 night), "Stop Over-Using the Uncertain Safety
+    Net" -- REAL FIX: this used to escalate to judgment for the
+    explanation half (this exact fixture used to assert not_checkable).
+    Confirmed real deterministic signal now exists (Additional Notes /
+    Current Data narrative) -- a goal with neither is a real, stable
+    fail, not a coin-flip judgment call."""
+    text = "Target Name: Reduce Tantrum\nAnticipated Mastery Date: 11/03/2026\nAdditional Notes:\n"
     result, evidence, page, confidence = fields._check_GIP21(_rule(), _fields(text))
-    assert result == "not_checkable"
+    assert result == "fail"
+
+
+def test_gip21_passes_with_a_real_explanation_in_additional_notes():
+    text = "Target Name: Reduce Tantrum\nAnticipated Mastery Date: 11/03/2026\nAdditional Notes: BT retrained on data collection.\n"
+    result, evidence, page, confidence = fields._check_GIP21(_rule(), _fields(text))
+    assert result == "pass"
+
+
+def test_gip21_passes_with_a_real_explanation_in_current_data_narrative():
+    """The real confirmed shape on the Daylyn Holland document: Current
+    Data carrying narrative text beyond a bare number/frequency phrase."""
+    text = (
+        "Target Name: Reduce Tantrum\nAnticipated Mastery Date: 11/03/2026\n"
+        "Current Data: 0  Frequency incorrect reporting - BT has been retrained\n"
+    )
+    result, evidence, page, confidence = fields._check_GIP21(_rule(), _fields(text))
+    assert result == "pass"
+
+
+def test_gip21_fails_with_a_bare_number_current_data_and_no_notes():
+    """A bare number/frequency phrase alone is NOT an explanation."""
+    text = "Target Name: Reduce Tantrum\nAnticipated Mastery Date: 11/03/2026\nCurrent Data: 5-6 times per session\n"
+    result, evidence, page, confidence = fields._check_GIP21(_rule(), _fields(text))
+    assert result == "fail"
 
 
 # --- Bucket D, item 10: QA-SCH-09 -- confirmed not a fixed-list rule -------

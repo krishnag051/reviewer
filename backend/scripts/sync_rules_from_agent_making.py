@@ -61,6 +61,23 @@ part 3 -- a decision for the team, not unilaterally adopted here):
   source of truth for question_text's actual content; the DB is a synced
   read-replica of it for display/versioning purposes, never edited by hand
   in a way that would need to flow the other direction.
+
+Fix Round (2026-09-11) -- REAL BUG FOUND AND FIXED: this script correctly
+updates the live `rules` table (via edit_rule/set_rule_active, so
+rule_sync_state.pending_change_count is incremented same as a real human
+edit), but never published a new rule_snapshot -- confirmed real
+consequence, directly: QA-SCH-04 was deactivated by this script, the live
+`rules` row genuinely showed active=false, but the CURRENTLY PUBLISHED
+snapshot was frozen from BEFORE that change (created by a manual
+run_sync_tick call in an earlier round, then never re-triggered), so it
+still listed QA-SCH-04 as an expected rule_id -- any upload processed
+since got a real "no matching finding from the rule-checking agent"
+fallback for it instead of the rule vanishing entirely, exactly like the
+QA-HRS-01 case from an earlier round. This script now calls run_sync_tick
+itself, in the same real run (not dry-run), immediately after applying
+any changes -- so a sync and a snapshot publish can no longer drift apart
+in time the way they just did. `--check` still makes zero writes,
+including no tick, since dry-run must never touch real state.
 """
 import argparse
 import sys
@@ -71,7 +88,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select
 
 from app.db.base import SessionLocal
-from app.db.models import Rule
+from app.db.models import Rule, RuleSyncState
+from app.services.rule_sync import run_sync_tick
 from app.services.rules import create_rule, edit_rule, set_rule_active
 from scripts._rules_source import SYNCED_FIELDS, load_rules_from_agent_making
 
@@ -131,6 +149,36 @@ def main() -> None:
     session = SessionLocal()
     try:
         result = sync_rules(session, dry_run=args.check)
+        # Fix Round (2026-09-11): a sync that changes live `rules` rows but
+        # never publishes a fresh snapshot is exactly what let QA-SCH-04
+        # keep appearing to the rule-checking agent as an expected rule_id
+        # after it was deactivated -- the DB row was correct, the PUBLISHED
+        # snapshot (what a real upload run actually reads) was stale.
+        #
+        # Deliberately unconditional on `out_of_sync` for THIS invocation
+        # (not just "did this run change anything"): confirmed directly
+        # against the real staging DB that `rules` can already be fully in
+        # sync with rules.json (this run's own diff is empty) while
+        # rule_sync_state.pending_change_count is still > 0 from an EARLIER
+        # sync run that changed rows but was never followed by a tick --
+        # exactly what happened to QA-SCH-04 here. Checking only this run's
+        # diff would have silently left that older debt unpublished forever.
+        # run_sync_tick itself is the source of truth for whether there's
+        # anything to do (no-op, no commit, no audit entry when
+        # pending_change_count == 0) -- so it's safe, not wasteful, to call
+        # it every real (non---check) invocation. Read pending_change_count
+        # before/after ourselves (run_sync_tick returns None either way) so
+        # we can report honestly whether a snapshot was actually published.
+        pending_before = None
+        pending_after = None
+        if not args.check:
+            pending_before = session.execute(
+                select(RuleSyncState.pending_change_count)
+            ).scalar_one()
+            run_sync_tick(session)
+            pending_after = session.execute(
+                select(RuleSyncState.pending_change_count)
+            ).scalar_one()
     finally:
         session.close()
 
@@ -147,6 +195,14 @@ def main() -> None:
         print(f"  ~ {'would set' if args.check else 'set'} {code} active {old} -> {new}")
 
     out_of_sync = bool(result["created"] or result["updated_content"] or result["updated_active"])
+
+    if not args.check:
+        if pending_before:
+            print(f"  -> ran sync tick: pending_change_count {pending_before} -> {pending_after} "
+                  "(published a fresh rule_snapshot so these changes reach new uploads immediately)")
+        else:
+            print("  -> ran sync tick: pending_change_count already 0, nothing to publish")
+
     if args.check and out_of_sync:
         sys.exit(1)
 

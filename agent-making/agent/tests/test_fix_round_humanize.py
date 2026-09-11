@@ -85,18 +85,17 @@ def test_empty_and_none_pass_through_safely():
 
 
 def test_real_hf01_evidence_before_and_after():
+    """Fix Round (2026-09-10), item 6: age is no longer read by this rule
+    at all, so the evidence text no longer mentions it either."""
     text = "Patient Age:  17 Patient Gender: Female\nAuthorization Dates Requested: 07/30/2026  to 10/30/2026"
-    rule = {"params": {"age_threshold": 13, "short_range_weeks": 13, "long_range_weeks": 26}}
+    rule = {"params": {"auth_range_weeks": 13}}
     _, before, _, _ = fields._check_HF01(rule, {"full_text": text})
     after = humanize_evidence(before)
     assert before == (
-        "Patient age 17; authorization range 07/30/2026 to 10/30/2026 (92 days) matches the "
-        "expected 13-week range for age > 13."
+        "Authorization range 07/30/2026 to 10/30/2026 (92 days) matches the "
+        "required 13-week Healthfirst range."
     )
-    assert after == (
-        "Patient age 17. Authorization range 07/30/2026 to 10/30/2026 (92 days) matches the "
-        "expected 13-week range for age > 13."
-    )
+    assert after == before
 
 
 def test_real_hf02_evidence_before_and_after():

@@ -127,6 +127,21 @@ export async function listPatients(statusFilter: PatientStatusFilter = "active")
 
 // --- Reports (Round 74: Dashboard's real data, not tp-mock.ts) --------
 
+export type WeeklyVolumeEntry = {
+  week_start: string;
+  pass_count: number;
+  fail_count: number;
+};
+
+export type PerReviewerEntry = {
+  reviewer_id: string | null;
+  reviewer_name: string | null;
+  processed: number;
+  passed: number;
+  failed: number;
+  pass_rate: number;
+};
+
 export type OverviewOut = {
   range: string;
   processed: number;
@@ -134,10 +149,41 @@ export type OverviewOut = {
   failed: number;
   passed_pct: number;
   failed_pct: number;
+  // Fix Round (2026-09-11), item Reports: these two fields were always
+  // returned by the real backend endpoint (app/routers/reports.py's own
+  // OverviewOut) but never declared here -- confirmed real cause of why
+  // reports.tsx never consumed them and fell back to tp-mock.ts instead.
+  weekly_volume: WeeklyVolumeEntry[];
+  per_reviewer: PerReviewerEntry[];
 };
 
-export async function getReportsOverview(range: "week" | "lastweek" | "30d" | "all" = "all"): Promise<OverviewOut> {
-  return request(`/reports/overview?range=${range}`);
+export async function getReportsOverview(
+  range: "week" | "lastweek" | "30d" | "all" | "custom" = "all",
+  start?: string,
+  end?: string,
+): Promise<OverviewOut> {
+  const params = new URLSearchParams({ range });
+  if (range === "custom" && start && end) {
+    params.set("start", start);
+    params.set("end", end);
+  }
+  return request(`/reports/overview?${params.toString()}`);
+}
+
+export type TrendsRow = {
+  row_key: string;
+  row_label: string;
+  cells: Record<string, number>;
+  average: number | null;
+};
+
+export type TrendsOut = {
+  group_by: string;
+  rows: TrendsRow[];
+};
+
+export async function getReportsTrends(groupBy: "provider" | "questionset"): Promise<TrendsOut> {
+  return request(`/reports/trends?group_by=${groupBy}`);
 }
 
 export type RecentActivityItem = {

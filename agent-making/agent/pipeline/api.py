@@ -53,7 +53,7 @@ from typing import Any
 from . import fields as fields_module
 from . import integrity as integrity_module
 from . import merge as merge_module
-from . import run_full_pipeline
+from . import STABILIZED_UNCERTAIN_RULE_IDS, _stabilized_uncertain_finding, run_full_pipeline
 from .call_tracker import ApiCallCapExceeded, ApiCallTracker
 from .extract import extract_pdf_text
 from .flag_pages import flag_image_only_pages, flagged_page_numbers
@@ -275,9 +275,29 @@ def _run_pipeline_with_extras(
     judgment_rules = [r for r in applicable_rules if r["check_type"] == "judgment" and r["active"]]
     full_judgment_batch = judgment_rules + escalated_rules
 
+    # Fix Round (2026-09-11 evening) -- REAL BUG FOUND AND FIXED: this
+    # function is a hand-duplicated copy of pipeline/__init__.py::
+    # run_full_pipeline's orchestration (see this function's own docstring
+    # above for why), and it never applied STABILIZED_UNCERTAIN_RULE_IDS's
+    # filtering at all -- confirmed live, on a real document, this is the
+    # actual root cause of several already-"stabilized" rule_ids (QA-GIP-17,
+    # QA-GIP-22, QA-GIP-34, QA-SCH-09, QA-TEMP-06) still flipping result
+    # across two identical runs: since supporting_doc_path is mandatory on
+    # every real backend upload (Round 51), THIS function -- not the bare
+    # run_full_pipeline passthrough -- is the orchestration path every real
+    # upload actually takes, so the stabilization safety net had likely
+    # never been active against real production traffic since it was built.
+    # Same fix as run_full_pipeline's own (see STABILIZED_UNCERTAIN_RULE_IDS's
+    # comment for the full diagnosis, including why this must filter the
+    # FULL judgment+escalated union, not just judgment_rules pre-union).
+    stabilized_rule_ids = {r["rule_id"] for r in full_judgment_batch if r["rule_id"] in STABILIZED_UNCERTAIN_RULE_IDS}
+    full_judgment_batch = [r for r in full_judgment_batch if r["rule_id"] not in STABILIZED_UNCERTAIN_RULE_IDS]
+
     judgment_results = integrity_module.run_judgment_with_integrity_check(
         full_judgment_batch, extracted_fields, rendered_images, tracker=tracker
     )
+    for rule_id in stabilized_rule_ids:
+        judgment_results[rule_id] = _stabilized_uncertain_finding()
 
     # Round 55: scoped, two-phase supporting-document resolution -- see
     # pipeline/supporting_doc_resolution.py's module docstring. Phase 1

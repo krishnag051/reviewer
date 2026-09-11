@@ -24,7 +24,11 @@ import fitz  # PyMuPDF -- already a pipeline dependency (see render.py)
 from pypdf import PdfReader
 from rapidfuzz import fuzz
 
-from .schedule_hours import compute_weekly_total, extract_weekly_schedule_day_texts
+from .schedule_hours import (
+    compute_weekly_total,
+    extract_weekly_schedule_day_texts,
+    extract_weekly_schedule_day_texts_with_offset,
+)
 
 NEEDS_BACKEND_INTEGRATION = "Requires data not available in this standalone POC (previous TP version, pre-upload intake fields, or a billing lookup table) — not implemented here."
 
@@ -227,12 +231,86 @@ def _bare_rbt_mentions(text: str) -> list[str]:
     return [m.group(0) for m in re.finditer(r"\bRBT\b(?!/BT)", text)]
 
 
+def _bare_rbt_mentions_with_offsets(text: str) -> list[tuple[str, int]]:
+    """Fix Round (2026-09-11), page-number enforcement gap: same match as
+    _bare_rbt_mentions, but keeps each hit's character offset so
+    _check_TEMP05's fail case can cite the real page(s) instead of the
+    None it used to hardcode -- the match positions were always available
+    here, just never carried through to the returned finding.
+    """
+    return [(m.group(0), m.start()) for m in re.finditer(r"\bRBT\b(?!/BT)", text)]
+
+
 _BLANK_LABEL_DEBUG_CONTEXT_LINES = 3
+
+# Fix Round (Performance/Question Revisions, 2026-09-10) -- shared root
+# cause behind QA-RPT-01 (item 9), QA-GIP-19 (item 22), and QA-GIP-10
+# (item 27), confirmed to be the SAME underlying bug class rather than
+# three separate ones: a label's real value sometimes continues onto a
+# LATER line than the one immediately after the label -- either because
+# real PDF text extraction wraps a long value across lines purely by page
+# width, or (QA-RPT-01 specifically) because the label is the last thing
+# on one page and its value is the first thing on the NEXT page. Every
+# affected checker was only ever looking at the single line/page
+# immediately following the label, so a genuinely-filled field with a
+# multi-line or page-spanning value read as blank.
+#
+# A line that starts with a Title-Case field label (e.g. "Sampling
+# Method:", "Mastery Criteria: Frequency", or a bare "Baseline:") -- used
+# to recognize where a lookahead should STOP, so the search for one
+# label's wrapped value doesn't run past the start of the NEXT real field
+# and accidentally swallow ITS value too (confirmed real regression: an
+# earlier version of this pattern only matched a bare "Label:" with
+# nothing after it, so "Sampling Method: Frequency" right after a blank
+# "Mastery Criteria:" wasn't recognized as a new field and got consumed
+# as if it were Mastery Criteria's own wrapped value). Anchored to an
+# UPPERCASE first letter specifically because every real field name in
+# this codebase's documents is Title Case -- a wrapped continuation of an
+# ordinary sentence essentially never starts a fresh line with a short,
+# capitalized "Word Word:" phrase, so this stays a safe stop signal
+# without needing to enumerate every real label name.
+_LABEL_ONLY_LINE_RE = re.compile(r"^[A-Z][A-Za-z0-9 /&'()#.-]{0,58}:")
+
+
+def _extract_labeled_value(text: str, label: str, *, max_lookahead_lines: int = 4) -> str:
+    """Finds "{label}:" in `text` and returns its value, tolerating a value
+    that continues onto later lines rather than only ever reading the same
+    line as the label. Stops looking ahead at whichever comes first: real
+    content found, a line that itself looks like a bare "Label:" field
+    (the start of the NEXT field, not this one's value), two consecutive
+    blank lines (a real paragraph/section break), or `max_lookahead_lines`
+    lines with nothing found. Returns "" only when truly nothing follows
+    within that window -- a genuinely blank field, not a wrapped one.
+    """
+    m = re.search(rf"{re.escape(label)}:[ \t]*", text, re.IGNORECASE)
+    if not m:
+        return ""
+    rest = text[m.end():]
+    lines = rest.splitlines()
+    same_line = lines[0].strip() if lines else ""
+    if same_line:
+        return same_line
+
+    collected: list[str] = []
+    blank_run = 0
+    for line in lines[1:1 + max_lookahead_lines]:
+        stripped = line.strip()
+        if not stripped:
+            blank_run += 1
+            if blank_run >= 2:
+                break
+            continue
+        if _LABEL_ONLY_LINE_RE.match(stripped):
+            break
+        collected.append(stripped)
+        blank_run = 0
+    return " ".join(collected).strip()
 
 
 def _find_blank_labels(text: str) -> list[str]:
-    """Heuristic: a label ending in ':' with nothing but whitespace before the
-    next line's content, suggesting an unfilled form field.
+    """Heuristic: a label ending in ':' with no real value anywhere within a
+    short lookahead window (see _extract_labeled_value), suggesting an
+    unfilled form field.
 
     Round 93 (2026-08-14), item 4: DIAGNOSTIC LOGGING added -- no pass/fail
     logic changed. QA-RPT-01 has been reported to flag real, filled fields
@@ -256,14 +334,39 @@ def _find_blank_labels(text: str) -> list[str]:
     "console access" case Round 94's own docstring said was already
     covered, restored to being the sole channel for it, never the
     evidence a reviewer actually reads.
+
+    Fix Round (2026-09-10), item 9 -- REAL BUG FOUND AND FIXED: this used
+    to check only the SINGLE line immediately after the label; a value
+    that wrapped onto a line further down (still within the same page)
+    read as blank. Now uses _extract_labeled_value's multi-line lookahead
+    instead of a bare "is the very next line non-empty" check. The OTHER
+    real half of item 9 (a label that's the last line of a PAGE, whose
+    value is the first line of the NEXT page) is fixed at the caller
+    (_check_RPT01, below) by operating on the full document text instead
+    of one page's text at a time -- this function itself is page-text-
+    agnostic and doesn't need to know about page boundaries at all.
+    """
+    return [label for label, _offset in _find_blank_labels_with_offsets(text)]
+
+
+def _find_blank_labels_with_offsets(text: str) -> list[tuple[str, int]]:
+    """Same detection as _find_blank_labels, but also returns each blank
+    label's character offset into `text` -- lets a caller operating on the
+    FULL document (fields["full_text"], not one page's text) map each
+    finding back to its real page via _page_for_offset. _check_RPT01 uses
+    this specifically so a label that's the last line of one page, whose
+    value is the first line of the NEXT page, is correctly read as
+    non-blank -- fixed here by giving the lookahead the whole document to
+    search, not just whatever text remains on the current page.
     """
     blanks = []
     lines = text.splitlines()
+    offset = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.endswith(":") and len(stripped) < 60:
-            next_nonblank = next((lines[j].strip() for j in range(i + 1, min(i + 2, len(lines)))), "")
-            if not next_nonblank:
+            value = _extract_labeled_value(text[offset:], stripped[:-1])
+            if not value:
                 before = lines[max(0, i - _BLANK_LABEL_DEBUG_CONTEXT_LINES):i]
                 after = lines[i + 1:i + 1 + _BLANK_LABEL_DEBUG_CONTEXT_LINES]
                 is_last_line = i == len(lines) - 1
@@ -272,7 +375,8 @@ def _find_blank_labels(text: str) -> list[str]:
                     f"Context before: {before!r}. Context after: {after!r}. "
                     f"(is_last_line_of_page={is_last_line})"
                 )
-                blanks.append(stripped)
+                blanks.append((stripped, offset))
+        offset += len(line) + 1
     return blanks
 
 
@@ -284,6 +388,16 @@ def _find_labeled_date(text: str, label: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _find_labeled_date_with_offset(text: str, label: str) -> tuple[str, int] | None:
+    """Fix Round (2026-09-11), page-number enforcement gap: same match as
+    _find_labeled_date, but also returns the match's character offset so
+    callers can resolve a real page via _page_for_offset instead of the
+    None several checkers used to hardcode -- the position was always
+    right there in the regex match, just never carried through."""
+    m = re.search(rf"{re.escape(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})", text, re.IGNORECASE)
+    return (m.group(1), m.start()) if m else None
+
+
 def _find_labeled_date_range(text: str, label: str) -> tuple[str, str] | None:
     """Finds a "Label: MM/DD/YYYY to MM/DD/YYYY" range, e.g. "Authorization
     Dates Requested: 02/21/2026 to 08/21/2026". Returns (start, end) as raw
@@ -293,6 +407,17 @@ def _find_labeled_date_range(text: str, label: str) -> tuple[str, str] | None:
         text, re.IGNORECASE,
     )
     return (m.group(1), m.group(2)) if m else None
+
+
+def _find_labeled_date_range_with_offset(text: str, label: str) -> tuple[str, str, int] | None:
+    """Fix Round (2026-09-11), page-number enforcement gap: same match as
+    _find_labeled_date_range, plus the match's character offset -- see
+    _find_labeled_date_with_offset's own docstring for why this exists."""
+    m = re.search(
+        rf"{re.escape(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})\s*to\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})",
+        text, re.IGNORECASE,
+    )
+    return (m.group(1), m.group(2), m.start()) if m else None
 
 
 def _find_weekly_hours_for_code(text: str, cpt_code: str) -> float | None:
@@ -308,6 +433,17 @@ def _find_weekly_hours_for_code(text: str, cpt_code: str) -> float | None:
         text, re.IGNORECASE,
     )
     return float(m.group(1)) if m else None
+
+
+def _find_weekly_hours_for_code_with_offset(text: str, cpt_code: str) -> tuple[float, int] | None:
+    """Fix Round (2026-09-11), page-number enforcement gap: same match as
+    _find_weekly_hours_for_code, plus the match's character offset -- see
+    _find_labeled_date_with_offset's own docstring for why this exists."""
+    m = re.search(
+        rf"(\d+(?:\.\d+)?)\s*hours?\s*per\s*\n?\s*week\.?\s*\n?\s*{re.escape(cpt_code)}",
+        text, re.IGNORECASE,
+    )
+    return (float(m.group(1)), m.start()) if m else None
 
 
 _DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -619,6 +755,18 @@ def _check_TEMP04(rule: dict, fields: dict) -> tuple:
     comments = _find_embedded_reviewer_comments(text)
     email_headers = re.findall(r"^(?:From|To|Re|Subject|Sent):[^\n]*", text, re.MULTILINE)
 
+    # Fix Round (2026-09-10), item 8 -- REAL FALSE POSITIVE FOUND AND
+    # FIXED: "listener responding" is normal ABA/VB-MAPP terminology (a
+    # Skill Domain name), not real correspondence -- confirmed by ma'am,
+    # not a real missing-page-number case. Excluded explicitly rather than
+    # guessed at via a broader change to either detector above, since the
+    # exact triggering regex wasn't reproducible against any sample
+    # document on hand; this exception is correct regardless of which
+    # detector produced the false hit.
+    _LISTENER_RESPONDING_RE = re.compile(r"listener\s+responding", re.IGNORECASE)
+    comments = [c for c in comments if not _LISTENER_RESPONDING_RE.search(c)]
+    email_headers = [h for h in email_headers if not _LISTENER_RESPONDING_RE.search(h)]
+
     if not comments and not email_headers:
         return (
             "pass",
@@ -786,10 +934,30 @@ def _check_PROB02(rule: dict, fields: dict) -> tuple:
 
 
 def _check_TEMP05(rule: dict, fields: dict) -> tuple:
-    hits = _bare_rbt_mentions(fields["full_text"])
+    """Fix Round (2026-09-11), page-number enforcement gap: the fail case
+    now cites the real page(s) the bare 'RBT' mentions were found on
+    (single page -> that page, multiple pages -> the {page, detail}
+    per-page evidence form) instead of the None this used to hardcode --
+    the match positions always existed (via _bare_rbt_mentions), they were
+    just being discarded. The pass case genuinely has no page to cite --
+    it's an absence across the whole document, nothing was matched.
+    """
+    hits = _bare_rbt_mentions_with_offsets(fields["full_text"])
     if not hits:
         return "pass", "No bare 'RBT' mentions found; all instances already read 'RBT/BT' or are followed by '/BT'.", None, 0.85
-    return "fail", f"Found {len(hits)} bare 'RBT' mention(s) not updated to 'RBT/BT' or 'BT'.", None, 0.8
+    by_page: dict[int | None, list[str]] = {}
+    for mention, offset in hits:
+        page = _page_for_offset(fields, offset)
+        by_page.setdefault(page, []).append(mention)
+    pages = sorted(by_page, key=lambda p: (p is None, p))
+    if len(pages) == 1:
+        page = pages[0]
+        return "fail", f"Found {len(hits)} bare 'RBT' mention(s) not updated to 'RBT/BT' or 'BT'. [Page {page}]", page, 0.8
+    evidence = [
+        {"page": page, "detail": f"{len(by_page[page])} bare 'RBT' mention(s) not updated to 'RBT/BT' or 'BT'."}
+        for page in pages
+    ]
+    return "fail", evidence, None, 0.8
 
 
 def _check_RPT01(rule: dict, fields: dict) -> tuple:
@@ -800,14 +968,26 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
     an actual reviewer. Reverted to plain label strings only; the
     diagnostic context still exists (console print, inside
     _find_blank_labels itself), it just never reaches evidence again.
+
+    Fix Round (2026-09-10), item 9 -- REAL BUG FOUND AND FIXED: this used
+    to scan each PAGE's text independently, so a label that's the very
+    last line of one page, whose value is the first line of the NEXT
+    page, always read as blank -- the value simply wasn't in the text
+    being searched. Now operates on fields["full_text"] (pages joined,
+    same document GIP-10 already reads the same way for the identical
+    reason), so a page-spanning label/value pair is found correctly;
+    _page_for_offset maps each finding back to its real page for evidence.
     """
-    blanks = []
-    for p in fields["pages"]:
-        found = _find_blank_labels(p["text"])
-        if found:
-            blanks.append((p["page_number"], found))
-    if not blanks:
+    found = _find_blank_labels_with_offsets(fields["full_text"])
+    if not found:
         return "pass", "No unfilled 'Label:' form fields detected.", None, 0.6
+
+    by_page: dict[int | None, list[str]] = {}
+    for label, offset in found:
+        page = _page_for_offset(fields, offset)
+        by_page.setdefault(page, []).append(label)
+    blanks = sorted(by_page.items(), key=lambda kv: (kv[0] is None, kv[0]))
+
     if len(blanks) == 1:
         page, labels = blanks[0]
         # confidence 0.65, not 0.5: a blank required field is a plain fact
@@ -873,6 +1053,7 @@ def _check_GIP04(rule: dict, fields: dict) -> tuple:
 
     blank_dates = []
     total = 0
+    first_filled_offset = None
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         amd_m = re.search(r"Anticipated Mastery Date:[ \t]*([^\n]*)", block)
@@ -885,6 +1066,11 @@ def _check_GIP04(rule: dict, fields: dict) -> tuple:
             goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
             page = _page_for_offset(fields, goal_starts[i] + amd_m.start())
             blank_dates.append((page, f"Anticipated Mastery Date is blank for goal '{goal_name}'."))
+        elif first_filled_offset is None:
+            # Fix Round (2026-09-11), page-number enforcement gap: track
+            # the first non-blank field's real offset so the pass case
+            # below can cite it instead of hardcoding page=None.
+            first_filled_offset = goal_starts[i] + amd_m.start()
 
     if total == 0:
         return (
@@ -898,7 +1084,7 @@ def _check_GIP04(rule: dict, fields: dict) -> tuple:
             "pass",
             f"No literal 'Invalid Date' strings found; all {total} 'Anticipated Mastery Date' "
             f"field(s) are non-blank.",
-            None, 0.85,
+            _page_for_offset(fields, first_filled_offset), 0.85,
         )
     if len(blank_dates) == 1:
         page, detail = blank_dates[0]
@@ -956,43 +1142,51 @@ def _check_HRS05(rule: dict, fields: dict) -> tuple:
 
 
 def _check_HF02(rule: dict, fields: dict) -> tuple:
+    """Fix Round (2026-09-11), page-number enforcement gap: both the pass
+    and fail branches used to hardcode page=None even though the regex
+    match's own position (the exact spot the hours figure was read from)
+    was sitting right there in `m` -- _page_for_offset now maps it to a
+    real page for both results, same as the not_applicable case already
+    behaved correctly (nothing found -> genuinely no page to cite).
+    """
     cpt_code = rule["params"]["cpt_code"]
     max_hours = rule["params"]["max_hours"]
     m = re.search(rf"{re.escape(cpt_code)}[^\d]{{0,20}}(\d+(\.\d+)?)\s*(hrs|hours)?", fields["full_text"], re.IGNORECASE)
     if not m:
         return "not_applicable", f"No {cpt_code} (assessment) hours found in this TP.", None, 0.5
     hours = float(m.group(1))
+    page = _page_for_offset(fields, m.start())
+    page_tag = f" [Page {page}]" if page is not None else ""
     if hours <= max_hours:
-        return "pass", f"{cpt_code} hours requested: {hours} (<= {max_hours}-hour cap).", None, 0.7
-    return "fail", f"{cpt_code} hours requested: {hours}, exceeds the {max_hours}-hour cap.", None, 0.7
+        return "pass", f"{cpt_code} hours requested: {hours} (<= {max_hours}-hour cap).{page_tag}", page, 0.7
+    return "fail", f"{cpt_code} hours requested: {hours}, exceeds the {max_hours}-hour cap.{page_tag}", page, 0.7
 
 
 def _check_HRS11(rule: dict, fields: dict) -> tuple:
-    """Fix Round (2026-08-26) -- QA-HRS-11, the default 97151-hour-cap
-    bucket ma'am asked for: every payor that isn't Healthfirst (HF-02, 5
-    hrs) or Emblem (EMB-01, 3 hrs) gets an 8-hr default cap.
+    """QA-HRS-11: identifies whether the 97151 hours requested are
+    accurate for the SPECIFIC detected payor -- Healthfirst gets a 5-hr
+    cap, Emblem gets 3 hrs, every other payor gets the 8-hr default.
 
-    applies_to_payor is "ALL" at the rules.json metadata level (this
-    schema has no payor-EXCLUSION value -- confirmed in
-    partition_rules_by_scope, which always matches "ALL" regardless of
-    detected payor). Without a self-exclusion here, a Healthfirst or
-    Emblem patient would see TWO findings for the same real-world 97151
-    cap concept -- this one (8 hrs) and their own payor-specific one (5 or
-    3 hrs) -- which could look directly contradictory (e.g. 6 requested
-    hours passing this rule's 8-hr cap while failing HF-02's real 5-hr
-    cap). Excluding those two payors here, deferring entirely to their own
-    dedicated rules, avoids that.
+    Fix Round (2026-08-26) -- original version: self-excluded (returned
+    not_applicable) for Healthfirst/Emblem entirely, deferring to their
+    own separate dedicated rules (HF-02/EMB-01), to avoid two findings for
+    the same real-world concept looking contradictory.
+
+    Fix Round (2026-09-10), item 12 -- REAL LOGIC BUG FOUND AND FIXED:
+    ma'am confirmed this rule should genuinely be payor-aware and evaluate
+    the real cap for whichever payor is detected, not return
+    not_applicable and defer entirely (same "check it directly, don't
+    exclude and defer" fix shape as QA-RPT-07 this same round). Resolves
+    the correct max_hours for the detected payor from `params.payor_caps`
+    (falling back to the universal default) and reuses _check_HF02's own
+    comparison logic with that resolved cap -- so this rule's own
+    evidence text always states the real cap it actually checked against.
     """
-    excluded_payors = rule["params"]["excluded_payors"]
     detected_payor = fields.get("payor")
-    if detected_payor in excluded_payors:
-        return (
-            "not_applicable",
-            f"Payor detected as '{detected_payor}', which has its own dedicated 97151-hour-cap rule "
-            f"(not this default bucket).",
-            None, 0.9,
-        )
-    return _check_HF02(rule, fields)
+    payor_caps = rule["params"].get("payor_caps", {})
+    max_hours = payor_caps.get(detected_payor, rule["params"]["max_hours"])
+    effective_rule = {**rule, "params": {**rule["params"], "max_hours": max_hours}}
+    return _check_HF02(effective_rule, fields)
 
 
 def _check_OBS01(rule: dict, fields: dict) -> tuple:
@@ -1013,75 +1207,85 @@ def _check_HF01(rule: dict, fields: dict) -> tuple:
     the above -- the rule's own DESCRIPTION never disclosed this
     age-conditional split at all (it just said a flat "3-month range"),
     even though this function and the rule's own pre-existing `notes` field
-    always implemented the age split. A reviewer going only by the
-    description would expect one flat range regardless of age and see a
-    correct fail (for the "other" age bracket) as inexplicable. The
-    description is now explicit about the split (see rules.json) -- fixing
-    the description alone would NOT have been enough on its own, since the
-    code's month-based math (`_add_months` + a +/-10 day tolerance for
-    calendar-month length variance) was also imprecise by design; switched
-    to exact `timedelta(weeks=...)` math below, which needs no tolerance
-    window at all since a week-count has no variable length.
-    """
-    age_threshold = rule["params"]["age_threshold"]
-    short_weeks = rule["params"]["short_range_weeks"]
-    long_weeks = rule["params"]["long_range_weeks"]
+    always implemented the age split.
 
-    age_m = re.search(r"Patient Age:\s*(\d+)", fields["full_text"], re.IGNORECASE)
-    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not age_m or not auth_range:
+    Fix Round (2026-09-10), item 6 -- REAL LOGIC CHANGE, not a wording fix:
+    ma'am confirmed the age-conditional split itself should be removed
+    entirely -- every Healthfirst patient (this rule only ever runs for
+    Healthfirst, per its own applies_to_payor) gets a flat 13-week
+    authorization range, regardless of age. Patient Age is no longer read
+    at all. Uses exact `timedelta(weeks=...)` math (no calendar-month
+    tolerance needed, unlike an earlier month-based version, since a
+    week-count has no variable length).
+    """
+    expected_weeks = rule["params"]["auth_range_weeks"]
+
+    # Fix Round (2026-09-11), page-number enforcement gap: both pass and
+    # fail below used to hardcode page=None even though the real match
+    # position (where "Authorization Dates Requested" itself was read
+    # from) was available -- switched to the offset-carrying variant.
+    found = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
+    if not found:
         return (
             "not_checkable",
-            "Could not find both 'Patient Age' and 'Authorization Dates Requested' in the document text.",
+            "Could not find 'Authorization Dates Requested' in the document text.",
             None, 0.0,
         )
+    auth_range = (found[0], found[1])
+    page = _page_for_offset(fields, found[2])
 
-    age = int(age_m.group(1))
     start = datetime.strptime(auth_range[0], "%m/%d/%Y")
     end = datetime.strptime(auth_range[1], "%m/%d/%Y")
     range_days = (end - start).days
 
-    expected_weeks = short_weeks if age > age_threshold else long_weeks
     expected_end = start + timedelta(weeks=expected_weeks)
-    # Exact week arithmetic -- no calendar-length tolerance needed (unlike
-    # the old month-based version), but a real TP's auth end date can still
-    # be off by a day or two from the requested start due to how the date
-    # itself is worded/rounded on the document, so a small tolerance stays.
+    # A real TP's auth end date can still be off by a day or two from the
+    # requested start due to how the date itself is worded/rounded on the
+    # document, so a small tolerance stays.
     tolerance_days = 3
     if abs((end - expected_end).days) <= tolerance_days:
         return (
             "pass",
-            f"Patient age {age}; authorization range {auth_range[0]} to {auth_range[1]} "
-            f"({range_days} days) matches the expected {expected_weeks}-week range "
-            f"for age {'>' if age > age_threshold else '<='} {age_threshold}.",
-            None, 0.85,
+            f"Authorization range {auth_range[0]} to {auth_range[1]} ({range_days} days) matches "
+            f"the required {expected_weeks}-week Healthfirst range.",
+            page, 0.85,
         )
     return (
         "fail",
-        f"Patient age {age}; authorization range {auth_range[0]} to {auth_range[1]} "
-        f"({range_days} days) does not match the expected {expected_weeks}-week range "
-        f"for age {'>' if age > age_threshold else '<='} {age_threshold} "
-        f"(expected end ~{expected_end.strftime('%m/%d/%Y')}).",
-        None, 0.85,
+        f"Authorization range {auth_range[0]} to {auth_range[1]} ({range_days} days) does not "
+        f"match the required {expected_weeks}-week Healthfirst range (expected end "
+        f"~{expected_end.strftime('%m/%d/%Y')}).",
+        page, 0.85,
     )
 
 
 def _check_RPT02(rule: dict, fields: dict) -> tuple:
-    date = _find_labeled_date(fields["full_text"], "Date of Initial Assessment")
-    if date:
-        return "pass", f"Date of Initial Assessment is present: {date}.", None, 0.7
+    """Fix Round (2026-09-11), page-number enforcement gap: both branches
+    used to hardcode page=None; the match position was always available.
+    """
+    found = _find_labeled_date_with_offset(fields["full_text"], "Date of Initial Assessment")
+    if found:
+        date, offset = found
+        page = _page_for_offset(fields, offset)
+        return "pass", f"Date of Initial Assessment is present: {date}.", page, 0.7
     return "fail", "No 'Date of Initial Assessment' value found on this Reassessment TP.", None, 0.6
 
 
 def _check_RPT06(rule: dict, fields: dict) -> tuple:
-    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
+    """Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    to hardcode page=None; now cites the real page 'Date of Current
+    Report' was read from (the field this rule's own result centers on).
+    """
+    report_found = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
     auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not report_range or not auth_range:
+    if not report_found or not auth_range:
         return (
             "not_checkable",
             "Could not find both 'Date of Current Report' and 'Authorization Dates Requested' ranges.",
             None, 0.0,
         )
+    report_range = (report_found[0], report_found[1])
+    page = _page_for_offset(fields, report_found[2])
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     auth_start = datetime.strptime(auth_range[0], "%m/%d/%Y")
     if report_end < auth_start:
@@ -1089,17 +1293,22 @@ def _check_RPT06(rule: dict, fields: dict) -> tuple:
             "pass",
             f"Date of Current Report ends {report_range[1]}, before Authorization Dates "
             f"Requested starts {auth_range[0]}.",
-            None, 0.8,
+            page, 0.8,
         )
     return (
         "fail",
         f"Date of Current Report ends {report_range[1]}, which is not before Authorization "
         f"Dates Requested starts {auth_range[0]}.",
-        None, 0.8,
+        page, 0.8,
     )
 
 
 def _check_SIG02(rule: dict, fields: dict) -> tuple:
+    """Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    to hardcode page=None; now cites the real page the signature page's
+    'Provider Credentials' field (the value this rule's result is about)
+    was found on.
+    """
     contact_m = re.search(
         r"Provider Contact:\s*[^\n]*?Certification:\s*([^\n]+)", fields["full_text"], re.IGNORECASE
     )
@@ -1113,44 +1322,52 @@ def _check_SIG02(rule: dict, fields: dict) -> tuple:
         )
     contact_creds = contact_m.group(1).strip().rstrip(".")
     sig_creds = sig_m.group(1).strip().rstrip(".")
+    page = _page_for_offset(fields, sig_m.start())
     if contact_creds.lower() == sig_creds.lower():
         return (
             "pass",
             f"Signature credentials '{sig_creds}' match the page-1 Provider Contact "
             f"certification '{contact_creds}'.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "fail",
         f"Signature credentials '{sig_creds}' do not match the page-1 Provider Contact "
         f"certification '{contact_creds}'.",
-        None, 0.7,
+        page, 0.7,
     )
 
 
 def _check_SIG03(rule: dict, fields: dict) -> tuple:
+    """Fix Round (2026-09-11), page-number enforcement gap: same fix as
+    _check_SIG02 -- cites the real page the signature date was found on.
+    """
     sig_m = re.search(r"Provider Signature,\s*Date:\s*(\d{1,2}/\d{1,2}/\d{4})", fields["full_text"], re.IGNORECASE)
     auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
     if not sig_m or not auth_range:
         return "not_checkable", "Could not find both the signature date and 'Authorization Dates Requested'.", None, 0.0
     sig_date = datetime.strptime(sig_m.group(1), "%m/%d/%Y")
     auth_start = datetime.strptime(auth_range[0], "%m/%d/%Y")
+    page = _page_for_offset(fields, sig_m.start())
     if sig_date < auth_start:
         return (
             "pass",
             f"Signature date {sig_m.group(1)} is before Authorization Dates Requested "
             f"start {auth_range[0]}.",
-            None, 0.8,
+            page, 0.8,
         )
     return (
         "fail",
         f"Signature date {sig_m.group(1)} is not before Authorization Dates Requested "
         f"start {auth_range[0]}.",
-        None, 0.8,
+        page, 0.8,
     )
 
 
 def _check_SIG04(rule: dict, fields: dict) -> tuple:
+    """Fix Round (2026-09-11), page-number enforcement gap: same fix as
+    _check_SIG02 -- cites the real page the signature date was found on.
+    """
     sig_m = re.search(r"Provider Signature,\s*Date:\s*(\d{1,2}/\d{1,2}/\d{4})", fields["full_text"], re.IGNORECASE)
     report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
     if not sig_m or not report_range:
@@ -1158,18 +1375,19 @@ def _check_SIG04(rule: dict, fields: dict) -> tuple:
     sig_date = datetime.strptime(sig_m.group(1), "%m/%d/%Y")
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     delta_days = (sig_date - report_end).days
+    page = _page_for_offset(fields, sig_m.start())
     if delta_days <= 2:
         return (
             "pass",
             f"Signature date {sig_m.group(1)} is {delta_days} day(s) relative to Date of "
             f"Current Report end {report_range[1]} (within the 2-day allowance).",
-            None, 0.8,
+            page, 0.8,
         )
     return (
         "fail",
         f"Signature date {sig_m.group(1)} is {delta_days} days after Date of Current Report "
         f"end {report_range[1]}, exceeding the 2-day allowance.",
-        None, 0.8,
+        page, 0.8,
     )
 
 
@@ -1188,15 +1406,21 @@ def _check_SCH01(rule: dict, fields: dict) -> tuple:
     Never guesses: returns not_checkable if either side can't be
     confidently determined, rather than comparing a partial/guessed number.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None even though the schedule grid's own real
+    # position (the day-of-week header's match offset) was resolvable --
+    # switched to the offset-carrying variant.
     cpt_code = rule["params"]["cpt_code"]
-    day_texts = extract_weekly_schedule_day_texts(fields["full_text"])
-    if day_texts is None:
+    found = extract_weekly_schedule_day_texts_with_offset(fields["full_text"])
+    if found is None:
         return (
             "not_checkable",
             "Could not confidently parse the weekly ABA schedule table into 7 distinct days from this "
             "TP's extracted text.",
             None, 0.0,
         )
+    day_texts, header_offset = found
+    page = _page_for_offset(fields, header_offset)
     schedule_total, per_day = compute_weekly_total(day_texts)
     if schedule_total is None:
         unparseable_days = [day for day, hours in per_day.items() if hours is None]
@@ -1220,13 +1444,13 @@ def _check_SCH01(rule: dict, fields: dict) -> tuple:
             "pass",
             f"Schedule grid totals {schedule_total} hrs/week, matching the {cpt_code} hours requested "
             f"({requested_hours} hrs/week). Per-day: {per_day}.",
-            None, 0.85,
+            page, 0.85,
         )
     return (
         "fail",
         f"Schedule grid totals {schedule_total} hrs/week, but {cpt_code} hours requested is "
         f"{requested_hours} hrs/week -- these do not match. Per-day: {per_day}.",
-        None, 0.85,
+        page, 0.85,
     )
 
 
@@ -1237,15 +1461,20 @@ def _check_SCH07(rule: dict, fields: dict) -> tuple:
     threshold. Same deterministic arithmetic as _check_SCH01, applied
     per-day instead of as a weekly sum.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; same fix as _check_SCH01 -- cites the
+    # schedule grid's own real position.
     threshold = rule["params"]["daily_hours_threshold"]
-    day_texts = extract_weekly_schedule_day_texts(fields["full_text"])
-    if day_texts is None:
+    found = extract_weekly_schedule_day_texts_with_offset(fields["full_text"])
+    if found is None:
         return (
             "not_checkable",
             "Could not confidently parse the weekly ABA schedule table into 7 distinct days from this "
             "TP's extracted text.",
             None, 0.0,
         )
+    day_texts, header_offset = found
+    page = _page_for_offset(fields, header_offset)
     _, per_day = compute_weekly_total(day_texts)
     unparseable_days = [day for day, hours in per_day.items() if hours is None]
     if unparseable_days:
@@ -1262,9 +1491,9 @@ def _check_SCH07(rule: dict, fields: dict) -> tuple:
             "fail",
             f"Day(s) exceeding {threshold} hrs/day of 97153, requires clinical director approval: "
             f"{over_threshold}.",
-            None, 0.85,
+            page, 0.85,
         )
-    return "pass", f"No day exceeds {threshold} hrs/day. Per-day: {per_day}.", None, 0.85
+    return "pass", f"No day exceeds {threshold} hrs/day. Per-day: {per_day}.", page, 0.85
 
 
 def _check_HRS02(rule: dict, fields: dict) -> tuple:
@@ -1283,16 +1512,21 @@ def _check_HRS02(rule: dict, fields: dict) -> tuple:
     """
     cpt_code = rule["params"]["cpt_code"]
     threshold = rule["params"]["hours_threshold"]
-    hours = _find_weekly_hours_for_code(fields["full_text"], cpt_code)
-    if hours is None:
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None even though the match's real position was
+    # available -- switched to the offset-carrying helper variant.
+    found = _find_weekly_hours_for_code_with_offset(fields["full_text"], cpt_code)
+    if found is None:
         return "not_applicable", f"No {cpt_code} weekly hours found in this TP.", None, 0.5
+    hours, offset = found
+    page = _page_for_offset(fields, offset)
     if hours > threshold:
         return (
             "fail",
             f"{cpt_code} hours requested: {hours}/week, exceeds the {threshold} hrs/week threshold.",
-            None, 0.75,
+            page, 0.75,
         )
-    return "pass", f"{cpt_code} hours requested: {hours}/week (<= {threshold} hrs/week).", None, 0.75
+    return "pass", f"{cpt_code} hours requested: {hours}/week (<= {threshold} hrs/week).", page, 0.75
 
 
 def _check_HRS03(rule: dict, fields: dict) -> tuple:
@@ -1315,28 +1549,34 @@ def _check_HRS03(rule: dict, fields: dict) -> tuple:
     direct_code = rule["params"]["direct_cpt_code"]
     supervision_code = rule["params"]["supervision_cpt_code"]
     ratio = rule["params"]["supervision_ratio_per_direct_hour"]
-    direct_hours = _find_weekly_hours_for_code(fields["full_text"], direct_code)
-    supervision_hours = _find_weekly_hours_for_code(fields["full_text"], supervision_code)
-    if direct_hours is None or supervision_hours is None:
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; cites the supervision-hours figure's real
+    # page (the value this rule's ceiling is actually about).
+    direct_found = _find_weekly_hours_for_code_with_offset(fields["full_text"], direct_code)
+    supervision_found = _find_weekly_hours_for_code_with_offset(fields["full_text"], supervision_code)
+    if direct_found is None or supervision_found is None:
         return (
             "not_checkable",
             f"Could not find both {direct_code} and {supervision_code} weekly hours.",
             None, 0.0,
         )
+    direct_hours, _ = direct_found
+    supervision_hours, supervision_offset = supervision_found
+    page = _page_for_offset(fields, supervision_offset)
     max_allowed_supervision = round(direct_hours * ratio, 2)
     if supervision_hours <= max_allowed_supervision + 0.01:
         return (
             "pass",
             f"{direct_code} direct care: {direct_hours} hrs/week; {supervision_code} supervision: "
             f"{supervision_hours} hrs/week (<= ceiling of {max_allowed_supervision}).",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "fail",
         f"{direct_code} direct care: {direct_hours} hrs/week; {supervision_code} supervision: "
         f"{supervision_hours} hrs/week exceeds the ceiling of {max_allowed_supervision} — a pure "
         f"threshold violation, no director-approval exception.",
-        None, 0.85,
+        page, 0.85,
     )
 
 
@@ -1585,16 +1825,26 @@ def _check_COC04(rule: dict, fields: dict) -> tuple:
 
 
 def _check_BIO02(rule: dict, fields: dict) -> tuple:
-    date = _find_labeled_date(fields["full_text"], "Date of Most Recent Diagnosis")
-    if date:
-        return "pass", f"Date of Most Recent Diagnosis is present: {date}.", None, 0.7
+    """Fix Round (2026-09-11), page-number enforcement gap: pass case used
+    to hardcode page=None; the match position was always available."""
+    found = _find_labeled_date_with_offset(fields["full_text"], "Date of Most Recent Diagnosis")
+    if found:
+        date, offset = found
+        return "pass", f"Date of Most Recent Diagnosis is present: {date}.", _page_for_offset(fields, offset), 0.7
     return "fail", "No 'Date of Most Recent Diagnosis' value found in this TP.", None, 0.6
 
 
 def _check_BIO13(rule: dict, fields: dict) -> tuple:
-    date = _find_labeled_date(fields["full_text"], "First day of ABA services with Master Faster")
-    if date:
-        return "pass", f"'First day of ABA services with Master Faster' is present: {date}.", None, 0.7
+    """Fix Round (2026-09-11), page-number enforcement gap: pass case used
+    to hardcode page=None; the match position was always available."""
+    found = _find_labeled_date_with_offset(fields["full_text"], "First day of ABA services with Master Faster")
+    if found:
+        date, offset = found
+        return (
+            "pass",
+            f"'First day of ABA services with Master Faster' is present: {date}.",
+            _page_for_offset(fields, offset), 0.7,
+        )
     return (
         "fail",
         "No 'First day of ABA services with Master Faster' value found on this Reassessment TP.",
@@ -1645,16 +1895,22 @@ def _check_RPT05(rule: dict, fields: dict) -> tuple:
     (max_weeks_after_report_end, default 26) so a stale month-shaped
     param can never silently coexist with week-shaped code.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; cites the real page 'Authorization Dates
+    # Requested' (the value this rule's window check is actually about)
+    # was found on.
     max_weeks = rule.get("params", {}).get("max_weeks_after_report_end", 26)
     report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
-    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not report_range or not auth_range:
+    found_auth = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
+    if not report_range or not found_auth:
         return (
             "not_checkable",
             "Could not find both 'Date of Current Report' and 'Authorization Dates Requested' to compute the "
             "26-week window.",
             None, 0.0,
         )
+    auth_range = (found_auth[0], found_auth[1])
+    page = _page_for_offset(fields, found_auth[2])
 
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     auth_end = datetime.strptime(auth_range[1], "%m/%d/%Y")
@@ -1667,13 +1923,13 @@ def _check_RPT05(rule: dict, fields: dict) -> tuple:
             f"Requested auth end ({auth_range[1]}) is {overage_days} day(s) beyond the {max_weeks}-week "
             f"default window from the current report's end ({report_range[1]}); latest allowed under the "
             f"default is {max_allowed_end.strftime('%m/%d/%Y')}.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "pass",
         f"Requested auth end ({auth_range[1]}) is within the {max_weeks}-week default window from the "
         f"current report's end ({report_range[1]}); latest allowed is {max_allowed_end.strftime('%m/%d/%Y')}.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -1912,6 +2168,25 @@ def _find_acf_section(text: str) -> str | None:
     return (content_bearing[-1] if content_bearing else matches[0]).group(1)
 
 
+def _find_acf_section_with_offset(text: str) -> tuple[str, int] | None:
+    """Fix Round (2026-09-11), page-number enforcement gap: same section
+    selection as _find_acf_section, but also returns the section's own
+    absolute start offset in `text` (the start of group(1), not the whole
+    match) so _check_ACF07 can resolve every one of its findings -- most
+    of which cite something at a specific offset WITHIN this section -- to
+    a real page via `section_offset + local_offset`.
+    """
+    pattern = re.compile(
+        r"Assessment of Current Functioning:([\s\S]{0,30000}?)(?:Goal Progress:|Clinical Interpretation|Areas of Focus)",
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    content_bearing = [m for m in matches if any(label in m.group(1) for label in _ACF_CORE_FIELD_LABELS)]
+    chosen = content_bearing[-1] if content_bearing else matches[0]
+    return chosen.group(1), chosen.start(1)
+
+
 # --- Fix Round, item 5: vision-input routing for image-only content -----
 #
 # REAL BUG this closes: VB-MAPP grid legends, a second/prior testing-tool
@@ -1961,6 +2236,24 @@ VISION_ELIGIBLE_RULE_SECTIONS: dict[str, str] = {
     # whole-document "gip_graph" page range already covers them with no
     # new finder needed.
     "QA-PAR-03": "gip_graph",
+    # Fix Round (2026-09-10), item 7 -- REAL RULE-IDENTITY MISMATCH FOUND:
+    # HF-05's own OLD description/checker ("BCBA indicates hours PT
+    # occurred... matches PT hours requested") is a completely different
+    # check than what this rule now needs to be ("fewer than 3 real data
+    # points on any PRT/Parent-Caregiver-Training goal -> rationale must
+    # indicate a plan for improvement") -- same shape as QA-BIP-03's own
+    # earlier confirmed identity drift. This is the same "count real data
+    # points on a goal's embedded Graph image" question QA-GIP-32/PAR-03
+    # already answer honestly as judgment, not a deterministic count --
+    # no structured data-point count exists anywhere in extractable text,
+    # only inside the rendered graph image. Converted to judgment,
+    # registered here for the same reason PAR-03 is (a Parent-Training-
+    # domain goal is a goal block like any other). The OLD hours-approved-
+    # vs-requested checker (_check_HF05, still real and correct for ITS
+    # OWN real content) is retired from DET_CHECKS below, not deleted --
+    # if the old comparison is still wanted under a DIFFERENT rule_id in a
+    # future round, the code is right here.
+    "HF-05": "gip_graph",
     # Fix Round, Section 1 (2026-08-27): CIG-01 ("ABLLS completed A-Z") --
     # confirmed real document shape: the ABLLS-R section's own completion
     # status lives in an embedded "ABLLS grid" image (real text found:
@@ -2085,11 +2378,41 @@ def _gip_graph_page_range(fields: dict) -> set[int]:
     line). Renders the specific page each "Graph:" field actually falls on
     -- not a full-section span, since there's no single boundary to span
     here the way ACF has one.
+
+    Fix Round (2026-09-11), items 20/21/24 -- REAL BUG FOUND AND FIXED,
+    confirmed on the real Daylyn Holland TP: only searching for the
+    literal substring "Graph:" found exactly ONE page (15) in a real
+    45-page document with ~20 goal blocks -- every "Target Goal:"
+    (skill-acquisition) block's own graph, one per page (pages 21-34
+    confirmed directly), has NO "Graph:" text label at all in this
+    document's own template; the embedded graph image sits on the page
+    with no literal text anchor next to it. That's the real, shared root
+    cause behind two separate complaints: QA-GIP-32 only ever "saw"
+    page 15's graph (item 20 -- not actually "hardcoded to page 15", but
+    structurally equivalent to it on this document), and QA-GIP-29 false-
+    negatived ("goal doesn't have a graph") on every one of those other
+    goals, because the judge was never even given a rendered image of
+    their page to check -- it only had extracted text with no "Graph:"
+    line, which reads exactly like a genuinely missing graph. Also fixes
+    item 24 (parent goals) as the same byproduct: a parent-training goal
+    is a goal block like any other, tagged by its own Skill Domain, so
+    covering every goal block's page covers parent goals with no separate
+    logic needed -- same reasoning QA-PAR-03's own registration already
+    relied on, now actually true for documents like this one.
+
+    Every goal block's own page is now included, not just pages with a
+    literal "Graph:" label -- a goal's graph (however it's laid out on
+    this specific template) lives on or right around its own text block's
+    page either way.
     """
     text = fields["full_text"]
     pages: set[int] = set()
     for m in re.finditer(r"\bGraph:", text):
         page = _page_for_offset(fields, m.start())
+        if page is not None:
+            pages.add(page)
+    for start in _goal_block_starts(text):
+        page = _page_for_offset(fields, start)
         if page is not None:
             pages.add(page)
     return pages
@@ -2159,9 +2482,14 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
     no external data needed -- this rule's original "presence check" label
     just never had that presence check actually implemented.
     """
-    section = _find_acf_section(fields["full_text"])
-    if section is None:
+    # Fix Round (2026-09-11), page-number enforcement gap: this whole
+    # function used to hardcode page=None on every branch -- switched to
+    # the offset-carrying section finder so every return below can cite a
+    # real page via `_page_for_offset(fields, section_offset + local_offset)`.
+    found_section = _find_acf_section_with_offset(fields["full_text"])
+    if found_section is None:
         return "not_checkable", "No 'Assessment of Current Functioning:' section found.", None, 0.0
+    section, section_offset = found_section
 
     core_fields = ["Assessment Date:", "Assessment Methods/Measures:", "Assessment Summary Statement:"]
     # Round 85, item 1: uses _labeled_value_maybe_next_line, not a bare
@@ -2195,13 +2523,13 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
                 "the document -- likely a section-boundary extraction issue (e.g. a duplicate heading, "
                 "such as a Table of Contents entry, or an unusually large gap) rather than a genuinely "
                 "blank section. Needs a human/judgment read rather than a confident fail.",
-                None, 0.3,
+                _page_for_offset(fields, section_offset), 0.3,
             )
         return (
             "fail",
             "The Assessment of Current Functioning section is entirely blank -- no testing "
             "tool, date, or summary documented at all.",
-            None, 0.8,
+            _page_for_offset(fields, section_offset), 0.8,
         )
 
     # Round 63, item 4 fix: track EVERY occurrence of a tool name, not just
@@ -2221,7 +2549,7 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
             "fail",
             "No named testing tool (e.g. ABLLS-R, Vineland, VB-MAPP, AFLS) found in the "
             "Assessment of Current Functioning section.",
-            None, 0.75,
+            _page_for_offset(fields, section_offset), 0.75,
         )
 
     def _tool_key(name: str) -> str:
@@ -2255,9 +2583,20 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
     # pattern recognized to include "Total Score on <date>:" (VB-MAPP's own
     # convention for reporting a dated score) alongside "Assessment Date:",
     # in both the single-tool and multi-tool paths.
+    # Fix Round (2026-09-11), item 16: [ \t\xa0]* (not just [ \t]*) -- REAL
+    # BUG CONFIRMED on the real Daylyn Holland TP: this document's own PDF
+    # text extraction uses a non-breaking space (U+00A0) after several
+    # labels ("Assessment Date:\xa009/04/2026"), which [ \t]* never
+    # matched -- so even the FIRST, most-specific, correctly-labeled date
+    # pattern silently missed a real, present date on this real document.
+    # \xa0 deliberately listed alongside space/tab, not folded into a bare
+    # \s* -- \s* also matches newlines, which would let the match bleed
+    # into the next real line's own content (the same bug class already
+    # fixed elsewhere in this file, see _extract_labeled_value).
+    _DATE_WS = r"[ \t\xa0]*"
     _DATE_PATTERNS = (
-        re.compile(r"Assessment Date:[ \t]*(\d{1,2}/\d{1,2}/\d{4})"),
-        re.compile(r"Total Score on[ \t]*(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE),
+        re.compile(rf"Assessment Date:{_DATE_WS}(\d{{1,2}}/\d{{1,2}}/\d{{2,4}})"),
+        re.compile(rf"Total Score on{_DATE_WS}(\d{{1,2}}/\d{{1,2}}/\d{{2,4}})", re.IGNORECASE),
         # Round 85, item 1: confirmed real template variant (Blythe Diaz's
         # TP) uses a bare "Date:" label instead of "Assessment Date:" for
         # this exact field -- checked last (lowest priority), after the
@@ -2265,7 +2604,16 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
         # generic and this is scoped to a small tool-proximity window
         # already (single-tool: the whole section; multi-tool: the gap
         # around one specific mention), keeping ambiguity risk low.
-        re.compile(r"\bDate:[ \t]*(\d{1,2}/\d{1,2}/\d{4})"),
+        re.compile(rf"\bDate:{_DATE_WS}(\d{{1,2}}/\d{{1,2}}/\d{{2,4}})"),
+        # Fix Round (2026-09-11), item 16 -- REAL FALSE POSITIVE CONFIRMED
+        # AND FIXED, against the real Daylyn Holland TP: "Daylan was
+        # previously assessed using the Vineland on 4/30/26." states a
+        # genuine, real administration date in free narrative prose, no
+        # labeled field at all -- none of the 3 patterns above matched it.
+        # Also confirmed the same document's AFLS/Vineland dates use
+        # 2-digit years ("4/30/26"), which the 4-digit-only patterns above
+        # (now widened to 2-4 digits, same fix) also missed.
+        re.compile(rf"(?:assessed|administered)\b[^.\n]{{0,60}}?\bon{_DATE_WS}(\d{{1,2}}/\d{{1,2}}/\d{{2,4}})", re.IGNORECASE),
     )
 
     def _dates_in(window: str) -> list[str]:
@@ -2277,6 +2625,9 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
     if len(distinct_keys) == 1:
         key, occurrences = next(iter(distinct_keys.items()))
         display_name = occurrences[0][0]
+        # Real page: the tool's own first mention, not just the section
+        # start -- more specific and just as available.
+        page = _page_for_offset(fields, section_offset + occurrences[0][1])
         dates = set(_dates_in(section))
         has_open_question = re.search(r"\bWhat was the date of administration\b", section, re.IGNORECASE) is not None
         if not dates or has_open_question:
@@ -2284,21 +2635,21 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
                 "fail",
                 f"{display_name} is mentioned but no confirmed administration date was found anywhere "
                 f"in the Assessment of Current Functioning section.",
-                None, 0.75,
+                page, 0.75,
             )
         if len(dates) >= 2:
             return (
                 "pass",
                 f"{display_name} administered on {sorted(dates)} (old and new administration of the "
                 f"same tool).",
-                None, 0.8,
+                page, 0.8,
             )
         return (
             "uncertain",
             f"Only one testing tool found ({display_name}, dated {sorted(dates)}) -- cannot confirm "
             f"both an old and new administration are present (would also be satisfied by the same tool "
             f"administered on a second, different date).",
-            None, 0.4,
+            page, 0.4,
         )
 
     # 2+ distinct tools named -- gap-based per-occurrence attribution is
@@ -2313,27 +2664,67 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
     # unambiguously this mention's own date field; the gap after (until the
     # next mention, or section end) is unambiguously where an open reviewer
     # question about THIS mention would appear.
-    undated = []
+    # Fix Round (2026-09-11), item 16 -- REAL BUG FOUND AND FIXED, confirmed
+    # against the real Daylyn Holland TP: this used to require EVERY
+    # individual mention of a tool name to have its own nearby date, and
+    # marked the WHOLE tool undated the moment any single mention lacked
+    # one -- but a tool genuinely can be (and here, was) named several
+    # times in plain descriptive prose ("AFLS is a criterion-referenced
+    # skills assessment tool...") with its real, confirmed date attached
+    # to only ONE of those mentions. That's the same real shape already
+    # documented above for Yisroel Leibowitz's VB-MAPP case, but the fix
+    # for it was only ever applied to the single-tool branch -- never
+    # generalized here. Now aggregates by TOOL first: a tool is undated
+    # only if NONE of its mentions found a date anywhere nearby.
+    open_question_tools = set()
     dates_by_tool: dict[str, set] = {}
     display_name_by_key: dict[str, str] = {}
+    # Fix Round (2026-09-11), page-number enforcement gap: first mention
+    # offset per tool key, so the multi-tool branch's returns below can
+    # cite a real page instead of the None they used to hardcode.
+    first_offset_by_key: dict[str, int] = {}
     for i, (name, start, end) in enumerate(tool_mentions):
         gap_start = tool_mentions[i - 1][2] if i > 0 else 0
         gap_end = tool_mentions[i + 1][1] if i + 1 < len(tool_mentions) else len(section)
-        gap_before = section[gap_start:start]
         gap_after = section[end:gap_end]
 
-        date_matches = _dates_in(gap_before)
+        # Fix Round (2026-09-11), item 16 -- REAL BUG FOUND AND FIXED:
+        # this used to search ONLY gap_before (the text strictly before
+        # this mention), on the assumption a date always precedes its own
+        # tool mention (true for a labeled field like "Assessment Date:
+        # ... AFLS", false for free narrative prose that names the tool
+        # FIRST and states the date after it -- e.g. "Daylan was
+        # previously assessed using the Vineland on 4/30/26", confirmed
+        # real on the Daylyn Holland TP). Searching gap_before and
+        # gap_after SEPARATELY still isn't enough for that exact phrasing
+        # -- "assessed" sits in gap_before while "on 4/30/26" sits in
+        # gap_after, so neither piece alone contains the whole "assessed
+        # ... on DATE" match. Searches the FULL combined window (gap
+        # before this mention through gap after it, mention text
+        # included) instead -- still tightly scoped to strictly between
+        # this mention and its immediate neighbors, so there's no new
+        # risk of attributing a date to the wrong tool.
+        full_window = section[gap_start:gap_end]
+        date_matches = _dates_in(full_window)
         has_open_question = re.search(r"\bWhat was the date of administration\b", gap_after, re.IGNORECASE) is not None
 
-        if not date_matches or has_open_question:
-            undated.append(name)
-            continue
         key = _tool_key(name)
         display_name_by_key.setdefault(key, name)
-        dates_by_tool.setdefault(key, set()).add(date_matches[-1])
+        first_offset_by_key.setdefault(key, start)
+        if has_open_question:
+            open_question_tools.add(key)
+        if date_matches:
+            dates_by_tool.setdefault(key, set()).add(date_matches[-1])
 
+    all_keys = {_tool_key(name) for name, _, _ in tool_mentions}
+    undated = sorted(
+        display_name_by_key[key] for key in all_keys
+        if key not in dates_by_tool or key in open_question_tools
+    )
     if undated:
-        return "fail", f"Testing tool(s) mentioned without a confirmed administration date: {undated}.", None, 0.75
+        undated_keys = [k for k in all_keys if k not in dates_by_tool or k in open_question_tools]
+        page = _page_for_offset(fields, section_offset + min(first_offset_by_key[k] for k in undated_keys))
+        return "fail", f"Testing tool(s) mentioned without a confirmed administration date: {undated}.", page, 0.75
 
     # "Old and new" is satisfied by either shape:
     #  (a) two or more DISTINCT tools, each with at least one confirmed date, or
@@ -2345,15 +2736,17 @@ def _check_ACF07(rule: dict, fields: dict) -> tuple:
 
     if distinct_tools_with_dates >= 2 or max_distinct_dates_for_one_tool >= 2:
         summary = {display_name_by_key[key]: sorted(dates) for key, dates in dates_by_tool.items()}
-        return "pass", f"Testing tool administration dates found: {summary}.", None, 0.8
+        page = _page_for_offset(fields, section_offset + min(first_offset_by_key[k] for k in dates_by_tool))
+        return "pass", f"Testing tool administration dates found: {summary}.", page, 0.8
 
     only_key, only_dates = next(iter(dates_by_tool.items()))
+    page = _page_for_offset(fields, section_offset + first_offset_by_key[only_key])
     return (
         "uncertain",
         f"Only one testing tool found ({display_name_by_key[only_key]}, dated {sorted(only_dates)}) -- cannot "
         f"confirm both an old and new administration are present (would also be satisfied by the same tool "
         f"administered on a second, different date).",
-        None, 0.4,
+        page, 0.4,
     )
 
 
@@ -2516,15 +2909,20 @@ def _check_ACF12(rule: dict, fields: dict) -> tuple:
     constraint. Recommend confirming against a real document before
     trusting results.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; cites the real page 'Date of Current Report'
+    # (the range this rule's comparison is anchored to) was found on.
     assessment_date_str = extract_acf_fields(fields).get("assessment_date")
-    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
-    if not assessment_date_str or not report_range:
+    found_range = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
+    if not assessment_date_str or not found_range:
         return (
             "not_checkable",
             "Could not find both the testing tool's own Assessment Date and this TP's "
             "'Date of Current Report' range.",
             None, 0.0,
         )
+    report_range = (found_range[0], found_range[1])
+    page = _page_for_offset(fields, found_range[2])
     assessment_date = datetime.strptime(assessment_date_str, "%m/%d/%Y")
     report_start = datetime.strptime(report_range[0], "%m/%d/%Y")
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
@@ -2533,13 +2931,13 @@ def _check_ACF12(rule: dict, fields: dict) -> tuple:
             "pass",
             f"Assessment Date {assessment_date_str} falls within the Date of Current Report "
             f"range ({report_range[0]} to {report_range[1]}).",
-            None, 0.8,
+            page, 0.8,
         )
     return (
         "fail",
         f"Assessment Date {assessment_date_str} falls outside the Date of Current Report "
         f"range ({report_range[0]} to {report_range[1]}).",
-        None, 0.8,
+        page, 0.8,
     )
 
 
@@ -2574,23 +2972,32 @@ def _check_ACF06(rule: dict, fields: dict) -> tuple:
     administered." with no name). not_checkable: no testing-tool
     administration statement found to check at all.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None even though the matching haystack's own
+    # absolute offset (section-relative or whole-document) was resolvable
+    # -- (haystack_text, base_offset) pairs so a match's local `.start()`
+    # can be translated back to a real page via base_offset + local_offset.
     text = fields["full_text"]
-    section = _find_acf_section(text)
-    haystacks = [h for h in (section, text) if h]
+    found_section = _find_acf_section_with_offset(text)
+    haystacks = [(found_section[0], found_section[1])] if found_section else []
+    haystacks.append((text, 0))
 
-    for haystack in haystacks:
+    for haystack, base_offset in haystacks:
         m = _ACF06_ADMIN_BY_RE.search(haystack)
         if m:
             name = m.group(1).strip().rstrip(".")
-            return "pass", f"Assessor named: {name!r}.", None, 0.75
+            page = _page_for_offset(fields, base_offset + m.start())
+            return "pass", f"Assessor named: {name!r}.", page, 0.75
 
-    for haystack in haystacks:
-        if _ACF06_ADMIN_VERB_RE.search(haystack) and _ACF07_TOOL_PATTERN.search(haystack):
+    for haystack, base_offset in haystacks:
+        m = _ACF06_ADMIN_VERB_RE.search(haystack)
+        if m and _ACF07_TOOL_PATTERN.search(haystack):
+            page = _page_for_offset(fields, base_offset + m.start())
             return (
                 "fail",
                 "A testing tool's administration is mentioned, but no assessor name is given "
                 "('administered by [name]' or equivalent phrasing not found).",
-                None, 0.6,
+                page, 0.6,
             )
 
     return (
@@ -2610,18 +3017,24 @@ def _check_ACF05(rule: dict, fields: dict) -> tuple:
     field, not a single-line "Label: value" field, so blank means "the very
     next non-blank line is itself another label," not just "nothing on the
     same line."""
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None -- the label's own line offset is real,
+    # resolvable position information that was just never carried through.
     lines = fields["full_text"].splitlines()
+    offset = 0
     for i, line in enumerate(lines):
         if line.strip().rstrip(":").strip().lower() == "assessment summary statement":
+            page = _page_for_offset(fields, offset)
             next_nonblank = next((lines[j].strip() for j in range(i + 1, len(lines)) if lines[j].strip()), "")
             if not next_nonblank or next_nonblank.endswith(":"):
                 return (
                     "fail",
                     "The 'Assessment Summary Statement:' field is blank -- immediately "
                     "followed by the next field's label, with nothing filled in.",
-                    None, 0.7,
+                    page, 0.7,
                 )
-            return "pass", f"Assessment Summary Statement is documented: {next_nonblank[:150]}", None, 0.7
+            return "pass", f"Assessment Summary Statement is documented: {next_nonblank[:150]}", page, 0.7
+        offset += len(line) + 1
     return "not_checkable", "No 'Assessment Summary Statement:' field found anywhere in this TP.", None, 0.0
 
 
@@ -2650,23 +3063,33 @@ def _check_BIO03(rule: dict, fields: dict) -> tuple:
     bleed into the start of the NEXT line's content as if it were this
     line's own value.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/uncertain
+    # both used to hardcode page=None even though each match's real offset
+    # was available -- now cites the first matching field's real page.
     filled, blank = [], []
+    filled_offset, blank_offset = None, None
     for m in _BIO03_LABEL_RE.finditer(fields["full_text"]):
         label, value = m.group(1), m.group(2)
         if value and value.strip():
             filled.append(f"{label}: {value.strip()}")
+            if filled_offset is None:
+                filled_offset = m.start()
         else:
             blank.append(label)
+            if blank_offset is None:
+                blank_offset = m.start()
 
     if filled:
-        return "pass", f"A diagnosis is documented: {'; '.join(filled)}.", None, 0.75
+        page = _page_for_offset(fields, filled_offset)
+        return "pass", f"A diagnosis is documented: {'; '.join(filled)}.", page, 0.75
     if blank:
+        page = _page_for_offset(fields, blank_offset)
         return (
             "uncertain",
             f"A diagnosis field is present but blank ({'; '.join(blank)}) -- could mean no "
             f"additional diagnosis applies, or could be an omission; not determinable from "
             f"the field alone.",
-            None, 0.3,
+            page, 0.3,
         )
     return "not_checkable", "No labeled diagnosis field found anywhere in this TP.", None, 0.0
 
@@ -2681,14 +3104,27 @@ _VALID_SAMPLING_METHODS = {
 def _page_for_offset(fields: dict, offset: int) -> int | None:
     """Maps a character offset in fields["full_text"] back to the page it
     falls on -- full_text is built as "\\n".join(p["text"] for p in pages),
-    so this walks the same join with a +1 for each joining newline."""
+    so this walks the same join with a +1 for each joining newline.
+
+    Fix Round (2026-09-11): `fields["pages"]` isn't guaranteed to be
+    present -- confirmed via real (mock) test failures the moment this
+    helper started getting called from more checkers than before (a
+    KeyError crashing the whole check, not the honest "no page" fallback
+    this whole page-enforcement effort is about) -- some existing tests
+    construct a minimal `fields` dict with only `full_text` set. Missing
+    or empty `pages` genuinely means "we don't have the page map," which
+    is the same as "couldn't determine a page," not a bug to crash on.
+    """
+    pages = fields.get("pages")
+    if not pages:
+        return None
     pos = 0
-    for p in fields["pages"]:
+    for p in pages:
         length = len(p["text"])
         if pos <= offset < pos + length:
             return p["page_number"]
         pos += length + 1
-    return fields["pages"][-1]["page_number"] if fields["pages"] else None
+    return pages[-1]["page_number"]
 
 
 def _goal_block_starts(text: str) -> list[int]:
@@ -2758,6 +3194,186 @@ def _check_GIP23(rule: dict, fields: dict) -> tuple:
     )
 
 
+def _check_GIP07(rule: dict, fields: dict) -> tuple:
+    """Fix Round (2026-09-11), item 23 -- REAL LOGIC BUG FOUND AND FIXED,
+    confirmed against the real Daylyn Holland TP: this rule ('Goals open
+    more than 6 months have a documented rationale') was pure judgment
+    with no precondition check, so even when NO goal was anywhere close
+    to 6 months old, all n_calls of the majority vote still had to reason
+    about a question that genuinely doesn't apply -- and split (some
+    calls correctly said "doesn't apply", others said pass/uncertain for
+    unrelated reasons), landing on a real, confirmed "Uncertain" for a
+    case the rule should never even have reached. Confirmed real numbers
+    on Daylyn Holland: goals initiated 05/04/2026-05/18/2026, current
+    report ending 09/08/2026 -- ~4 months, genuinely under the 6-month
+    threshold for every goal.
+
+    Hybrid DET precondition, same shape as QA-HRS-05/QA-GIP-23: computes
+    each goal's own age (Date Initiated vs. the current report's own end
+    date) directly from the document's text. If NONE qualifies (>= 6
+    months), resolves to not_applicable outright -- zero judgment calls,
+    zero variance, exactly the honest "doesn't apply" answer most of the
+    real votes already gave. Only escalates to judgment (not_checkable)
+    when at least one goal genuinely IS old enough -- the real remaining
+    question (is a real rationale documented for THAT goal) still needs a
+    holistic read this checker doesn't attempt.
+    """
+    text = fields["full_text"]
+    goal_starts = _goal_block_starts(text) + [len(text)]
+    if len(goal_starts) <= 1:
+        return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
+
+    report_range = _find_labeled_date_range(text, "Date of Current Report")
+    if not report_range:
+        return (
+            "not_checkable",
+            "Could not find 'Date of Current Report' to compute each goal's age against.",
+            None, 0.0,
+        )
+    report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
+
+    checked = 0
+    old_goals = []
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        m = re.search(r"Date Initiated:[ \t\xa0]*(\d{1,2}/\d{1,2}/\d{4})", block)
+        if not m:
+            continue
+        checked += 1
+        initiated = datetime.strptime(m.group(1), "%m/%d/%Y")
+        six_months_out = _add_months(initiated, 6)
+        if six_months_out <= report_end:
+            marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+            goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
+            old_goals.append(f"{goal_name!r} (initiated {m.group(1)})")
+
+    if checked == 0:
+        return "not_checkable", "No goal block with a 'Date Initiated:' field found to compute age from.", None, 0.0
+
+    if not old_goals:
+        return (
+            "not_applicable",
+            f"None of the {checked} goal(s) with a Date Initiated are open 6 months or more as of "
+            f"the current report's end date ({report_range[1]}) -- this rule doesn't apply.",
+            None, 0.85,
+        )
+    return (
+        "not_checkable",
+        f"{len(old_goals)} of {checked} goal(s) are open 6 months or more as of the current report's "
+        f"end date ({report_range[1]}): {old_goals}. Whether a real rationale is documented for these "
+        f"still requires a judgment read.",
+        None, 0.0,
+    )
+
+
+def _check_GIP22(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-22: "Newly initiated goals without graphs should show status
+    as 'NEW,' with current data marked 'NEW' or aligned with baseline."
+    "Newly initiated" is anchored (per this rule's own already-rewritten
+    description) to the goal's 'Date Initiated' falling within the
+    CURRENT TP's own 'Date of Current Report' range.
+
+    Fix Round (2026-09-11 night), "Stop Over-Using the Uncertain Safety
+    Net" -- REAL FIX: this rule already had a real, concrete anchor field
+    from an earlier round's rewrite, but NO deterministic checker was
+    ever built for it -- it stayed pure judgment, re-deriving the same
+    date-math and status check from scratch on every call, which is
+    exactly the shape confirmed to cause instability (same class as
+    QA-GIP-07 above). Confirmed on the real Daylyn Holland document
+    (zero real API cost): every goal's Date Initiated (05/05/2026 etc.)
+    predates the current report range (09/04-09/08/2026) by 4 months --
+    none qualify as "newly initiated" here, so this rule's own
+    precondition never applies on this document; a real not_applicable,
+    not a guess.
+
+    "Current data marked 'NEW' or aligned with baseline" is checked as:
+    Current Data's own value either contains the literal word "NEW", or
+    is textually identical (case-insensitive, whitespace-normalized) to
+    the goal's own Baseline value -- a real, concrete definition of
+    "aligned with baseline" (was previously fuzzy/subjective), not yet
+    confirmed against a real qualifying goal (none exist on the one real
+    document available), so this specific comparison branch is honestly
+    unverified in practice, same disclosed limitation as QA-SCH-05 above.
+    """
+    text = fields["full_text"]
+    goal_starts = _goal_block_starts(text) + [len(text)]
+    if len(goal_starts) <= 1:
+        return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
+
+    report_range = _find_labeled_date_range(text, "Date of Current Report")
+    if not report_range:
+        return (
+            "not_checkable",
+            "Could not find 'Date of Current Report' to determine which goals are newly initiated.",
+            None, 0.0,
+        )
+    report_start = datetime.strptime(report_range[0], "%m/%d/%Y")
+    report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
+
+    checked = 0
+    problems = []
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        di_m = re.search(r"Date Initiated:[ \t\xa0]*(\d{1,2}/\d{1,2}/\d{4})", block)
+        if not di_m:
+            continue
+        checked += 1
+        initiated = datetime.strptime(di_m.group(1), "%m/%d/%Y")
+        if not (report_start <= initiated <= report_end):
+            continue  # not newly initiated -- this rule's precondition doesn't apply to this goal
+
+        marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+        goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
+        status_m = re.search(r"(?:Goal Status|Status):[ \t]*([^\n]*)", block)
+        status_val = status_m.group(1).strip() if status_m else ""
+        baseline_m = re.search(r"Baseline:[ \t]*([^\n]*)", block)
+        baseline_val = baseline_m.group(1).strip() if baseline_m else ""
+        data_m = re.search(r"Current Data:[ \t]*([^\n]*)", block)
+        data_val = data_m.group(1).strip() if data_m else ""
+
+        page = _page_for_offset(fields, goal_starts[i])
+        status_is_new = "new" in status_val.lower()
+        data_is_new = "new" in data_val.lower()
+        data_aligned_with_baseline = bool(baseline_val) and bool(data_val) and (
+            re.sub(r"\s+", " ", baseline_val).lower() == re.sub(r"\s+", " ", data_val).lower()
+        )
+        if not status_is_new and not (data_is_new or data_aligned_with_baseline):
+            problems.append((page, (
+                f"Goal '{goal_name}' is newly initiated (Date Initiated {di_m.group(1)}) but Status "
+                f"({status_val!r}) doesn't say 'NEW', and Current Data ({data_val!r}) is neither 'NEW' "
+                f"nor aligned with Baseline ({baseline_val!r})."
+            )))
+
+    if checked == 0:
+        return "not_checkable", "No goal block with a 'Date Initiated:' field found in this document.", None, 0.0
+
+    if not problems:
+        newly_initiated_count = sum(
+            1 for i in range(len(goal_starts) - 1)
+            for m in [re.search(r"Date Initiated:[ \t\xa0]*(\d{1,2}/\d{1,2}/\d{4})", text[goal_starts[i]:goal_starts[i + 1]])]
+            if m and report_start <= datetime.strptime(m.group(1), "%m/%d/%Y") <= report_end
+        )
+        if newly_initiated_count == 0:
+            return (
+                "not_applicable",
+                f"None of the {checked} goal(s) with a Date Initiated fall within the current report's "
+                f"date range ({report_range[0]} to {report_range[1]}) -- no goal is 'newly initiated', "
+                f"this rule's precondition doesn't apply.",
+                None, 0.85,
+            )
+        return (
+            "pass",
+            f"{newly_initiated_count} newly-initiated goal(s) all show 'NEW' status or Current Data "
+            f"aligned with/marked 'NEW' relative to Baseline.",
+            None, 0.8,
+        )
+    if len(problems) == 1:
+        page, detail = problems[0]
+        return "fail", detail, page, 0.8
+    evidence = [{"page": page, "detail": detail} for page, detail in problems]
+    return "fail", evidence, None, 0.8
+
+
 def _check_GIP10(rule: dict, fields: dict) -> tuple:
     """Converted from judgment to deterministic (2026-07-28 round, item 1):
     'sampling method consistent across every goal' is a uniqueness check
@@ -2787,6 +3403,18 @@ def _check_GIP10(rule: dict, fields: dict) -> tuple:
     through the newline into the START OF THE NEXT LINE's text, making a
     blank field look non-blank. Confirmed live: this exact bug silently
     hid the Charny page-27 blank-Mastery-Criteria case during development.
+
+    Fix Round (2026-09-10), item 27 -- REAL BUG FOUND AND FIXED: the
+    `[^\\n]*` same-line-only capture above avoided the OLD blank-field bug,
+    but introduced the OPPOSITE real bug -- a genuinely non-blank Mastery
+    Criteria/Baseline value that wraps onto the line AFTER the label
+    (same bug class as items 9/22, see _extract_labeled_value) was read as
+    blank too, since nothing on the label's own line matched. Mastery
+    Criteria/Baseline now go through _extract_labeled_value's lookahead
+    instead (tolerates a wrapped value, still stops at a genuine blank or
+    the next field's own label) -- Sampling Method stays a same-line-only
+    read, since its value is validated against a short fixed whitelist
+    that's never seen wrap onto a second line in any real document.
     """
     text = fields["full_text"]
     goal_starts = _goal_block_starts(text)
@@ -2802,11 +3430,11 @@ def _check_GIP10(rule: dict, fields: dict) -> tuple:
         if not sm_m:
             continue  # not every block hit is a fully structured goal entry
         real_goals += 1
-        mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
-        bl_m = re.search(r"Baseline:[ \t]*([^\n]*)", block)
+        mc_m = re.search(r"Mastery Criteria:[ \t]*", block)
+        bl_m = re.search(r"Baseline:[ \t]*", block)
         sm_val = sm_m.group(1).strip()
-        mc_val = mc_m.group(1).strip() if mc_m else ""
-        bl_val = bl_m.group(1).strip() if bl_m else ""
+        mc_val = _extract_labeled_value(block, "Mastery Criteria") if mc_m else ""
+        bl_val = _extract_labeled_value(block, "Baseline") if bl_m else ""
         marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
         goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
 
@@ -2933,6 +3561,14 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     every brand-new goal. Only the explicit zero/near-zero PATTERN is
     checked for Current Data, matching the actual "no 0%, use fewer than
     one instance" ask precisely.
+
+    Fix Round (2026-09-10), item 25 -- REVERSAL, CONFIRMED WITH MA'AM
+    DIRECTLY, not a mistake: the "Current Data" half added just above
+    (2026-08-27) is now REMOVED again. She asked for this rule to check
+    ONLY the Mastery Criteria field going forward, not current data or
+    any other field -- back to this rule's original, pre-2026-08-27
+    scope. Flagging plainly: this walks back a real, deliberate earlier
+    request of hers, not something we got wrong on our own.
     """
     text = fields["full_text"]
     goal_starts = _goal_block_starts(text)
@@ -2945,49 +3581,33 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
-        cd_m = re.search(r"Current Data:[ \t]*([^\n]*)", block)
-        if not mc_m and not cd_m:
+        if not mc_m:
             continue
         total += 1
         marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
         goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
 
-        if mc_m:
-            mc_val = mc_m.group(1).strip()
-            if mc_val and _ZERO_MASTERY_PATTERN.search(mc_val):
-                page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
-                problems.append((page, (
-                    f"Mastery Criteria for goal '{goal_name}' reads {mc_val!r} -- a zero/near-zero "
-                    f"endpoint must instead read 'fewer than one instance' (or equivalent "
-                    f"minimum-occurrence phrasing)."
-                )))
-            elif not mc_val:
-                # Fix Round, item 6: fails on its own now, regardless of
-                # whether a Sampling Method field is also present in this
-                # block -- see this function's own docstring.
-                page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
-                problems.append((page, f"Mastery Criteria is blank for goal '{goal_name}'."))
-
-        if cd_m:
-            cd_val = cd_m.group(1).strip()
-            if cd_val and _ZERO_MASTERY_PATTERN.search(cd_val):
-                page = _page_for_offset(fields, goal_starts[i] + cd_m.start())
-                problems.append((page, (
-                    f"Current Data for goal '{goal_name}' reads {cd_val!r} -- a zero/near-zero "
-                    f"endpoint must instead read 'fewer than one instance' (or equivalent "
-                    f"minimum-occurrence phrasing)."
-                )))
-            # Deliberately no blank-Current-Data failure -- see this
-            # function's own docstring for why that's different from a
-            # blank Mastery Criteria.
+        mc_val = mc_m.group(1).strip()
+        if mc_val and _ZERO_MASTERY_PATTERN.search(mc_val):
+            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+            problems.append((page, (
+                f"Mastery Criteria for goal '{goal_name}' reads {mc_val!r} -- a zero/near-zero "
+                f"endpoint must instead read 'fewer than one instance' (or equivalent "
+                f"minimum-occurrence phrasing)."
+            )))
+        elif not mc_val:
+            # Fix Round, item 6: fails on its own now, regardless of
+            # whether a Sampling Method field is also present in this
+            # block -- see this function's own docstring.
+            page = _page_for_offset(fields, goal_starts[i] + mc_m.start())
+            problems.append((page, f"Mastery Criteria is blank for goal '{goal_name}'."))
 
     if total == 0:
-        return "not_checkable", "No goal blocks with a Mastery Criteria or Current Data field found.", None, 0.0
+        return "not_checkable", "No goal blocks with a Mastery Criteria field found.", None, 0.0
     if not problems:
         return (
             "pass",
-            f"None of the {total} goal(s)' Mastery Criteria or Current Data use a zero/near-zero "
-            f"endpoint phrasing.",
+            f"None of the {total} goal(s)' Mastery Criteria use a zero/near-zero endpoint phrasing.",
             None, 0.85,
         )
     if len(problems) == 1:
@@ -3638,11 +4258,14 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
     real_problems = []
     soft_problems = []
     checked = 0
+    first_checked_offset = None
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         if not block.startswith("Target Name:"):
             continue  # skill-acquisition ("Target Goal:") blocks don't carry this field
         checked += 1
+        if first_checked_offset is None:
+            first_checked_offset = goal_starts[i]
         goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
 
         cl_m = re.search(r"(?:Current Level|Current Data):[ \t]*([^\n]*)", block)
@@ -3697,7 +4320,11 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
         evidence = [{"page": page, "detail": detail} for page, detail in soft_problems]
         return "uncertain", evidence, None, 0.5
 
-    return "pass", f"All {checked} Behavior Reduction Goal(s) have a Current Level indicated (a real value, or an explained N/A).", None, 0.85
+    # Fix Round (2026-09-11), page-number enforcement gap: same fix as
+    # _check_BIP04 -- cites the first checked goal's real page instead of
+    # the None this pass case used to hardcode.
+    page = _page_for_offset(fields, first_checked_offset)
+    return "pass", f"All {checked} Behavior Reduction Goal(s) have a Current Level indicated (a real value, or an explained N/A).", page, 0.85
 
 
 # Confirmed real PASS shape (Reeda's TP, "Reduce frequency of Tantrum
@@ -3715,8 +4342,24 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
 # duration units for a behavior-reduction criterion) were never included
 # at all, so ANY minutes/seconds/hours-based duration qualifier silently
 # failed this match and got treated as if no duration qualifier existed.
+# Fix Round (2026-09-11), item 18 -- REAL BUG FOUND AND FIXED, confirmed
+# against the real Daylyn Holland TP: "2 times or less per session for
+# three consecutive sessions" was reported as lacking a consecutive-
+# session qualifier -- it doesn't; it genuinely states one ("three
+# consecutive sessions"), just spelled out as a word instead of a digit.
+# The old \d+-only count missed it entirely, while a sibling goal on the
+# SAME document phrased identically but with a digit ("for 3 consecutive
+# sessions") already passed -- confirmed directly, not guessed at, that
+# the checker was being too strict about phrasing, not correctly
+# enforcing the rule's real requirement. Small written-out numbers
+# (one-twenty) are equally valid English for this qualifier and are now
+# recognized alongside digits.
+_NUMBER_WORD_RE = (
+    r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)"
+)
 _DURATION_QUALIFIER_RE = re.compile(
-    r"for\s+\d+\s*(?:consecutive|straight|repeated)?\s*"
+    rf"for\s+(?:\d+|{_NUMBER_WORD_RE})\s*(?:consecutive|straight|repeated)?\s*"
     r"(?:sessions?|days?|weeks?|months?|observations?|minutes?|seconds?|hours?)",
     re.IGNORECASE,
 )
@@ -3763,11 +4406,14 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
     real_problems = []
     soft_problems = []
     checked = 0
+    first_checked_offset = None
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         if not block.startswith("Target Name:"):
             continue  # skill-acquisition ("Target Goal:") blocks are a different rule shape
         checked += 1
+        if first_checked_offset is None:
+            first_checked_offset = goal_starts[i]
         goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
 
         mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
@@ -3811,7 +4457,13 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
         evidence = [{"page": page, "detail": detail} for page, detail in soft_problems]
         return "uncertain", evidence, None, 0.5
 
-    return "pass", f"All {checked} Behavior Reduction Goal(s) state a duration/consecutive-session qualifier in their Mastery Criteria.", None, 0.85
+    # Fix Round (2026-09-11), page-number enforcement gap: this pass case
+    # used to hardcode page=None even though every goal's own real offset
+    # (goal_starts) was already computed above -- cites the first checked
+    # goal's page (a real, honest citation into where this passing result
+    # was verified, even though it's a whole-document "all goals" claim).
+    page = _page_for_offset(fields, first_checked_offset)
+    return "pass", f"All {checked} Behavior Reduction Goal(s) state a duration/consecutive-session qualifier in their Mastery Criteria.", page, 0.85
 
 
 def _check_SM02(rule: dict, fields: dict) -> tuple:
@@ -3881,18 +4533,26 @@ def _check_TEMP01(rule: dict, fields: dict) -> tuple:
     real document has ever presented that specific scenario, so that
     condition-specific behavior remains unverified against real evidence.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; the first mention's real offset is enough to
+    # cite (pass) or, for fail, the first mention still points a reviewer
+    # at one real occurrence of the inconsistency.
     text = fields["full_text"]
     vals = []
+    first_offset = None
     for m in re.finditer(r"(?:Certification|Provider Credentials):[ \t]*([^\n]+)", text):
         v = m.group(1).strip()
         if v:
             vals.append(v)
+            if first_offset is None:
+                first_offset = m.start()
     if not vals:
         return "not_checkable", "No 'Certification:' or 'Provider Credentials:' field found.", None, 0.0
+    page = _page_for_offset(fields, first_offset)
     normalized = {v.lower() for v in vals}
     if len(normalized) == 1:
-        return "pass", f"All {len(vals)} credential mention(s) consistently read {vals[0]!r}.", None, 0.85
-    return "fail", f"Inconsistent credential designations found across the document: {vals}.", None, 0.85
+        return "pass", f"All {len(vals)} credential mention(s) consistently read {vals[0]!r}.", page, 0.85
+    return "fail", f"Inconsistent credential designations found across the document: {vals}.", page, 0.85
 
 
 def _check_PPI02(rule: dict, fields: dict) -> tuple:
@@ -3910,12 +4570,18 @@ def _check_PPI02(rule: dict, fields: dict) -> tuple:
     09/06/2007 (identical across 52 mentions), Age 18, computed age ~18 --
     consistent, pass.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; cites the first DOB (or Patient Age, if no
+    # DOB mention exists) match's real position.
     text = fields["full_text"]
-    dob_vals = sorted({m.group(1).strip() for m in re.finditer(r"DOB:[ \t]*([0-9/]+)", text)})
-    age_vals = sorted({m.group(1).strip() for m in re.finditer(r"Patient Age:[ \t]*([0-9]+)", text)})
+    dob_matches = list(re.finditer(r"DOB:[ \t]*([0-9/]+)", text))
+    age_matches = list(re.finditer(r"Patient Age:[ \t]*([0-9]+)", text))
+    dob_vals = sorted({m.group(1).strip() for m in dob_matches})
+    age_vals = sorted({m.group(1).strip() for m in age_matches})
 
     if not dob_vals and not age_vals:
         return "not_checkable", "No DOB or Patient Age field found.", None, 0.0
+    page = _page_for_offset(fields, (dob_matches or age_matches)[0].start())
 
     problems = []
     if len(dob_vals) > 1:
@@ -3941,12 +4607,12 @@ def _check_PPI02(rule: dict, fields: dict) -> tuple:
                 pass
 
     if problems:
-        return "fail", " ".join(problems), None, 0.8
+        return "fail", " ".join(problems), page, 0.8
     return (
         "pass",
         f"DOB ({dob_vals[0] if dob_vals else 'n/a'}) and Patient Age ({age_vals[0] if age_vals else 'n/a'}) "
         f"are consistent throughout the document.",
-        None, 0.8,
+        page, 0.8,
     )
 
 
@@ -4138,18 +4804,19 @@ def _check_PPI03(rule: dict, fields: dict) -> tuple:
     means no signal, no guess, same as before -- this only ever fires when
     there's an actual filename with real name-like content to compare.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: every branch
+    # below used to hardcode page=None; the first mention's real offset
+    # was always available.
     text = fields["full_text"]
-    names = [
-        m.group(1).strip()
-        for m in re.finditer(r"Patient Name:[ \t]*([^\n]+?)(?=\s*(?:AKA:|Patient DOB:|$))", text)
-    ]
-    names = [n for n in names if n]
+    matches = list(re.finditer(r"Patient Name:[ \t]*([^\n]+?)(?=\s*(?:AKA:|Patient DOB:|$))", text))
+    names = [m.group(1).strip() for m in matches if m.group(1).strip()]
     if not names:
         return "not_checkable", "No 'Patient Name:' field found.", None, 0.0
+    page = _page_for_offset(fields, next(m.start() for m in matches if m.group(1).strip()))
     normalized = {n.lower() for n in names}
     if len(normalized) > 1:
         counts = Counter(names)
-        return "fail", f"Inconsistent patient name spelling found: {dict(counts)}.", None, 0.85
+        return "fail", f"Inconsistent patient name spelling found: {dict(counts)}.", page, 0.85
 
     name = names[0]
     source_filename = fields.get("source_filename")
@@ -4165,9 +4832,9 @@ def _check_PPI03(rule: dict, fields: dict) -> tuple:
                 f"threshold={_FILENAME_MATCH_THRESHOLD}) -- a real misspelling here risks a claims/"
                 f"authorization denial."
             ),
-            None, 0.85,
+            page, 0.85,
         )
-    return "pass", f"Patient name spelled consistently as {name!r} across all {len(names)} mention(s).", None, 0.85
+    return "pass", f"Patient name spelled consistently as {name!r} across all {len(names)} mention(s).", page, 0.85
 
 
 _AKA_BLANK_RE = re.compile(r"^N/?A\b[\s:.,\-–—]*$|^none$|^n/?a$", re.IGNORECASE)
@@ -4203,28 +4870,30 @@ def _check_PPI07(rule: dict, fields: dict) -> tuple:
       against) -- that's a real, stated limitation, not silently assumed
       solved.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: every branch
+    # below used to hardcode page=None; the first mention's real offset
+    # was always available.
     text = fields["full_text"]
-    raw_values = [
-        m.group(1).strip()
-        for m in re.finditer(r"AKA:[ \t]*([^\n]+?)(?=\s*(?:Patient DOB:|$))", text)
-    ]
+    matches = list(re.finditer(r"AKA:[ \t]*([^\n]+?)(?=\s*(?:Patient DOB:|$))", text))
+    raw_values = [m.group(1).strip() for m in matches]
     if not raw_values:
         return "not_checkable", "No 'AKA:' field found anywhere in this document.", None, 0.0
+    page = _page_for_offset(fields, matches[0].start())
 
     real_values = [v for v in raw_values if v and not _AKA_BLANK_RE.match(v)]
     if not real_values:
-        return "pass", f"'AKA:' field present but blank/N-A on all {len(raw_values)} mention(s) -- patient has no stated alias.", None, 0.85
+        return "pass", f"'AKA:' field present but blank/N-A on all {len(raw_values)} mention(s) -- patient has no stated alias.", page, 0.85
 
     normalized = {v.lower() for v in real_values}
     if len(normalized) > 1:
         counts = Counter(real_values)
-        return "fail", f"Inconsistent AKA/alias spelling found: {dict(counts)}.", None, 0.85
+        return "fail", f"Inconsistent AKA/alias spelling found: {dict(counts)}.", page, 0.85
 
     return (
         "pass",
         f"AKA/alias spelled consistently as {real_values[0]!r} across all {len(real_values)} mention(s) "
         f"alongside the legal name.",
-        None, 0.85,
+        page, 0.85,
     )
 
 
@@ -4481,12 +5150,18 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
     that document) is treated as no ground truth available, not as a
     mismatch.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: every branch
+    # below used to hardcode page=None; the first NPI/License match's real
+    # offset was always available.
     text = fields["full_text"]
-    npi_vals = sorted({m.group(1).strip() for m in re.finditer(r"NPI:[ \t]*([0-9]+)", text)})
-    license_vals = sorted({m.group(1).strip() for m in re.finditer(r"License[^\n:]*:[ \t]*([^\n]+)", text)})
+    npi_matches = list(re.finditer(r"NPI:[ \t]*([0-9]+)", text))
+    license_matches = list(re.finditer(r"License[^\n:]*:[ \t]*([^\n]+)", text))
+    npi_vals = sorted({m.group(1).strip() for m in npi_matches})
+    license_vals = sorted({m.group(1).strip() for m in license_matches})
 
     if not npi_vals and not license_vals:
         return "not_checkable", "No NPI or License field found.", None, 0.0
+    page = _page_for_offset(fields, (npi_matches or license_matches)[0].start())
 
     problems = []
     if len(npi_vals) > 1:
@@ -4519,14 +5194,14 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
         )
 
     if problems:
-        return "fail", " ".join(problems), None, 0.8
+        return "fail", " ".join(problems), page, 0.8
     if ground_truth_npi_vals and npi_vals and (set(npi_vals) & ground_truth_npi_vals):
         return (
             "pass",
             f"NPI ({npi_vals or 'n/a'}) and License ({license_vals or 'n/a'}) are internally "
             f"consistent, AND the TP's NPI matches the supporting document's stated NPI "
             f"({sorted(ground_truth_npi_vals)}).",
-            None, 0.9,
+            page, 0.9,
         )
     # Round 84, item 2 -- REAL BUG FOUND AND FIXED: this branch used to
     # return a confident "pass" here, but all it actually verified is
@@ -4545,7 +5220,7 @@ def _check_PPI05(rule: dict, fields: dict) -> tuple:
         f"consistent (no contradicting values found within the TP), but no ground-truth "
         f"source (e.g. a matching supporting-document field) was available to confirm they "
         f"are actually CORRECT -- internal consistency alone is not evidence of correctness.",
-        None, 0.5,
+        page, 0.5,
     )
 
 
@@ -4569,20 +5244,30 @@ def _check_severity_rating_not_all_mild(rule: dict, fields: dict) -> tuple:
     conversion is verified for the extraction/scan mechanism but the
     fail path itself is untested against real evidence.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None even though each rating's own match position
+    # was available -- cites the first non-mild rating's page for pass,
+    # the first rating's page for fail (all ratings are mild, any one is
+    # a real, representative citation).
     text = fields["full_text"]
-    ratings = [(m.group(0).split(":")[0].strip(), m.group(1).strip()) for m in _SEVERITY_LABEL_PATTERN.finditer(text)]
+    ratings = [
+        (m.group(0).split(":")[0].strip(), m.group(1).strip(), m.start())
+        for m in _SEVERITY_LABEL_PATTERN.finditer(text)
+    ]
     if not ratings:
         return "not_checkable", "No 'Severity of ...:' rating fields found.", None, 0.0
 
-    non_na_values = [v for _, v in ratings if v.strip().lower() not in ("n/a", "na", "")]
-    if not non_na_values:
+    non_na = [(label, value, offset) for label, value, offset in ratings if value.strip().lower() not in ("n/a", "na", "")]
+    if not non_na:
         return "not_checkable", "Severity fields found but all are N/A.", None, 0.0
 
-    has_non_mild = any(v.lower() in _NON_MILD_SEVERITY_VALUES for v in non_na_values)
-    ratings_str = ", ".join(f"{label}: {value}" for label, value in ratings)
-    if has_non_mild:
-        return "pass", f"At least one severity rating is Moderate or higher ({ratings_str}).", None, 0.85
-    return "fail", f"All severity ratings are Mild (or N/A) -- none reach Moderate: {ratings_str}.", None, 0.85
+    non_mild = [(label, value, offset) for label, value, offset in non_na if value.lower() in _NON_MILD_SEVERITY_VALUES]
+    ratings_str = ", ".join(f"{label}: {value}" for label, value, _ in ratings)
+    if non_mild:
+        page = _page_for_offset(fields, non_mild[0][2])
+        return "pass", f"At least one severity rating is Moderate or higher ({ratings_str}).", page, 0.85
+    page = _page_for_offset(fields, ratings[0][2])
+    return "fail", f"All severity ratings are Mild (or N/A) -- none reach Moderate: {ratings_str}.", page, 0.85
 
 
 # --- Fix Round, item 3: cross-rule contradiction detection ---------------
@@ -4776,13 +5461,16 @@ def _check_HRS12(rule: dict, fields: dict) -> tuple:
             None, 0.0,
         )
     value = m.group(1).strip()
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; the match's real position was always there.
+    page = _page_for_offset(fields, m.start())
     if re.match(r"^\d+(\.\d+)?$", value) and float(value) > 0:
-        return "pass", f"Treatment Planning hours requested: {value} for this authorization period.", None, 0.8
+        return "pass", f"Treatment Planning hours requested: {value} for this authorization period.", page, 0.8
     return (
         "fail",
         f"Treatment Planning hours requested is {value!r} (missing/zero) for payor '{payor or 'unknown'}', "
         f"which requires this rule's hours to be requested.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -4826,12 +5514,15 @@ def _check_GIP30(rule: dict, fields: dict) -> tuple:
     """
     text = fields["full_text"]
     hours_97154 = _find_weekly_hours_for_code(text, "97154")
-    mentions = [
-        (block_start, target) for block_start, _, target in _iter_goal_target_text(fields)
-        if _GROUP_KEYWORD_RE.search(target)
-    ]
+    all_targets = _iter_goal_target_text(fields)
+    mentions = [(block_start, target) for block_start, _, target in all_targets if _GROUP_KEYWORD_RE.search(target)]
     if not mentions:
-        return "pass", "No goal's Target Goal/Target Name text mentions 'group'.", None, 0.8
+        # Fix Round (2026-09-11), page-number enforcement gap: this pass
+        # case used to hardcode page=None even though the goal blocks it
+        # scanned (and found clean) have real, known locations -- cites
+        # the first scanned goal's page rather than a fabricated "nowhere."
+        page = _page_for_offset(fields, all_targets[0][0]) if all_targets else None
+        return "pass", "No goal's Target Goal/Target Name text mentions 'group'.", page, 0.8
     if hours_97154 is not None and hours_97154 > 0:
         return (
             "not_applicable",
@@ -4863,12 +5554,13 @@ def _check_GIP31(rule: dict, fields: dict) -> tuple:
     Target Name text for the word "recall" (word-boundary), same shape and
     same shared helper as QA-GIP-30 above.
     """
-    mentions = [
-        (block_start, target) for block_start, _, target in _iter_goal_target_text(fields)
-        if _RECALL_KEYWORD_RE.search(target)
-    ]
+    all_targets = _iter_goal_target_text(fields)
+    mentions = [(block_start, target) for block_start, _, target in all_targets if _RECALL_KEYWORD_RE.search(target)]
     if not mentions:
-        return "pass", "No goal's Target Goal/Target Name text mentions 'recall'.", None, 0.8
+        # Fix Round (2026-09-11), page-number enforcement gap: same fix as
+        # _check_GIP30 -- cites the first scanned goal's real page.
+        page = _page_for_offset(fields, all_targets[0][0]) if all_targets else None
+        return "pass", "No goal's Target Goal/Target Name text mentions 'recall'.", page, 0.8
     if len(mentions) == 1:
         block_start, target = mentions[0]
         page = _page_for_offset(fields, block_start)
@@ -4906,7 +5598,10 @@ def _check_GIP33(rule: dict, fields: dict) -> tuple:
             page = _page_for_offset(fields, block_start + status_m.start())
             mentions.append((page, goal_name, status_m.group(1).strip()))
     if not mentions:
-        return "pass", "No goal's status field mentions 'met'.", None, 0.8
+        # Fix Round (2026-09-11), page-number enforcement gap: same fix as
+        # _check_GIP30/31 -- cites the first goal block's real page.
+        page = _page_for_offset(fields, starts[0]) if len(starts) > 1 else None
+        return "pass", "No goal's status field mentions 'met'.", page, 0.8
     if len(mentions) == 1:
         page, goal_name, status_val = mentions[0]
         return "fail", f"Goal '{goal_name}' status is {status_val!r} -- mentions 'met'.", page, 0.8
@@ -5069,19 +5764,52 @@ def _check_COC06(rule: dict, fields: dict) -> tuple:
     be range-checked (there's no year to anchor it to) -- returns
     not_checkable for that specific case rather than guessing a year.
     """
+    # Fix Round (2026-09-11 night) -- "Stop Over-Using the Uncertain Safety
+    # Net": REAL FIX, not a re-vote. This rule was on STABILIZED_UNCERTAIN_
+    # RULE_IDS because it always escalated to judgment whenever no fax
+    # statement existed, and judgment's own read of "nothing here to check"
+    # varied run to run -- a real instability, but not a genuinely
+    # image/graph-dependent one (this is a plain text regex). Root cause:
+    # `needs_escalation` escalates ANY "not_checkable" unconditionally, and
+    # "no fax statement found at all" was being reported as not_checkable
+    # ("can't verify") when it's actually a genuinely-determined FINAL
+    # state -- this coordination step (faxing a doctor) isn't required/
+    # documented for every patient, so its real absence is honestly
+    # not_applicable, not "insufficient information." not_applicable does
+    # NOT trigger escalation (see needs_escalation's own check), so this
+    # is now a stable, zero-variance final answer -- same real evidence
+    # confirmed live on the Daylyn Holland document, which has no "faxed
+    # to ... on <date>" statement anywhere.
+    # Fix Round (2026-09-11 night), real gap found on re-verification: the
+    # real Daylyn Holland document's own fax date is stated with a 2-DIGIT
+    # year ("8/7/26"), which the original 4-digit-only year group here
+    # silently missed entirely (matched as "no year"), still returning
+    # not_checkable -- still escalating to judgment for exactly the
+    # instability this fix was supposed to close for THIS document.
+    # Confirmed via `_check_COC06(rule, fields)` called directly on the
+    # real document (zero API cost, local extraction only). Now accepts a
+    # 2-digit year, resolved to the 2000s (this pipeline has no document
+    # from before 2000 to disambiguate against).
     text = fields["full_text"]
-    m = re.search(r"faxed to [^\n]*?on\s*(\d{1,2})/(\d{1,2})(?:/(\d{4}))?", text, re.IGNORECASE)
+    m = re.search(r"faxed to [^\n]*?on\s*(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?", text, re.IGNORECASE)
     if not m:
-        return "not_checkable", "Could not find a 'faxed to ... on <date>' statement in the document.", None, 0.0
-    month, day, year = m.group(1), m.group(2), m.group(3)
-    raw_date = f"{month}/{day}" + (f"/{year}" if year else "")
+        return (
+            "not_applicable",
+            "No 'faxed to ... on <date>' statement found anywhere in the document -- this "
+            "coordination step was not documented as having occurred for this patient.",
+            None, 0.85,
+        )
+    month, day, year_raw = m.group(1), m.group(2), m.group(3)
+    year = f"20{year_raw}" if year_raw and len(year_raw) == 2 else year_raw
+    raw_date = f"{month}/{day}" + (f"/{year_raw}" if year_raw else "")
+    page = _page_for_offset(fields, m.start())
     report_range = _find_labeled_date_range(text, "Date of Current Report")
     if not report_range:
         return (
             "not_checkable",
             f"Found fax date {raw_date!r} (month/day present) but could not find 'Date of Current Report' "
             f"to check it falls within range.",
-            None, 0.0,
+            page, 0.0,
         )
     if not year:
         return (
@@ -5089,7 +5817,7 @@ def _check_COC06(rule: dict, fields: dict) -> tuple:
             f"Fax date {raw_date!r} has month/day but no year -- cannot confirm it falls within the "
             f"current report's date range ({report_range[0]} to {report_range[1]}) without a year to "
             f"anchor it.",
-            None, 0.0,
+            page, 0.0,
         )
     fax_date = datetime(int(year), int(month), int(day))
     start = datetime.strptime(report_range[0], "%m/%d/%Y")
@@ -5099,13 +5827,13 @@ def _check_COC06(rule: dict, fields: dict) -> tuple:
             "pass",
             f"Fax date {raw_date!r} (month/day present) falls within the current report's date range "
             f"({report_range[0]} to {report_range[1]}).",
-            None, 0.8,
+            page, 0.8,
         )
     return (
         "fail",
         f"Fax date {raw_date!r} does not fall within the current report's date range ({report_range[0]} "
         f"to {report_range[1]}).",
-        None, 0.8,
+        page, 0.8,
     )
 
 
@@ -5114,45 +5842,37 @@ def _check_RPT07(rule: dict, fields: dict) -> tuple:
     authorization period (13-week or 26-week cycle, depending on
     payor)." Real, confirmed context resolving this rule's own flagged
     blocker ("the payor-to-week-count mapping this needs isn't confirmed
-    anywhere in the codebase"): a separate, already-existing Healthfirst-
-    specific rule (13 weeks above an age threshold, 26 at/under it)
-    already handles the payor-conditional 13-week case on its own,
-    payor-scoped terms -- this universal rule's own real job is just the
-    UNIVERSAL default (26 weeks), same "default, with payor-specific
-    overrides living in their own dedicated rules" shape QA-RPT-05
-    already established for the auth-END-date check. Computes the
-    requested range's own real length in weeks from 'Authorization Dates
-    Requested' and compares against that default.
+    anywhere in the codebase"): computes the requested range's own real
+    length in weeks from 'Authorization Dates Requested' and compares
+    against the payor-appropriate expected length.
 
-    REAL BUG FOUND AND FIXED (confirmed on the real Zyaan Ullah sample
-    TP, a Healthfirst patient): without a self-exclusion, this rule
-    would fail every Healthfirst patient correctly following THEIR OWN
-    13-week cycle (Ullah's real requested range: 12.9 weeks -- correctly
-    short of THIS rule's 26-week universal default, but that's the wrong
-    comparison for a Healthfirst patient on the age-appropriate 13-week
-    track HF-01 already validates). Self-excludes Healthfirst here, same
-    "defer to the payor's own dedicated rule" pattern QA-HRS-11 already
-    established for Healthfirst/Emblem's own 97151-hour caps -- avoids a
-    contradictory pair of findings (this rule's false fail alongside
-    HF-01's correct pass) for the exact same real-world fact.
+    Fix Round (2026-09-10), item 10 -- REAL LOGIC BUG FOUND AND FIXED: an
+    earlier round had this rule self-exclude (return not_applicable) for
+    Healthfirst entirely, on the assumption HF used its own separate
+    auth-period concept exempt from this check. Confirmed wrong, directly:
+    ma'am asked for this rule to check Healthfirst too -- full 13 weeks
+    for HF, full 26 weeks for every other payor -- not skip it. The N/A
+    branch is removed; Healthfirst now gets its own expected-weeks value
+    instead of being excluded. (HF-01 still separately validates the
+    SAME 13-week fact for Healthfirst specifically -- the two rules now
+    genuinely agree rather than one deferring to the other.)
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; the match's real position was always there.
     detected_payor = fields.get("payor")
-    excluded_payors = rule.get("params", {}).get("excluded_payors", ["Healthfirst"])
-    if detected_payor in excluded_payors:
-        return (
-            "not_applicable",
-            f"Payor detected as '{detected_payor}', which has its own dedicated authorization-period-length "
-            f"rule (not this universal default).",
-            None, 0.9,
-        )
-    weeks_expected = rule.get("params", {}).get("expected_weeks", 26)
-    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not auth_range:
+    params = rule.get("params", {})
+    hf_weeks = params.get("healthfirst_weeks", 13)
+    default_weeks = params.get("expected_weeks", 26)
+    weeks_expected = hf_weeks if detected_payor == "Healthfirst" else default_weeks
+    found = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
+    if not found:
         return (
             "not_checkable",
             "Could not find 'Authorization Dates Requested' to compute the requested auth range's length.",
             None, 0.0,
         )
+    auth_range = (found[0], found[1])
+    page = _page_for_offset(fields, found[2])
     start = datetime.strptime(auth_range[0], "%m/%d/%Y")
     end = datetime.strptime(auth_range[1], "%m/%d/%Y")
     actual_weeks = (end - start).days / 7
@@ -5161,13 +5881,13 @@ def _check_RPT07(rule: dict, fields: dict) -> tuple:
             "fail",
             f"Requested auth range ({auth_range[0]} to {auth_range[1]}) spans {actual_weeks:.1f} weeks, "
             f"short of a full {weeks_expected}-week authorization period.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "pass",
         f"Requested auth range ({auth_range[0]} to {auth_range[1]}) spans {actual_weeks:.1f} weeks, "
         f"meeting the full {weeks_expected}-week authorization period.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -5214,6 +5934,10 @@ def _check_SCH06(rule: dict, fields: dict) -> tuple:
             "No mention of another related therapy (OT/PT/speech) found -- no overlap to check.",
             None, 0.8,
         )
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/uncertain
+    # used to hardcode page=None even though the therapy mention's own
+    # match position was available.
+    page = _page_for_offset(fields, m.start())
     window = text[max(0, m.start() - 200):m.end() + 200]
     has_schedule_info = bool(re.search(
         r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b|\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
@@ -5224,14 +5948,14 @@ def _check_SCH06(rule: dict, fields: dict) -> tuple:
             "pass",
             "Another related therapy is mentioned and schedule/time information for it appears nearby in "
             "the document.",
-            None, 0.65,
+            page, 0.65,
         )
     return (
         "uncertain",
         "Another related therapy (OT/PT/speech) is mentioned as received, but no day/time schedule "
         "information for it was found nearby in the document -- cannot confirm whether its schedule was "
         "added to the TP as required.",
-        None, 0.0,
+        page, 0.0,
     )
 
 
@@ -5243,23 +5967,38 @@ def _check_GIP19(rule: dict, fields: dict) -> tuple:
     "Behavioral Summary:" field -- the same field name QA-RPT-01's own
     checker already reads elsewhere in this file, reused here rather
     than guessed at fresh.
+
+    Fix Round (2026-09-10), item 22 -- REAL BUG FOUND AND FIXED: the
+    summary check used to read only the SAME line as "Behavioral
+    Summary:"; a genuinely-present summary that wraps onto the next line
+    (a real, confirmed PDF-extraction shape, same bug class as items 9/27
+    -- see _extract_labeled_value) read as blank and failed this rule
+    even though the summary was really there. Now uses
+    _extract_labeled_value's multi-line lookahead instead of a same-line-
+    only regex capture.
     """
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None; cites the Behavior-domain goal's real match
+    # position when present, else the (also real) whole-document search
+    # gave no location to cite for the fail case's "not found" half --
+    # falls back to whichever check DID find a real position.
     text = fields["full_text"]
-    has_behavior_goal = bool(re.search(r"Skill Domain:[ \t]*[^\n]*Behavior", text, re.IGNORECASE))
-    summary_m = re.search(r"Behavioral Summary:[ \t]*([^\n]*)", text, re.IGNORECASE)
-    has_summary = bool(summary_m and summary_m.group(1).strip())
+    behavior_goal_m = re.search(r"Skill Domain:[ \t]*[^\n]*Behavior", text, re.IGNORECASE)
+    has_behavior_goal = bool(behavior_goal_m)
+    has_summary = bool(_extract_labeled_value(text, "Behavioral Summary"))
     if has_behavior_goal and has_summary:
         return (
             "pass",
             "At least one Behavior-domain goal and a non-blank Behavioral Summary section are both present.",
-            None, 0.8,
+            _page_for_offset(fields, behavior_goal_m.start()), 0.8,
         )
     missing = []
     if not has_behavior_goal:
         missing.append("no goal with a Behavior-related Skill Domain found")
     if not has_summary:
         missing.append("Behavioral Summary section is missing or blank")
-    return "fail", "; ".join(missing) + ".", None, 0.75
+    page = _page_for_offset(fields, behavior_goal_m.start()) if behavior_goal_m else None
+    return "fail", "; ".join(missing) + ".", page, 0.75
 
 
 # Fix Round, Section 1: QA-GIP-26's own real false-pass bug -- confirmed
@@ -5302,10 +6041,13 @@ def _check_GIP26(rule: dict, fields: dict) -> tuple:
             page = _page_for_offset(fields, starts[i])
             hits.append((page, combined.strip()[:150]))
     if not hits:
+        # Fix Round (2026-09-11), page-number enforcement gap: same fix as
+        # _check_GIP30/31/33 -- cites the first scanned goal block's page.
+        page = _page_for_offset(fields, starts[0]) if len(starts) > 1 else None
         return (
             "pass",
             "No goal's own Target Goal/Skill Domain text mentions OT, PT, or speech therapy.",
-            None, 0.8,
+            page, 0.8,
         )
     if len(hits) == 1:
         page, detail = hits[0]
@@ -5346,6 +6088,7 @@ def _check_GIP13(rule: dict, fields: dict) -> tuple:
         )
     starts = _goal_block_starts(text) + [len(text)]
     goal_count = 0
+    first_qualifying_offset = None
     for i in range(len(starts) - 1):
         block = text[starts[i]:starts[i + 1]]
         if not block.startswith("Target Goal:"):
@@ -5354,47 +6097,72 @@ def _check_GIP13(rule: dict, fields: dict) -> tuple:
         if sd_m and "parent training" in sd_m.group(1).lower():
             continue  # Parent Training goals are excluded by this rule's own scope
         goal_count += 1
+        if first_qualifying_offset is None:
+            first_qualifying_offset = starts[i]
     if goal_count == 0:
         return "not_checkable", "No qualifying skill-acquisition goal blocks found to count.", None, 0.0
+    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
+    # to hardcode page=None even though the first qualifying goal's real
+    # offset was already tracked above -- this is a whole-document count
+    # comparison, so no single page fully represents it, but citing the
+    # first qualifying goal is a real, honest starting point for a reviewer.
+    page = _page_for_offset(fields, first_qualifying_offset)
     if goal_count < hours:
         return (
             "fail",
             f"{goal_count} qualifying goal(s) found (excl. Parent Training/Behavior Reduction), but "
             f"{hours} hours/week of 97153 requested -- fewer than 1 goal per hour.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "pass",
         f"{goal_count} qualifying goal(s) found for {hours} hours/week of 97153 requested -- at least "
         f"1 goal per hour.",
-        None, 0.75,
+        page, 0.75,
     )
+
+
+_GIP21_BARE_NUMBER_RE = re.compile(
+    r"^[ \t]*\d+(?:[ \t]*-[ \t]*\d+)?"  # a number, or a range like "5-6"
+    r"(?:[ \t]*(?:times?|per\s+\w+|%|percent))*"  # trailing unit words only, no other prose
+    r"[ \t.]*$",
+    re.IGNORECASE,
+)
 
 
 def _check_GIP21(rule: dict, fields: dict) -> tuple:
     """QA-GIP-21: "Behavior goals include an explanation and indicate
-    'mastered by' status." Deliberately a HYBRID checker, same shape as
-    QA-BIP-05/QA-PROB-02 -- this rule's own current description bundles
-    TWO real, separately-verifiable facts, and only ONE of them is
-    genuinely extractable text right now:
+    'mastered by' status." HYBRID checker, same shape as QA-BIP-05/
+    QA-PROB-02 -- this rule's own current description bundles TWO real,
+    separately-verifiable facts:
 
-    - "indicate 'mastered by' status" -- a real, extractable field:
-      'Anticipated Mastery Date:' (confirmed present per goal block on
-      the real sample TP, e.g. 'Anticipated Mastery Date: 11/03/2026').
-      Checked deterministically for every Behavior Reduction Goal
-      ('Target Name:') block.
-    - "include an explanation" -- genuinely ambiguous without a real
-      document showing what counts as a real explanation vs. a missing
-      one (no established field/pattern for this in this codebase, and
-      inventing a 'confirmed real phrasing' example without one would be
-      dishonest -- every other concrete-example note in this file cites
-      an actual real document). NOT attempted deterministically; when the
-      mastery-date half is satisfied, this still escalates (not_checkable)
-      for the explanation-adequacy half, which stays genuinely judgment.
+    - "indicate 'mastered by' status" -- 'Anticipated Mastery Date:'
+      (confirmed present per goal block on the real sample TP).
+    - "include an explanation" -- Fix Round (2026-09-11 night), REAL FIX:
+      confirmed directly against the real Daylyn Holland document (zero
+      real API cost -- local PDF text extraction only, no guessing) that
+      this template has no dedicated "explanation" field, but a REAL
+      explanatory signal does exist in two places every goal block
+      already has: "Additional Notes:" (when non-blank), or the "Current
+      Data:" field itself carrying real narrative text beyond a bare
+      number when progress has stalled -- confirmed real example on this
+      document: "Current Data: 0  Frequency incorrect reporting - BT has
+      been retrained." A bare number/frequency phrase with nothing else
+      ("Current Data: 5-6 times per session") is NOT an explanation:
+      _GIP21_BARE_NUMBER_RE distinguishes the two. This was previously
+      always escalated to judgment (not_checkable) even when both mastery
+      date and a real explanation were plainly present -- confirmed real
+      contributor to this rule's coin-flip instability, since asking
+      judgment to re-derive "is this an explanation" on the SAME document
+      varied run to run. Genuinely still not_checkable only when a goal
+      has NEITHER Additional Notes text NOR Current Data narrative --
+      that residual case stays judgment (rare on real documents seen so
+      far, but honestly flagged rather than forced to a guess).
     """
     text = fields["full_text"]
     starts = _goal_block_starts(text) + [len(text)]
-    problems = []
+    mastery_problems = []
+    explanation_problems = []
     checked = 0
     for i in range(len(starts) - 1):
         block = text[starts[i]:starts[i + 1]]
@@ -5402,25 +6170,241 @@ def _check_GIP21(rule: dict, fields: dict) -> tuple:
             continue  # skill-acquisition ("Target Goal:") blocks aren't behavior goals
         checked += 1
         goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
+        page = _page_for_offset(fields, starts[i])
         amd_m = re.search(r"Anticipated Mastery Date:[ \t]*([^\n]*)", block)
         amd_val = amd_m.group(1).strip() if amd_m else ""
         if not amd_val:
-            page = _page_for_offset(fields, starts[i])
-            problems.append((page, f"Goal '{goal_name[:120]}' has no 'Anticipated Mastery Date' (mastered-by status) indicated."))
+            mastery_problems.append((page, f"Goal '{goal_name[:120]}' has no 'Anticipated Mastery Date' (mastered-by status) indicated."))
+
+        notes_m = re.search(r"Additional Notes:[ \t]*([^\n]*)", block)
+        notes_val = notes_m.group(1).strip() if notes_m else ""
+        data_m = re.search(r"Current Data:[ \t]*([^\n]*)", block)
+        data_val = data_m.group(1).strip() if data_m else ""
+        has_explanation = bool(notes_val) or (bool(data_val) and not _GIP21_BARE_NUMBER_RE.match(data_val))
+        if not has_explanation:
+            explanation_problems.append((page, f"Goal '{goal_name[:120]}' has no explanation in 'Additional Notes:' or narrative in 'Current Data:'."))
 
     if checked == 0:
         return "not_checkable", "No Behavior Reduction Goal ('Target Name:') blocks found in this document.", None, 0.0
+
+    problems = mastery_problems + explanation_problems
     if problems:
         if len(problems) == 1:
             page, detail = problems[0]
             return "fail", detail, page, 0.8
         evidence = [{"page": page, "detail": detail} for page, detail in problems]
         return "fail", evidence, None, 0.8
+    page = _page_for_offset(fields, starts[0])
+    return (
+        "pass",
+        f"All {checked} Behavior Reduction Goal(s) indicate an Anticipated Mastery Date and include a "
+        f"real explanation (Additional Notes or Current Data narrative).",
+        page, 0.8,
+    )
+
+
+# Fix Round (2026-09-11 night), standard ABA billing CPT codes -- the
+# same set QA-HRS-08's own rules.json notes already name ("97151/97153/
+# 97154 etc.") plus the other codes already used elsewhere in this file
+# (97152/97155/97156/97158, per CPT's own published ABA code set).
+_STANDARD_ABA_CPT_CODES = frozenset({"97151", "97152", "97153", "97154", "97155", "97156", "97158"})
+
+
+def _check_HRS08(rule: dict, fields: dict) -> tuple:
+    """QA-HRS-08: "Codes/hours match insurance billing codes guide."
+    Fix Round (2026-09-11 night) -- REAL FIX, not a re-vote: this rule had
+    NO deterministic checker registered at all (fell straight to
+    NEEDS_BACKEND_INTEGRATION, confidence 0.0, always escalated) despite
+    its own rules.json notes already describing exactly what to check and
+    already deciding the right bar for this specific rule (Round 92's own
+    override): confirming the stated CPT codes are real, well-formed,
+    standard ABA codes used consistently throughout the document IS
+    sufficient for a confident pass -- the actual named "billing codes
+    guide" document was never available to this pipeline and isn't needed
+    for that bar. Built here: extracts every 5-digit 97xxx code
+    mentioned, fails if any isn't a recognized standard ABA code.
+    """
+    text = fields["full_text"]
+    matches = list(re.finditer(r"\b(97\d{3})\b", text))
+    if not matches:
+        return "not_checkable", "No CPT billing code (e.g. 97151/97153/97154) found anywhere in this TP.", None, 0.0
+    codes = sorted({m.group(1) for m in matches})
+    page = _page_for_offset(fields, matches[0].start())
+    unknown = [c for c in codes if c not in _STANDARD_ABA_CPT_CODES]
+    if unknown:
+        return (
+            "fail",
+            f"Found CPT code(s) not in the standard ABA billing code set: {unknown}. All codes found: {codes}.",
+            page, 0.75,
+        )
+    return (
+        "pass",
+        f"All CPT code(s) found in this TP ({codes}) are standard, recognized ABA billing codes, used "
+        f"consistently throughout the document.",
+        page, 0.85,
+    )
+
+
+def _check_MAST03(rule: dict, fields: dict) -> tuple:
+    """QA-MAST-03: "If no mastered goals, rationale is provided."
+    Fix Round (2026-09-11 night) -- REAL FIX, not a re-vote: confirmed
+    directly against the real Daylyn Holland document (zero real API
+    cost) that this template's own real phrasing for an empty Mastered
+    Goals section is a plain sentence on/right after the label itself
+    (e.g. "Mastered Goals: There were no mastered parent goals during
+    this authorization period.") -- a real, extractable rationale, not a
+    field this pipeline had no pattern for. Checks every "Mastered
+    Goals:" occurrence (a real document has one per goal domain --
+    Behavior Reduction, Skill Acquisition, Parent/Caregiver): a section
+    listing real "Name of Skill:" entries has mastered goals, so this
+    rule's own "if no mastered goals" precondition doesn't apply there
+    (not_applicable); an empty section needs a real, non-blank rationale
+    nearby (checked via the same multi-line-aware _extract_labeled_value
+    every other checker in this file already uses).
+    """
+    text = fields["full_text"]
+    matches = list(re.finditer(r"Mastered Goals:", text))
+    if not matches:
+        return "not_checkable", "No 'Mastered Goals:' section found anywhere in this document.", None, 0.0
+
+    empty_sections = []
+    for m in matches:
+        window = text[m.end():m.end() + 500]
+        if re.search(r"Name of Skill:", window):
+            continue  # real mastered goals present here -- precondition not met for this section
+        rationale = _extract_labeled_value(text[m.start():], "Mastered Goals")
+        page = _page_for_offset(fields, m.start())
+        empty_sections.append((page, rationale.strip()))
+
+    if not empty_sections:
+        return (
+            "not_applicable",
+            "Every 'Mastered Goals:' section in this document lists real mastered goals -- this rule's "
+            "'if no mastered goals' precondition doesn't apply here.",
+            None, 0.85,
+        )
+
+    problems = [(page, "'Mastered Goals:' section is empty with no rationale stated for why there are no mastered goals.")
+                for page, rationale in empty_sections if not rationale]
+    if problems:
+        if len(problems) == 1:
+            page, detail = problems[0]
+            return "fail", detail, page, 0.8
+        evidence = [{"page": page, "detail": detail} for page, detail in problems]
+        return "fail", evidence, None, 0.8
+
+    page = empty_sections[0][0]
+    return (
+        "pass",
+        f"{len(empty_sections)} empty 'Mastered Goals:' section(s) found, each with a real rationale stated.",
+        page, 0.8,
+    )
+
+
+def _check_HF06(rule: dict, fields: dict) -> tuple:
+    """HF-06: "Healthfirst client's testing tool/assessment has not been
+    updated within 3 months" -- read as the real failure condition this
+    checklist item is naming: for a Healthfirst patient, the testing
+    tool's own stated Assessment Date being more than 3 months before
+    this TP's current report date is a fail (a stale assessment); within
+    3 months is a pass. Fix Round (2026-09-11 night) -- REAL FIX: this
+    rule had no deterministic checker at all (pure judgment, Round-90
+    generic notes, never customized) despite being exactly the same
+    payor-gated date-math shape already proven for HF-01/QA-ACF-12/
+    QA-SM-01 -- reuses extract_acf_fields' own assessment_date extraction
+    (already built for QA-ACF-12) and the same 'Date of Current Report'
+    range every date-math checker in this file already reads.
+    """
+    detected_payor = fields.get("payor")
+    if detected_payor != "Healthfirst":
+        return (
+            "not_applicable",
+            f"Detected payor is {detected_payor!r}, not Healthfirst -- this rule only applies to "
+            f"Healthfirst patients.",
+            None, 0.9,
+        )
+    assessment_date_str = extract_acf_fields(fields).get("assessment_date")
+    found_range = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
+    if not assessment_date_str or not found_range:
+        return (
+            "not_checkable",
+            "Could not find both the testing tool's own Assessment Date and this TP's 'Date of Current "
+            "Report' to compute the 3-month window.",
+            None, 0.0,
+        )
+    report_range = (found_range[0], found_range[1])
+    page = _page_for_offset(fields, found_range[2])
+    assessment_date = datetime.strptime(assessment_date_str, "%m/%d/%Y")
+    report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
+    months_since = (report_end - assessment_date).days / 30.44
+    if months_since <= 3:
+        return (
+            "pass",
+            f"Testing tool Assessment Date {assessment_date_str} is {months_since:.1f} months before the "
+            f"current report's end date {report_range[1]} -- within the 3-month window.",
+            page, 0.8,
+        )
+    return (
+        "fail",
+        f"Testing tool Assessment Date {assessment_date_str} is {months_since:.1f} months before the "
+        f"current report's end date {report_range[1]} -- exceeds the 3-month window.",
+        page, 0.8,
+    )
+
+
+_SCH05_HOURS_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)\s*hours?\b", re.IGNORECASE)
+
+
+def _check_SCH05(rule: dict, fields: dict) -> tuple:
+    """QA-SCH-05: "School hours match total under educational history, if
+    applicable." Fix Round (2026-09-11 night) -- REAL, PARTIAL FIX, with
+    an honestly-disclosed remaining limitation (not silently claimed
+    complete): this rule had NO checker at all despite being labeled
+    deterministic, always escalating -- confirmed the real root cause of
+    its instability the same way as QA-HRS-08/HF-06/QA-MAST-03 above.
+
+    Confirmed directly against the real Daylyn Holland document (zero
+    real API cost, local extraction only): the "Educational History:"
+    section states the school SCHEDULE as free prose ("Monday through
+    Friday from 7:00 a.m. to 2:20 p.m."), not a labeled numeric hours
+    total -- and no second, separately-labeled "school hours" total field
+    exists anywhere else in this document to compare it against. This
+    rule's own "if applicable" wording covers exactly this case: with no
+    second stated total to compare against, the comparison genuinely
+    doesn't apply -- a real, stable not_applicable, not a guess.
+
+    HONEST LIMITATION: the actual NUMERIC COMPARE this rule names has not
+    been built, because no real document seen so far states both an
+    explicit "Educational History" hours figure AND a second total to
+    check it against -- inventing that comparison's exact shape without
+    a real example to confirm it against would be exactly the kind of
+    fabricated-example the project has deliberately avoided elsewhere.
+    If EITHER section states an explicit "N hours" figure, this returns
+    not_checkable naming what was found, rather than silently guessing a
+    match -- flagged for a real compare to be built once a document with
+    both fields is available.
+    """
+    text = fields["full_text"]
+    edu_m = re.search(r"Educational History:", text)
+    if not edu_m:
+        return "not_checkable", "No 'Educational History:' section found in this document.", None, 0.0
+    page = _page_for_offset(fields, edu_m.start())
+    edu_window = text[edu_m.end():edu_m.end() + 1500]
+    edu_hours_m = _SCH05_HOURS_NUMBER_RE.search(edu_window)
+    if not edu_hours_m:
+        return (
+            "not_applicable",
+            "The 'Educational History:' section describes the school schedule but states no explicit "
+            "school-hours total to compare against -- this rule's own 'if applicable' comparison doesn't "
+            "apply here.",
+            page, 0.8,
+        )
     return (
         "not_checkable",
-        f"All {checked} Behavior Reduction Goal(s) indicate an Anticipated Mastery Date -- but whether "
-        f"each also includes a real explanation still requires reading the full narrative.",
-        None, 0.0,
+        f"Found an explicit hours figure in 'Educational History:' ({edu_hours_m.group(0)!r}) but no "
+        f"separately-labeled second total elsewhere in the document has been confirmed to compare it "
+        f"against -- this comparison's real shape hasn't been built against a confirmed real example yet.",
+        page, 0.3,
     )
 
 
@@ -5508,7 +6492,13 @@ DET_CHECKS = {
     # QA-PAR-03/QA-MAST-04 are NOT in this dict (judgment, for confirmed
     # real reasons, not left unbuilt by omission).
     "QA-BAR-01": _check_BAR01,
-    "HF-05": _check_HF05,
+    # HF-05 REMOVED from this dict (Fix Round, 2026-09-10, item 7) -- real
+    # rule-identity mismatch confirmed: this rule now means "fewer than 3
+    # real data points on a PRT goal -> rationale must show a plan for
+    # improvement," a genuine graph-image judgment question (same shape
+    # as QA-GIP-32/QA-PAR-03), not the old hours-approved-vs-requested
+    # comparison _check_HF05 (still here, unused by any rule_id now) was
+    # built for. See VISION_ELIGIBLE_RULE_SECTIONS's own note above.
     "QA-COC-06": _check_COC06,
     "QA-RPT-07": _check_RPT07,
     "QA-SCH-06": _check_SCH06,
@@ -5521,6 +6511,16 @@ DET_CHECKS = {
     # half stays judgment).
     "QA-GIP-13": _check_GIP13,
     "QA-GIP-21": _check_GIP21,
+    # Fix Round (2026-09-11 night), "Stop Over-Using the Uncertain Safety
+    # Net": 3 rules that had NO real deterministic checker at all (always
+    # escalated to judgment, the real root cause of their coin-flip
+    # instability, not a genuine image/graph dependency) -- see each
+    # function's own docstring above DET_CHECKS's own definition.
+    "QA-HRS-08": _check_HRS08,
+    "QA-MAST-03": _check_MAST03,
+    "HF-06": _check_HF06,
+    "QA-SCH-05": _check_SCH05,
+    "QA-GIP-22": _check_GIP22,
     # QA-BIO-03 relabeled from judgment to deterministic this round -- see
     # its rules.json notes for why the old BIO-01-derived "needs external
     # diagnostic report" dependency didn't actually apply to this rule.
@@ -5539,6 +6539,9 @@ DET_CHECKS = {
     # Round 92: hybrid DET pre-check (precondition (a) only), same shape as
     # QA-PROB-02 -- see _check_GIP23's own docstring.
     "QA-GIP-23": _check_GIP23,
+    # Fix Round (2026-09-11), item 23: hybrid DET precondition (same shape
+    # as QA-HRS-05/QA-GIP-23) -- see _check_GIP07's own docstring.
+    "QA-GIP-07": _check_GIP07,
     # Round 83, item 2b: hybrid DET pre-check, same shape as QA-PROB-02/
     # QA-BIP-05 -- see _check_GIP05's own docstring.
     "QA-GIP-05": _check_GIP05,

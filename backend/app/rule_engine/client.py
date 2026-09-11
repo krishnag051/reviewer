@@ -184,6 +184,31 @@ def run_rule_checks(
         )
         extra_fields["intake_bcba_name_credentials_npi"] = upload.intake_answers.bcba_name_credentials_npi
 
+    # Fix Round (2026-09-10), item 11 -- REAL INTEGRATION BUG FOUND AND
+    # (partially) FIXED: QA-PPI-01 ("Patient info matches Central Reach")
+    # was answering "not_checkable" unconditionally -- the judgment call
+    # never received any real Central Reach fact to compare against, so
+    # "unavailable" was the only honest answer it could ever give. This
+    # backend's only real, structured, Central-Reach-sourced patient fact
+    # captured PRIOR to upload is Patient.name (see app/db/models.py --
+    # there is no separate DOB/insurance-ID/etc. CR intake field anywhere
+    # in this schema yet, unlike QA-SCH-02's dedicated intake_answers
+    # columns). This wires that one real fact through via the same
+    # extra_rule_context mechanism, so the judge can genuinely compare the
+    # TP's own extracted patient name against it -- but this is a partial
+    # fix, not the full "matches Central Reach" ma'am's ask implies: name
+    # only, not DOB/insurance ID/other CR fields, since those don't exist
+    # as captured data anywhere in this system yet. Flagged, not silently
+    # claimed complete.
+    patient = upload.version.patient
+    if patient is not None and patient.name:
+        extra_rule_context["QA-PPI-01"] = (
+            f"Patient Central Reach Information record -- Patient Name: {patient.name!r}. "
+            f"(This is the only Central Reach field this system currently captures prior to "
+            f"upload; DOB/insurance ID/other CR fields are not yet collected anywhere in this "
+            f"backend, so this comparison is name-only, not a full CR match.)"
+        )
+
     result = review_treatment_plan(
         upload.file_path,
         supporting_doc_path=upload.supporting_document_path,

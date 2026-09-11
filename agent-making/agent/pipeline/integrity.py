@@ -16,6 +16,27 @@ stubborn rule -- it's to mark ONLY that rule_id "not_checkable" (an honest
 every other genuine "no confident answer" case) and let every other rule's
 real result through untouched. See run_judgment_with_integrity_check's own
 docstring below for the mechanics.
+
+Fix Round (2026-09-11 evening) -- REAL REGRESSION FOUND AND FIXED: page-
+number enforcement (an earlier round this same day) made judge.py drop a
+finding that answered the rule correctly but couldn't cite a page, same as
+a genuinely-missing rule_id -- so a rule that reaffirmed "pass" on every
+single retry, just never with a page, looked identical to one the model
+never answered at all, and after `max_retries` got silently converted to
+"not_checkable" -- discarding a real, repeatedly-confirmed judgment.
+Confirmed live: QA-BIO-17, QA-GIP-32, QA-GIP-14, QA-GIP-28, QA-AI-02,
+QA-AI-03, QA-AI-04 all did this on one real document. judge.py no longer
+drops these (see `_findings_dict_from_list`'s own docstring) -- they now
+come back flagged `page_unresolved: True` instead of being absent
+entirely, so this module's missing-rule_id retry/exhaustion logic below
+never sees them as missing in the first place. What THIS module adds on
+top: `_run_page_recovery_pass`, a separate, bounded retry specifically for
+the page citation, that can only ever ADD a page to an already-accepted
+answer -- never override, downgrade, or flip the `result` it's attached
+to. This is deliberate for stability (see that function's own docstring):
+letting a page-only retry also relitigate the substantive verdict would
+reintroduce exactly the kind of run-to-run flip the Judgment Layer
+Stability round already fixed once.
 """
 from . import judge
 
@@ -24,6 +45,11 @@ NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE = (
     "{attempts} attempt(s) (dropped from the self-consistency check each time, or "
     "internally rejected as evidence_supports_result=false). Flagged not_checkable "
     "rather than guessed at or silently omitted."
+)
+
+PAGE_UNAVAILABLE_NOTE = (
+    " (A specific page could not be confirmed for this finding after {attempts} "
+    "attempt(s) -- the result itself is unaffected.)"
 )
 
 
@@ -111,7 +137,7 @@ def run_judgment_with_integrity_check(
     while True:
         missing = missing_rule_ids(sent_ids, results)
         if not missing:
-            return results
+            return _run_page_recovery_pass(judgment_rules, fields, rendered_images, results, tracker=tracker, model_override=model_override)
         attempt += 1
         if attempt > max_retries:
             if len(missing) >= len(sent_ids):
@@ -133,7 +159,7 @@ def run_judgment_with_integrity_check(
                     "page": None,
                     "confidence": 0.0,
                 }
-            return results
+            return _run_page_recovery_pass(judgment_rules, fields, rendered_images, results, tracker=tracker, model_override=model_override)
         retry_rules = [r for r in judgment_rules if r["rule_id"] in missing]
         retry_results = judge.run_judgment_checks(
             retry_rules,
@@ -144,3 +170,99 @@ def run_judgment_with_integrity_check(
             model_override=model_override,
         )
         results.update(retry_results)
+
+
+def _run_page_recovery_pass(
+    judgment_rules: list[dict],
+    fields: dict,
+    rendered_images: dict[int, bytes],
+    results: dict[str, dict],
+    *,
+    tracker=None,
+    model_override: str | None = None,
+    max_page_retries: int = 2,
+) -> dict[str, dict]:
+    """Fix Round (2026-09-11 evening) -- the "maximize real page coverage"
+    half of this round's fix. `results` at this point already has a real,
+    accepted answer for every sent rule_id (this function's caller only
+    reaches here once the missing-rule_id loop is done) -- some of those
+    answers are flagged `page_unresolved: True` by judge.py because no
+    page could be cited for them yet. This makes up to `max_page_retries`
+    additional, cheap 2-call attempts asking specifically for those
+    rule_ids again, hoping for a page this time.
+
+    STABILITY, non-negotiable (see this module's own docstring, and the
+    Judgment Layer Stability round this must not undo): a retry here can
+    only ever ADD a page to an already-decided `result` -- it can never
+    change what that result IS. A retry response is adopted only when its
+    own `result` matches the one already accepted; if the retry disagrees
+    on the substance (a different result) OR still can't cite a page
+    either, the ORIGINAL accepted answer is kept completely unchanged.
+    This makes the pass idempotent with respect to `result`: running it
+    zero, one, or `max_page_retries` times can only ever affect whether a
+    page is attached, never which rule_ids are pass/fail/uncertain/etc --
+    so it cannot itself become a new source of run-to-run flips.
+
+    After `max_page_retries` attempts, any rule_id still `page_unresolved`
+    keeps its real, already-accepted result with `page: None`, and gets a
+    short, honest note appended to its evidence (only when evidence is a
+    plain string; the {page, detail} list form already explains itself)
+    -- the same "accept the answer, mark the page as legitimately
+    unavailable" pattern this round's fix requires, instead of the
+    not_checkable-discard this replaces.
+    """
+    unresolved_ids = [rid for rid, r in results.items() if r.get("page_unresolved")]
+    attempts_made = 0
+    for attempt in range(1, max_page_retries + 1):
+        if not unresolved_ids:
+            break
+        attempts_made = attempt
+        retry_rules = [r for r in judgment_rules if r["rule_id"] in unresolved_ids]
+        retry_results = judge.run_judgment_checks(
+            retry_rules,
+            fields,
+            rendered_images,
+            tracker=tracker,
+            call_reason=f"page-recovery {attempt}/{max_page_retries} ({len(unresolved_ids)} rule_id(s) missing a page)",
+            model_override=model_override,
+        )
+        still_unresolved = []
+        for rule_id in unresolved_ids:
+            retried = retry_results.get(rule_id)
+            if retried is None:
+                still_unresolved.append(rule_id)  # dropped this attempt -- keep the original, try again
+                continue
+            if retried["result"] != results[rule_id]["result"]:
+                # A different verdict this time is a genuine disagreement,
+                # not a page-only refinement -- never adopted here (that
+                # would make this pass a hidden second vote on the
+                # substance, reintroducing run-to-run instability). Keep
+                # the original answer untouched either way.
+                still_unresolved.append(rule_id)
+                continue
+            if retried.get("page_unresolved"):
+                still_unresolved.append(rule_id)  # same verdict, still no page -- try again
+                continue
+            results[rule_id] = retried  # same verdict, now with a real page (or a legit exemption) -- adopt it
+        unresolved_ids = still_unresolved
+
+    if unresolved_ids:
+        print(
+            f"[integrity] {len(unresolved_ids)} rule_id(s) kept their real answer but never got a "
+            f"page after {attempts_made} page-recovery attempt(s) -- accepting the answer with an "
+            f"honest 'page unavailable' note rather than discarding it: {unresolved_ids}"
+        )
+    for rule_id in unresolved_ids:
+        finding = results[rule_id]
+        note = PAGE_UNAVAILABLE_NOTE.format(attempts=attempts_made + 1)  # +1: the initial attempt too
+        if isinstance(finding["evidence"], str):
+            finding["evidence"] = finding["evidence"] + note
+        finding.pop("page_unresolved", None)
+
+    # Clear the internal bookkeeping flag from every OTHER finding too --
+    # it's how this pass tracks its own work, never part of the public
+    # finding shape callers/tests further downstream should see.
+    for finding in results.values():
+        finding.pop("page_unresolved", None)
+
+    return results

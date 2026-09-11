@@ -381,6 +381,7 @@ def test_end_to_end_phase_2_fires_and_resolves_a_tagged_finding(monkeypatch, tmp
             "rule_id": "QA-HRS-01", "result": "not_checkable",
             "evidence": "No coordinator email available to compare against.",
             "page": None, "confidence": 0.3, "evidence_supports_result": True,
+            "nothing_relevant_found_anywhere": True,
         }],
         extraction_fields=extraction_fields,
         resolutions=[{
@@ -393,7 +394,17 @@ def test_end_to_end_phase_2_fires_and_resolves_a_tagged_finding(monkeypatch, tmp
     tp_pdf = _blank_pdf(tmp_path, "tp.pdf")
     supporting_pdf = _blank_pdf(tmp_path, "supporting.pdf")
 
-    result = api.review_treatment_plan(tp_pdf, supporting_doc_path=supporting_pdf, max_calls=20)
+    # Fix Round (2026-09-11 evening) -- REAL TEST-ISOLATION BUG FOUND AND
+    # FIXED: this test's tp_pdf/supporting_pdf/TINY_RULES content is
+    # byte-identical every run (fitz.open().new_page() produces the same
+    # bytes each time), so review_treatment_plan's own on-disk cache
+    # (`.cache/tp_reviews/`, real and persistent across pytest sessions on
+    # this machine, not test-isolated) started returning a STALE cached
+    # result from an earlier run instead of exercising this test's mocked
+    # client at all -- confirmed live, this test silently passed on a
+    # cache hit with zero calls to the fake client. force_refresh=True
+    # guarantees this test always exercises its own mock, every run.
+    result = api.review_treatment_plan(tp_pdf, supporting_doc_path=supporting_pdf, max_calls=20, force_refresh=True)
 
     assert result["status"] == "complete", result.get("error")
     assert len(resolution_calls) == 1, "phase 2 must have fired exactly once"
@@ -417,6 +428,7 @@ def test_end_to_end_phase_2_does_not_fire_when_no_supporting_doc_given(monkeypat
         judgment_findings=[{
             "rule_id": "QA-HRS-01", "result": "not_checkable", "evidence": "e",
             "page": None, "confidence": 0.3, "evidence_supports_result": True,
+            "nothing_relevant_found_anywhere": True,
         }],
         extraction_fields=_full_extraction_all_none(),
         resolutions=[],
@@ -444,7 +456,7 @@ def test_end_to_end_phase_2_does_not_fire_when_phase_1_already_resolves_qa_hrs_0
         monkeypatch,
         judgment_findings=[{
             "rule_id": "QA-HRS-01", "result": "pass", "evidence": "23 hrs/week matches.",
-            "page": None, "confidence": 0.8, "evidence_supports_result": True,
+            "page": 3, "confidence": 0.8, "evidence_supports_result": True,
         }],
         extraction_fields=extraction_fields,
         resolutions=[],
@@ -452,7 +464,10 @@ def test_end_to_end_phase_2_does_not_fire_when_phase_1_already_resolves_qa_hrs_0
 
     tp_pdf = _blank_pdf(tmp_path, "tp.pdf")
     supporting_pdf = _blank_pdf(tmp_path, "supporting.pdf")
-    result = api.review_treatment_plan(tp_pdf, supporting_doc_path=supporting_pdf, max_calls=20)
+    # Fix Round (2026-09-11 evening): same real cache-hit test-isolation
+    # bug as test_end_to_end_phase_2_fires_and_resolves_a_tagged_finding
+    # above -- see that test's own comment for the full diagnosis.
+    result = api.review_treatment_plan(tp_pdf, supporting_doc_path=supporting_pdf, max_calls=20, force_refresh=True)
 
     assert result["status"] == "complete", result.get("error")
     assert len(resolution_calls) == 0, "phase 1 already resolved this -- phase 2 must not fire"

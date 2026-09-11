@@ -101,9 +101,10 @@ def _finding_reproducing_the_hf01_contradiction(evidence_supports_result: bool):
             "matches the expected pattern for >13, so this should be "
             "reconsidered."
         ),
-        "page": None,
+        "page": 1,  # Fix Round (2026-09-11), item 3: real page -- not what this test is about.
         "confidence": 0.8,
         "evidence_supports_result": evidence_supports_result,
+        "nothing_relevant_found_anywhere": False,
     }
 
 
@@ -137,13 +138,9 @@ def test_hf01_rule_definition_has_explicit_params_and_criteria_in_notes():
     rules = json.loads(rules_path.read_text(encoding="utf-8"))["rules"]
     hf01 = next(r for r in rules if r["rule_id"] == "HF-01")
 
-    # Fix Round (2026-08-26): months -> exact weeks, see fields.py::_check_HF01's
-    # own docstring for why (calendar-month math needed a +/-10 day tolerance
-    # for month-length variance; a fixed week-count doesn't).
-    assert hf01["params"] == {
-        "age_threshold": 13,
-        "short_range_weeks": 13,
-        "long_range_weeks": 26,
-    }
-    assert "PASS" in hf01["notes"]
-    assert "FAIL" in hf01["notes"]
+    # Fix Round (2026-09-10), item 6: the age-conditional split was removed
+    # entirely per ma'am's direct ask -- flat 13-week range for every
+    # Healthfirst patient, regardless of age. See fields.py::_check_HF01's
+    # own docstring.
+    assert hf01["params"] == {"auth_range_weeks": 13}
+    assert "13-week" in hf01["notes"] or "13 week" in hf01["notes"]

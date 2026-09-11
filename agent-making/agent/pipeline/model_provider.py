@@ -38,6 +38,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -586,21 +587,37 @@ class CallTracker:
         self.calls_by_provider: dict[str, int] = {}
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        # Fix Round (Performance, 2026-09-11): both real call sites this
+        # tracker guards (judge.py's 5-way vote, agent_client.py's
+        # humanize batch) now run their calls concurrently across a
+        # thread pool, sharing this ONE tracker instance per batch -- see
+        # each one's own docstring. `self.count += 1` and the dict/int
+        # increments below are not atomic in Python under concurrent
+        # access from multiple threads (a classic lost-update race), so
+        # without this lock two threads' calls could both pass
+        # check_before_call() when only one call's budget remains,
+        # silently exceeding max_calls -- a real correctness gap for the
+        # one thing this class exists to enforce. A plain lock is enough
+        # here (not a more elaborate primitive): both guarded methods are
+        # short and never block on I/O while holding it.
+        self._lock = threading.Lock()
 
     def check_before_call(self) -> None:
-        if self.max_calls is not None and self.count >= self.max_calls:
-            raise ModelCallError(
-                f"Refusing call #{self.count + 1}: cap is {self.max_calls}. Stopped before making the call, not after."
-            )
+        with self._lock:
+            if self.max_calls is not None and self.count >= self.max_calls:
+                raise ModelCallError(
+                    f"Refusing call #{self.count + 1}: cap is {self.max_calls}. Stopped before making the call, not after."
+                )
 
     def record(self, *, reason: str, provider: str, model: str, usage: dict) -> None:
-        self.count += 1
-        self.calls_by_provider[provider] = self.calls_by_provider.get(provider, 0) + 1
-        self.total_input_tokens += usage.get("input_tokens", 0)
-        self.total_output_tokens += usage.get("output_tokens", 0)
-        print(
-            f"[model-provider] call #{self.count} ({provider}:{model}, reason={reason!r}) -- "
-            f"tokens in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}. "
-            f"Running total: {self.count}{f'/{self.max_calls}' if self.max_calls else ''} "
-            f"({self.calls_by_provider})"
-        )
+        with self._lock:
+            self.count += 1
+            self.calls_by_provider[provider] = self.calls_by_provider.get(provider, 0) + 1
+            self.total_input_tokens += usage.get("input_tokens", 0)
+            self.total_output_tokens += usage.get("output_tokens", 0)
+            print(
+                f"[model-provider] call #{self.count} ({provider}:{model}, reason={reason!r}) -- "
+                f"tokens in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}. "
+                f"Running total: {self.count}{f'/{self.max_calls}' if self.max_calls else ''} "
+                f"({self.calls_by_provider})"
+            )

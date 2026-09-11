@@ -53,7 +53,15 @@ def test_a_genuine_near_even_split_still_honestly_reports_uncertain_not_a_coin_f
 
     def fake_once(judgment_rules, fields, rendered_images, tracker=None, call_reason="call", model_override=None):
         call_log.append(call_reason)
-        return {"A-1": _finding(outcomes[len(call_log) - 1])}
+        # Fix Round (2026-09-11 evening): the initial 5-way vote reports
+        # "uncertain" (correctly, no majority) with page=None -- this now
+        # legitimately triggers integrity.py's own page-recovery pass,
+        # which makes further real calls beyond these initial 5. Every
+        # call past the initial batch still honestly reports "uncertain"
+        # (repeating the last outcome), same as a real page-recovery
+        # attempt that reaffirms the same verdict without finding a page.
+        index = min(len(call_log) - 1, len(outcomes) - 1)
+        return {"A-1": _finding(outcomes[index])}
 
     monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_once)
     rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]

@@ -200,6 +200,22 @@ def extract_weekly_schedule_day_texts(full_text: str) -> dict[str, str] | None:
     return dict(zip(DAYS_OF_WEEK, buckets))
 
 
+def extract_weekly_schedule_day_texts_with_offset(full_text: str) -> tuple[dict[str, str], int] | None:
+    """Fix Round (2026-09-11), page-number enforcement gap: same result as
+    extract_weekly_schedule_day_texts, plus the day-of-week header's own
+    match offset -- QA-SCH-01/QA-SCH-07 used to hardcode page=None on
+    every result even though the real position of the schedule grid this
+    whole computation is about was right here, just never returned.
+    """
+    header_m = _DAY_HEADER_PATTERN.search(full_text)
+    if not header_m:
+        return None
+    day_texts = extract_weekly_schedule_day_texts(full_text)
+    if day_texts is None:
+        return None
+    return day_texts, header_m.start()
+
+
 # ------------------------------------------------- QA-SCH-02: real cross-check
 # against the upload's own Patient Central Reach Information intake answers
 # (Fix Round, 2026-08-26).

@@ -13,6 +13,7 @@ for this run, so it can answer prior-version-dependent rules with
 import base64
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,8 +154,34 @@ FINDINGS_TOOL = {
                             ),
                         },
                         "confidence": {"type": "number", "description": "0.0-1.0"},
+                        # Fix Round (2026-09-11), item 3 -- REAL, STRUCTURAL
+                        # enforcement, not another prose instruction: `page`
+                        # above already allows null "as a last resort," which
+                        # a model can (and confirmed live, does) reach for
+                        # out of convenience rather than genuine absence.
+                        # This field makes the model commit to WHICH case it
+                        # is, checkably -- see _findings_dict_from_list's own
+                        # enforcement of it below.
+                        "nothing_relevant_found_anywhere": {
+                            "type": "boolean",
+                            "description": (
+                                "Only meaningful when result is 'not_applicable' or 'not_checkable' -- "
+                                "must be true ONLY if you searched and found NO real, relevant "
+                                "information anywhere in the document for this rule (there is genuinely "
+                                "nothing to cite a page for). Set it to false if you found SOME relevant "
+                                "information -- a partial field, a related mention, anything real -- even "
+                                "if it wasn't enough to fully resolve the rule; in that case `page` above "
+                                "must still cite where that partial information came from. For 'pass'/"
+                                "'fail'/'uncertain' results this field is ignored -- those always came "
+                                "from real evidence, so `page` is always required for them regardless of "
+                                "this field."
+                            ),
+                        },
                     },
-                    "required": ["rule_id", "evidence", "result", "evidence_supports_result", "page", "confidence"],
+                    "required": [
+                        "rule_id", "evidence", "result", "evidence_supports_result", "page", "confidence",
+                        "nothing_relevant_found_anywhere",
+                    ],
                 },
             }
         },
@@ -643,7 +670,12 @@ def run_judgment_checks(
             # branch, so a legitimate list-shaped evidence must survive
             # unflattened (see that function's own docstring for the real
             # bug this distinction fixes).
-            reconciled[rule_id] = {**f, "evidence": _coerce_evidence_for_finding(f["evidence"])}
+            # Fix Round (2026-09-11 evening), "maximize real page
+            # coverage": prefer whichever of f/s actually carries a real
+            # page -- same preference _reconcile_majority_vote/
+            # _three_way_majority_finding now both apply.
+            winner = f if f.get("page") is not None else (s if s.get("page") is not None else f)
+            reconciled[rule_id] = {**winner, "evidence": _coerce_evidence_for_finding(winner["evidence"])}
         else:
             disagreed_ids.append(rule_id)
 
@@ -688,6 +720,28 @@ _RESULT_TO_NATURAL_PHRASE = {
 
 def _natural_result_phrase(result: str) -> str:
     return _RESULT_TO_NATURAL_PHRASE.get(result, result)
+
+
+def _short_uncertain_summary(entries: list[dict], *, split_desc: str) -> str:
+    """Fix Round (2026-09-10), item 4 -- REAL FIX: an Uncertain result's
+    evidence used to be a raw multi-call transcript dump -- "call 1 said
+    Fail (<call 1's full evidence text>); call 2 said Pass
+    (<call 2's full evidence text>); ..." -- confirmed a real usability
+    complaint (too long, reads like internal debugging output, not a
+    plain explanation). Replaced with a short vote-count summary (e.g.
+    "3 of 5 calls said Fail, 2 said Pass") and nothing else -- no
+    per-call evidence text at all. The full per-call detail was never
+    load-bearing for a reviewer's next action here (this result is always
+    "needs human review," regardless of what any individual call said);
+    dropping it is a real simplification, not a loss of anything the
+    reviewer needs to act on this specific finding.
+    """
+    counts = Counter(e["result"] for e in entries)
+    parts = [f"{n} of {len(entries)} calls said {_natural_result_phrase(r)}" for r, n in counts.most_common()]
+    return (
+        f"{', '.join(parts)} ({split_desc}) -- no clear agreement, needs human review rather than "
+        f"an automated pick."
+    )
 
 
 def _coerce_evidence_for_finding(evidence):
@@ -749,6 +803,34 @@ def _coerce_evidence_to_string(evidence) -> str:
     return json.dumps(evidence)
 
 
+def _page_for_uncertain_fallback(entries: list[dict]):
+    """Fix Round (2026-09-11), page-number enforcement gap, part 2 -- REAL
+    BUG FOUND AND FIXED: `_two_way_uncertain_finding` and
+    `_three_way_majority_finding`'s no-majority branch used to hardcode
+    `"page": None` unconditionally for a synthetic "uncertain" finding
+    built by reconciling disagreeing per-call results -- even when one or
+    more of those underlying calls DID cite a real page (each individual
+    call's own finding already passed `_findings_dict_from_list`'s
+    page-required enforcement before reaching here, so a non-null `page`
+    on any of them is real, reviewer-usable evidence, not a guess). This
+    was confirmed as a real, live contributor to the missing-page bug on
+    a real document run -- these two call sites build findings AFTER the
+    per-call enforcement runs, so they silently bypassed it entirely.
+
+    Picks the first non-null page among the disagreeing calls, in call
+    order, so the reviewer still gets pointed at a real page whenever any
+    call found one -- only true when every disagreeing call itself found
+    nothing page-specific (e.g. all disagreed while examining a
+    genuinely page-agnostic aspect of the rule) does this still return
+    None, which is the same "genuinely nothing to cite" case the
+    non-uncertain enforcement already treats as legitimate.
+    """
+    for e in entries:
+        if e.get("page") is not None:
+            return e["page"]
+    return None
+
+
 def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
     """The original (pre-Round-93) two-call disagreement fallback,
     extracted unchanged so both run_judgment_checks' own two-call path and
@@ -758,18 +840,20 @@ def _two_way_uncertain_finding(f: dict, s: dict) -> dict:
     call must fall back to today's existing "uncertain" behavior, not a
     new or different one.
     """
-    f_evidence = _coerce_evidence_to_string(f["evidence"])
-    s_evidence = _coerce_evidence_to_string(s["evidence"])
+    fallback_page = _page_for_uncertain_fallback([f, s])
     return {
         "result": "uncertain",
-        "evidence": (
-            f"Judgment layer disagreed across two consistency-check calls for this "
-            f"rule with identical input: first call said {_natural_result_phrase(f['result'])} "
-            f"({f_evidence}); second call said {_natural_result_phrase(s['result'])} ({s_evidence}). "
-            f"Flagged uncertain rather than silently keeping one of the two answers."
-        ),
-        "page": None,
+        # Fix Round (2026-09-10), item 4: short vote-count summary, not a
+        # per-call evidence dump -- see _short_uncertain_summary's own
+        # docstring.
+        "evidence": _short_uncertain_summary([f, s], split_desc="2-call disagreement"),
+        "page": fallback_page,
         "confidence": 0.0,
+        # Fix Round (2026-09-11 evening): flag for integrity.py's
+        # page-recovery pass, same as every other accepted-but-pageless
+        # finding -- an "uncertain" verdict deserves a page-recovery
+        # attempt just as much as a pass/fail does.
+        **({} if fallback_page is not None else {"page_unresolved": True}),
     }
 
 
@@ -793,26 +877,32 @@ def _three_way_majority_finding(f: dict, s: dict, t: dict) -> dict:
         # was returned completely unvalidated. Return a coerced COPY, not
         # the original dict mutated in place (it may still be referenced
         # elsewhere via `first`/`second`/`third`).
-        winner = next(e for e in entries if e["result"] == winning_result)
+        # Fix Round (2026-09-11 evening), "maximize real page coverage":
+        # same preference as _reconcile_majority_vote -- among the entries
+        # sharing the winning result, prefer one with a real page.
+        winning_entries = [e for e in entries if e["result"] == winning_result]
+        winner = (
+            next((e for e in winning_entries if e.get("page") is not None), None)
+            or next((e for e in winning_entries if not e.get("page_unresolved")), None)
+            or winning_entries[0]
+        )
         # Pass-through branch -- _coerce_evidence_for_finding, not
         # _coerce_evidence_to_string, so a legitimate list-shaped evidence
         # (FINDINGS_TOOL's own {page, detail} multi-page form) survives
         # unflattened (real bug found and fixed this round -- see that
         # function's own docstring).
         return {**winner, "evidence": _coerce_evidence_for_finding(winner["evidence"])}
-    summaries = []
-    for i, e in enumerate(entries):
-        ev = _coerce_evidence_to_string(e["evidence"])
-        summaries.append(f"call {i + 1} said {_natural_result_phrase(e['result'])} ({ev})")
+    fallback_page = _page_for_uncertain_fallback(entries)
     return {
         "result": "uncertain",
-        "evidence": (
-            "Judgment layer split with no majority across a 2-call disagreement plus its own "
-            "tie-breaking 3rd call, all with identical input: " + "; ".join(summaries) +
-            ". Flagged uncertain rather than silently keeping one answer."
+        "evidence": _short_uncertain_summary(
+            entries, split_desc="2-call disagreement plus its own tie-breaking 3rd call, no majority",
         ),
-        "page": None,
+        "page": fallback_page,
         "confidence": 0.0,
+        # Fix Round (2026-09-11 evening): same page-recovery flag as
+        # _two_way_uncertain_finding -- see that function's own comment.
+        **({} if fallback_page is not None else {"page_unresolved": True}),
     }
 
 
@@ -885,13 +975,32 @@ def run_judgment_checks_majority_vote(
     """
     if not judgment_rules:
         return {}
-    all_results = [
-        _run_judgment_checks_once(
-            judgment_rules, fields, rendered_images, tracker=tracker,
-            call_reason=f"{call_reason} (majority vote {i + 1}/{n_calls})", model_override=model_override,
-        )
-        for i in range(n_calls)
-    ]
+    # Fix Round (Performance, 2026-09-11): the n_calls vote calls are
+    # independent and stateless (identical input, no ordering dependency
+    # between them -- _reconcile_majority_vote below only ever counts
+    # votes, it doesn't care which call produced which result), so they
+    # run concurrently now instead of one-at-a-time. Bounded to n_calls
+    # workers -- this pool covers only ONE rule-batch's own vote, not the
+    # whole judgment run, so this doesn't fire more concurrent requests
+    # than the vote's own call count regardless of how many times this
+    # function is invoked. `tracker` (CallTracker) is shared across the
+    # workers -- made thread-safe (a lock around its two mutating methods)
+    # specifically for this change, see model_provider.py.
+    #
+    # Results are collected in call-index order (via list comprehension
+    # over futures, not as_completed) purely so a fixed ordering is
+    # preserved for anything downstream that might log/inspect them by
+    # position -- _reconcile_majority_vote itself is order-independent.
+    with ThreadPoolExecutor(max_workers=n_calls) as pool:
+        futures = [
+            pool.submit(
+                _run_judgment_checks_once,
+                judgment_rules, fields, rendered_images, tracker=tracker,
+                call_reason=f"{call_reason} (majority vote {i + 1}/{n_calls})", model_override=model_override,
+            )
+            for i in range(n_calls)
+        ]
+        all_results = [f.result() for f in futures]
     return _reconcile_majority_vote(all_results, min_agreement=min_agreement)
 
 
@@ -909,30 +1018,44 @@ def _reconcile_majority_vote(
         required = min_agreement if min_agreement is not None else (len(all_results) / 2)
         meets_bar = winning_count >= required if min_agreement is not None else winning_count > required
         if meets_bar:
+            # Fix Round (2026-09-11 evening), "maximize real page coverage":
+            # among the entries sharing the winning result, prefer one that
+            # actually carries a real page (or the legitimate list-evidence/
+            # nothing-found-anywhere shapes) over "whichever came first" --
+            # a real page from even ONE of the n_calls votes is real,
+            # reviewer-usable evidence and shouldn't be thrown away just
+            # because it wasn't the first vote counted.
+            winning_entries = [e for e in entries if e["result"] == winning_result]
+            winner = (
+                next((e for e in winning_entries if e.get("page") is not None), None)
+                or next((e for e in winning_entries if not e.get("page_unresolved")), None)
+                or winning_entries[0]
+            )
             # Pass-through branch -- _coerce_evidence_for_finding, not
             # _coerce_evidence_to_string (real bug found and fixed this
             # round, the moment this function was actually wired into the
             # real pipeline for the first time: a legitimate list-shaped
             # evidence was being silently flattened here -- see that
             # function's own docstring).
-            winner = next(e for e in entries if e["result"] == winning_result)
             reconciled[rule_id] = {**winner, "evidence": _coerce_evidence_for_finding(winner["evidence"])}
             continue
-        summaries = []
-        for i, e in enumerate(entries):
-            ev = _coerce_evidence_to_string(e["evidence"])
-            summaries.append(f"call {i + 1} said {_natural_result_phrase(e['result'])} ({ev})")
         bar_desc = f"needed {int(required)}+ agreeing" if min_agreement is not None else "no majority"
+        fallback_page = _page_for_uncertain_fallback(entries)
         reconciled[rule_id] = {
             "result": "uncertain",
-            "evidence": (
-                f"Judgment layer split ({bar_desc}) across {len(all_results)} "
-                f"consistency-check calls for this rule with identical input: "
-                + "; ".join(summaries)
-                + ". Flagged uncertain rather than silently keeping one answer."
-            ),
-            "page": None,
+            "evidence": _short_uncertain_summary(entries, split_desc=bar_desc),
+            # Fix Round (2026-09-11), page-number enforcement gap: same
+            # real bug as _two_way_uncertain_finding/_three_way_majority_
+            # finding's no-majority branch -- this is the ACTUAL production
+            # majority-vote path (run_judgment_checks_majority_vote, wired
+            # in Round "Judgment Layer Stability"), so this hardcoded None
+            # was the dominant real contributor among the judgment-layer
+            # (non-DET_CHECKS) rule_ids confirmed missing a page on the
+            # real Dayland run (QA-ACF-02, QA-ACF-08, QA-COC-01, QA-MAST-01,
+            # QA-PROB-04, QA-RPT-03, QA-SCH-02).
+            "page": fallback_page,
             "confidence": 0.0,
+            **({} if fallback_page is not None else {"page_unresolved": True}),
         }
     return reconciled
 
@@ -965,6 +1088,58 @@ def _findings_dict_from_list(findings_list: list[dict]) -> dict[str, dict]:
         )
     findings_list = [f for f in findings_list if isinstance(f, dict)]
 
+    # Fix Round (2026-09-11), page-number enforcement gap, item 3: a finding
+    # is rejected (retried as if missing, same mechanism as
+    # evidence_supports_result=False below) when it has NO page number and
+    # isn't a genuine "nothing relevant found anywhere" case.
+    #
+    # Fix Round (2026-09-11 evening) -- REAL REGRESSION FOUND AND FIXED:
+    # confirmed live against a real document run, dropping a missing-page
+    # finding here (same "retried as if missing" bucket as a rejected
+    # evidence_supports_result) meant that when the model kept answering
+    # the RULE correctly but never managed to also cite a page across every
+    # retry, integrity.py's exhaustion path had no way to tell "never
+    # answered at all" apart from "answered every time but never got a
+    # page" -- both looked identical (rule_id absent from this dict), so a
+    # real, repeatedly-reaffirmed Pass/Fail/Uncertain got thrown away and
+    # replaced with a guessed-nothing "not_checkable" after retries ran out.
+    # Confirmed real: QA-BIO-17/QA-GIP-32/QA-GIP-14/QA-GIP-28/QA-AI-02/
+    # QA-AI-03/QA-AI-04 all did this on a real run, all sharing the
+    # identical NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE evidence text.
+    #
+    # Fix: a missing-page finding is no longer dropped from the returned
+    # dict -- it's kept, `page: None`, flagged `page_unresolved: True` so
+    # integrity.py's separate, targeted page-recovery pass (see that
+    # module) knows to try again for a page specifically, WITHOUT this
+    # rule_id ever looking "missing" to the exhaustion-to-not_checkable
+    # path. Answer-acceptance (does this rule_id have a real, evidenced
+    # judgment) and page-citation (does that judgment also cite a page) are
+    # now two independent questions -- not_checkable means "the underlying
+    # data genuinely doesn't exist," never "we got an answer but couldn't
+    # also get a page for it."
+    #
+    # Also exempts genuinely list-shaped evidence (the {page, detail}
+    # multi-page form) from this check -- FINDINGS_TOOL's own schema
+    # requires the top-level `page` to be null for that shape (each item
+    # already carries its own page), so a null top-level page there was
+    # never actually missing anything; the original enforcement never
+    # accounted for this and would have wrongly flagged it too, a latent
+    # gap in this same round's own earlier fix.
+    page_unresolved_ids = set()
+    for f in findings_list:
+        if f.get("page") is not None or isinstance(f.get("evidence"), list):
+            continue
+        result = f.get("result")
+        if result in ("not_applicable", "not_checkable") and f.get("nothing_relevant_found_anywhere") is True:
+            continue  # genuine "nothing to cite" -- no page required
+        page_unresolved_ids.add(f.get("rule_id"))
+    if page_unresolved_ids:
+        print(
+            f"[judge] {len(page_unresolved_ids)} finding(s) accepted without a page number (no "
+            f"confirmed 'nothing relevant found anywhere' either) -- keeping the real judgment, "
+            f"flagged for a separate page-recovery retry rather than discarded: {sorted(page_unresolved_ids)}"
+        )
+
     rejected = [f for f in findings_list if not f.get("evidence_supports_result", False)]
     if rejected:
         # Log the actual result/evidence text for each rejected finding, not
@@ -989,6 +1164,7 @@ def _findings_dict_from_list(findings_list: list[dict]) -> dict[str, dict]:
             "evidence": f["evidence"],
             "page": f.get("page"),
             "confidence": f.get("confidence"),
+            **({"page_unresolved": True} if f["rule_id"] in page_unresolved_ids else {}),
         }
         for f in findings_list
         if f.get("evidence_supports_result", False)
