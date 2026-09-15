@@ -297,7 +297,7 @@ def _run_pipeline_with_extras(
         full_judgment_batch, extracted_fields, rendered_images, tracker=tracker
     )
     for rule_id in stabilized_rule_ids:
-        judgment_results[rule_id] = _stabilized_uncertain_finding()
+        judgment_results[rule_id] = _stabilized_uncertain_finding(rule_id, extracted_fields)
 
     # Round 55: scoped, two-phase supporting-document resolution -- see
     # pipeline/supporting_doc_resolution.py's module docstring. Phase 1

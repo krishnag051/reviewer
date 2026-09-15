@@ -147,6 +147,12 @@ def test_natural_result_phrase_covers_every_real_result_value():
 
 
 def test_two_way_disagreement_summary_has_no_raw_snake_case_status_tokens():
+    """Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence":
+    _short_uncertain_summary now surfaces each side's real evidence text
+    and a plain-English result label -- confirms the real invariant this
+    test protects (no internal snake_case tokens leak into reviewer-facing
+    text) still holds under the new, substance-bearing message, and that
+    the real evidence text from both sides is actually present."""
     f = {"result": "not_applicable", "evidence": "Evidence A", "page": None, "confidence": 0.5}
     s = {"result": "not_checkable", "evidence": "Evidence B", "page": None, "confidence": 0.5}
     result = _two_way_uncertain_finding(f, s)
@@ -154,6 +160,9 @@ def test_two_way_disagreement_summary_has_no_raw_snake_case_status_tokens():
     assert "not_checkable" not in result["evidence"]
     assert "doesn't apply" in result["evidence"]
     assert "can't be checked" in result["evidence"]
+    assert "Evidence A" in result["evidence"]
+    assert "Evidence B" in result["evidence"]
+    assert "confirm manually" in result["evidence"].lower()
 
 
 def test_three_way_split_summary_has_no_raw_snake_case_status_tokens():

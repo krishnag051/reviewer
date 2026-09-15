@@ -5,7 +5,7 @@
     {
       "rule_id": "QA-TEMP-01",
       "category": "Template",
-      "description": "Limited permit holder -> correct template used, credentials correct throughout",
+      "description": "If the provider is a Limited Permit holder, confirm the correct template was used and credentials are correct throughout.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -237,7 +237,7 @@
     {
       "rule_id": "QA-HRS-02",
       "category": "Hours Requesting",
-      "description": "Over 20 hour request -- auto-flagged deterministically if hours > 20, no rationale-quality judgment involved",
+      "description": "Flag if more than 20 hours are requested.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -253,7 +253,7 @@
     {
       "rule_id": "QA-HRS-03",
       "category": "Hours Requesting",
-      "description": "Supervision hours must not exceed 1.5/10 ratio -- pure threshold, no exception path",
+      "description": "Supervision hours must not exceed a 1.5-to-10 ratio with direct hours.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -270,7 +270,7 @@
     {
       "rule_id": "QA-HRS-04",
       "category": "Hours Requesting",
-      "description": "Group hours -> more direct hours + tailored rationale",
+      "description": "If group hours are requested, there should be more direct hours and a tailored rationale.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -282,7 +282,7 @@
     {
       "rule_id": "QA-HRS-05",
       "category": "Hours Requesting",
-      "description": "<10 hrs of 97153 -> confirm approved",
+      "description": "If fewer than 10 hours of 97153 are requested, confirm it's approved.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -294,7 +294,7 @@
     {
       "rule_id": "QA-HRS-06",
       "category": "Hours Requesting",
-      "description": "Increase in hours -> rationale in place",
+      "description": "If hours increased, a rationale should be in place.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -306,7 +306,7 @@
     {
       "rule_id": "QA-HRS-07",
       "category": "Hours Requesting",
-      "description": "Increase in hours -> compared against discharge criteria/transition plan",
+      "description": "If hours increased, compare against the discharge criteria or transition plan.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -331,7 +331,7 @@
     {
       "rule_id": "QA-HRS-09",
       "category": "Hours Requesting",
-      "description": "No other schedule overlaps with ABA -- includes school, not just other listed therapies, overlapping with the ABA schedule's time blocks specifically -> goals differentiated",
+      "description": "\"No other schedule overlaps with ABA\" and flag if school or other related therapies overlap with ABA.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -358,7 +358,7 @@
     {
       "rule_id": "QA-SCH-02",
       "category": "School & ABA Schedule",
-      "description": "Schedule matches with the one inputted by CR information (cross-checked against the Patient Central Reach Information fields specifically, not a general unverifiable confirmation)",
+      "description": "The schedule should match the one entered in Central Reach (checked against the Patient Central Reach Information fields).",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -421,7 +421,7 @@
     {
       "rule_id": "QA-SCH-07",
       "category": "School & ABA Schedule",
-      "description": ">3 hrs/day of 97153 -> approved by clinical director",
+      "description": "If more than 3 hours per day of 97153 are requested, confirm it's approved by the clinical director.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -472,7 +472,7 @@
     {
       "rule_id": "QA-BIO-03",
       "category": "Biopsychosocial",
-      "description": "Any additional/secondary diagnosis mentioned ANYWHERE in the report is included here (not only if a single 'Secondary Diagnosis:' field happens to be filled in); double-check against developmental history",
+      "description": "Any additional or secondary diagnosis mentioned anywhere in the report should be included here, not just in the 'Secondary Diagnosis' field. Double-check against the developmental history.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -496,7 +496,7 @@
     {
       "rule_id": "QA-BIO-06",
       "category": "Biopsychosocial",
-      "description": "Medication listed -> reason stated; ADHD med = secondary diagnosis",
+      "description": "If a medication is listed, a reason should be stated. If the medication is for ADHD, it should also be listed as a secondary diagnosis.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -508,7 +508,7 @@
     {
       "rule_id": "QA-BIO-07",
       "category": "Biopsychosocial",
-      "description": "Educational history is chronological, and any coordinator info stated is internally consistent throughout the document (this is an internal-document consistency check only -- it does not verify coordinator info against any external system)",
+      "description": "Educational history should be in chronological order, and any coordinator information should be consistent throughout the document. (This only checks consistency within the document -- it does not verify coordinator information against any outside system.)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -520,7 +520,7 @@
     {
       "rule_id": "QA-BIO-08",
       "category": "Biopsychosocial",
-      "description": "Patients <5, community daytime hours -> 'school' replaced with community/daycare/preschool",
+      "description": "For patients under 5 receiving ABA during community daytime hours, use 'community,' 'daycare,' or 'preschool' instead of 'school.'",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -532,7 +532,7 @@
     {
       "rule_id": "QA-BIO-09",
       "category": "Biopsychosocial",
-      "description": "Patients 5+ in Special Ed -> TP indicates IEP",
+      "description": "For patients 5 and older in Special Education, the TP should indicate they have an IEP.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -749,7 +749,7 @@
     {
       "rule_id": "QA-ACF-04",
       "category": "Assessment of Current Functioning",
-      "description": "Score lower than previous assessment -> Director tag",
+      "description": "The score is lower than the previous assessment -- flag for Director review.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -809,7 +809,7 @@
     {
       "rule_id": "QA-BAR-01",
       "category": "Barriers to Treatment",
-      "description": "If any barriers are mentioned throughout the report, they are present in this section too (applies only when the request exceeds 25 hours of 97153)",
+      "description": "If any barriers are mentioned anywhere in the report, they should also be listed in this section. This only applies when requesting more than 25 hours of 97153.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -849,7 +849,7 @@
     {
       "rule_id": "QA-BIP-03",
       "category": "BIP",
-      "description": "A Behavior Intervention Plan (BIP) target is listed for a behavior OTHER THAN this defined list: aggression, tantrum, elopement, hitting, screaming, biting, climbing, or noncompliance",
+      "description": "Flag if a Behavior Intervention Plan (BIP) target is for a behavior other than: aggression, tantrum, elopement, hitting, screaming, biting, climbing, or noncompliance.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -921,7 +921,7 @@
     {
       "rule_id": "QA-MAST-01",
       "category": "Mastered Goals",
-      "description": "Every mastered goal's Date Mastered falls within the elapsed window between the previous TP's Date of Current Report (start) and the current TP's Date of Current Report (end)",
+      "description": "Each mastered goal's Date Mastered should fall between the previous TP's report date and the current TP's report date.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -1104,7 +1104,7 @@
     {
       "rule_id": "QA-GIP-14",
       "category": "Goals in Progress",
-      "description": "If data trending down, explanation provided. Check EACH goal's own graph/data trend independently -- a goal trending in the WRONG direction for its own stated goal type (a skill-acquisition goal trending down, or a behavior-reduction goal trending up) without any accompanying explanatory note in its own rationale/notes field is a violation on its own; a goal trending in the expected direction, or fluctuating but with an overall trend in the expected direction, needs no explanation. Only fail when a SPECIFIC goal's own explanatory note is genuinely absent for that SAME goal's own wrong-direction trend -- do not aggregate uncertainty across multiple unrelated goals into one vague judgment.",
+      "description": "For each goal, check its data trend. If a skill goal is trending down, or a behavior-reduction goal is trending up, there should be a note explaining why. A goal trending in the right direction needs no explanation. Only flag a goal if that specific goal is missing its own explanation for its own wrong-direction trend.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -1921,7 +1921,7 @@
     {
       "rule_id": "QA-GIP-22",
       "category": "Goals in Progress",
-      "description": "Newly initiated goals without graphs should show status as \"NEW,\" with current data marked \"NEW\" or aligned with baseline. \"Newly initiated\" means the goal's own \"Date Initiated\" falls within the CURRENT treatment plan's own stated \"Date of Current Report\" range (i.e., initiated during this same reporting period) -- a goal initiated in an earlier reporting period, even if its own data is still sparse, is NOT \"newly initiated\" for this rule's purposes and should not be required to show \"NEW\" status.",
+      "description": "A goal that was just started during this reporting period (its Date Initiated falls within the current Date of Current Report range) should show status as 'NEW,' with current data marked 'NEW' or matching the baseline. A goal started in an earlier period is not 'newly initiated,' even if it still has little data.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -1981,7 +1981,7 @@
     {
       "rule_id": "QA-GIP-27",
       "category": "Goals in Progress",
-      "description": "A goal's own stated Mastery Criteria (e.g., \"85% over 3 consecutive weeks\") defines when it counts as mastered. Fail only if the goal's Current Data has met or exceeded that exact threshold for the FULL number of consecutive data points/weeks the criteria itself specifies (not just once), AND the goal's own status still says something other than mastered/met (e.g., still \"In Progress\"). A single instance of hitting the numeric threshold, without the required sustained duration, is not yet mastered and must not be flagged.",
+      "description": "A goal's Mastery Criteria (e.g., '85% over 3 consecutive weeks') defines when it's mastered. Flag only if the goal has actually met that criteria for the full required number of sessions, but its status still says something other than mastered (e.g., 'In Progress'). Meeting the number just once, without the required consecutive sessions, does not count as mastered.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -1993,7 +1993,7 @@
     {
       "rule_id": "QA-GIP-28",
       "category": "Goals in Progress",
-      "description": "If minimal data included in a graph, rationale is provided (does not apply to a goal whose own status is \"new\"). \"Minimal data\" means a graph/goal with fewer than 3 real data points tracked (not counting a blank/placeholder baseline) -- for any such goal, check specifically whether its own rationale/notes field (immediately following its data) contains real explanatory text, not left blank. A goal with 3 or more real data points is NOT \"minimal\" for this rule's purposes and needs no rationale regardless of trend.",
+      "description": "If a goal's graph has fewer than 3 real data points (not counting a blank baseline), a rationale should be provided in its notes field. This doesn't apply to goals marked 'new.' A goal with 3 or more data points doesn't need a rationale.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2053,7 +2053,7 @@
     {
       "rule_id": "QA-PAR-02",
       "category": "Parent/Caregiver Involvement",
-      "description": "If family history indicates child lives elsewhere (not with parents), Parent/Caregiver Involvement summary reflects who will actually receive training",
+      "description": "If the child doesn't live with their parents, the Parent/Caregiver Involvement summary should say who will actually receive the training.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2089,7 +2089,7 @@
     {
       "rule_id": "QA-PROB-04",
       "category": "Problem Areas",
-      "description": "Problem Areas should not be identical to the previous TP unless services provided are very limited; if identical, TP should state this is because no additional services were provided",
+      "description": "Problem Areas shouldn't be identical to the previous TP, unless services were very limited. If identical, the TP should explain that no additional services were provided.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2117,7 +2117,7 @@
     {
       "rule_id": "QA-SCH-09",
       "category": "School & ABA Schedule",
-      "description": "If ABA is provided in a community-based program (e.g., day program), POS/location should name that specific community location (e.g. a named day camp satisfies this; a generic 'community'/'day program' placeholder with no actual name does not). ADDITIONALLY, for a Healthfirst patient specifically: if the POS field is NOT 'Community' but the Hours Requesting grid indicates Community, that mismatch itself is a failure.",
+      "description": "If ABA is provided in a community-based program (like a day program), the location field should name the specific place (e.g., a named day camp), not just say 'community' or 'day program.' For Healthfirst patients specifically: also flag it if the location field doesn't say 'Community' but the Hours Requesting grid shows community-based hours.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2215,7 +2215,7 @@
     {
       "rule_id": "QA-BIP-15",
       "category": "BIP",
-      "description": "Medical BIP -> all medical causes ruled out",
+      "description": "If the BIP is medical, confirm all medical causes have been ruled out.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2251,7 +2251,7 @@
     {
       "rule_id": "QA-GIP-31",
       "category": "Goals in Progress",
-      "description": "Recall Goal -- any goal that is a recall goal should be flagged",
+      "description": "Flag any goal that is a recall goal.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -2263,7 +2263,7 @@
     {
       "rule_id": "QA-GIP-32",
       "category": "Goals in Progress",
-      "description": "Adequate data points -- fewer than 4 data points per graph/authorization",
+      "description": "Flag if a graph has fewer than 4 data points for this authorization period.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2275,7 +2275,7 @@
     {
       "rule_id": "QA-BIO-17",
       "category": "Biopsychosocial",
-      "description": "Includes language that's dangerous or poisonous -- should be flagged",
+      "description": "Flag any mention of dangerous or poisonous items or language in the document.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2311,7 +2311,7 @@
     {
       "rule_id": "QA-GIP-34",
       "category": "Goals in Progress",
-      "description": "Current data matches the graph -- the final data point on the graph should match the current-data section for each individual goal",
+      "description": "The final data point on each goal's graph should match its Current Data section.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2335,7 +2335,7 @@
     {
       "rule_id": "QA-HRS-12",
       "category": "Hours Requesting",
-      "description": "Treatment Planning hours requested correctly -- Treatment Planning hours are missing for any payor except 1199SEIU, NY Medicaid, and Molina",
+      "description": "Flag if Treatment Planning hours are missing, unless the payor is 1199SEIU, NY Medicaid, or Molina.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",

@@ -44,10 +44,16 @@ def test_all_stabilized_rules_return_the_fixed_finding_with_zero_model_calls(mon
 
     result = pipeline_module.run_full_pipeline(str(pdf_path), rules)
 
+    # Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence":
+    # a blank synthetic PDF has no real document text, so every context
+    # extractor correctly finds nothing -- the honest "no context" tail,
+    # not a fabricated finding. See test_stabilized_evidence_includes_real_
+    # extracted_context below for the real-content case.
     for rid in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS:
         assert rid not in seen_rule_ids, f"{rid} must never reach the real judgment call"
         assert result["findings"][rid]["result"] == "uncertain"
-        assert result["findings"][rid]["evidence"] == pipeline_module._STABILIZED_UNCERTAIN_EVIDENCE
+        assert pipeline_module._STABILIZED_UNCERTAIN_FRAMING in result["findings"][rid]["evidence"]
+        assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT in result["findings"][rid]["evidence"]
 
     # The normal rule is untouched -- confirms this is a narrow, rule_id-
     # scoped override, not a change to the judgment mechanism itself.
@@ -214,7 +220,71 @@ def test_a_stabilized_rule_id_that_only_ever_escalates_is_still_stabilized(monke
 
     assert "QA-PPI-05" not in seen_rule_ids, "an escalated, stabilized rule_id must never reach the real judgment call"
     assert result["findings"]["QA-PPI-05"]["result"] == "uncertain"
-    assert result["findings"]["QA-PPI-05"]["evidence"] == pipeline_module._STABILIZED_UNCERTAIN_EVIDENCE
+    # Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence":
+    # blank synthetic PDF -> no real NPI/License text -> honest "no context".
+    assert pipeline_module._STABILIZED_UNCERTAIN_FRAMING in result["findings"]["QA-PPI-05"]["evidence"]
     assert result["findings"]["QA-PPI-05"]["det_attempt"]["evidence"] == "no checker", (
         "the original det attempt must still be visible for debugging, same as any other escalated rule"
     )
+
+
+def test_stabilized_evidence_includes_real_extracted_context():
+    """Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence"
+    -- the core ask, directly: a stabilized rule's Uncertain evidence must
+    surface real, document-specific content when it exists, not just the
+    generic framing sentence. Zero model calls -- get_stabilized_rule_
+    context is a plain text scan, same as any other checker's extraction."""
+    fields_dict = {
+        "full_text": (
+            "Target Name: Reduce Tantrum\n"
+            "Baseline: 5 per session\n"
+            "Current Data: 2 per session\n"
+            "Anticipated Mastery Date: 12/15/2026\n"
+            "Status: In Progress\n"
+        ),
+        "pages": [{"page_number": 1, "text": "Target Name: Reduce Tantrum\nBaseline: 5 per session\n"}],
+    }
+    finding = pipeline_module._stabilized_uncertain_finding("HF-05", fields_dict)
+    assert finding["result"] == "uncertain"
+    assert pipeline_module._STABILIZED_UNCERTAIN_FRAMING in finding["evidence"]
+    assert "Reduce Tantrum" in finding["evidence"]
+    assert "Baseline: 5 per session" in finding["evidence"]
+    assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT not in finding["evidence"]
+
+
+def test_stabilized_evidence_is_byte_identical_across_repeated_runs_of_the_same_document():
+    """The real invariant an earlier round needed (zero variance) still
+    holds: calling this repeatedly with the SAME fields dict must always
+    produce the exact same evidence string -- no randomness anywhere,
+    even though the text now varies BY document/rule_id (that's the point)."""
+    fields_dict = {
+        "full_text": "Target Goal: Skill X\nCurrent Data: 50%\n",
+        "pages": [{"page_number": 1, "text": "Target Goal: Skill X\nCurrent Data: 50%\n"}],
+    }
+    results = [pipeline_module._stabilized_uncertain_finding("QA-GIP-02", fields_dict)["evidence"] for _ in range(5)]
+    assert len(set(results)) == 1
+
+
+def test_stabilized_evidence_falls_back_honestly_with_no_extractor_or_no_match():
+    """QA-AI-05 has no extractor at all (see fields.STABILIZED_RULE_CONTEXT's
+    own comment -- no reliable deterministic detector for spelling/grammar
+    errors exists); a rule WITH an extractor that finds nothing must look
+    identical to a rule with no extractor at all -- both are equally
+    honest "nothing to show" cases."""
+    fields_dict = {"full_text": "Nothing relevant here.", "pages": [{"page_number": 1, "text": "Nothing relevant here."}]}
+    no_extractor = pipeline_module._stabilized_uncertain_finding("QA-AI-05", fields_dict)
+    found_nothing = pipeline_module._stabilized_uncertain_finding("QA-HRS-07", fields_dict)
+    assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT in no_extractor["evidence"]
+    assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT in found_nothing["evidence"]
+
+
+def test_a_broken_context_extractor_never_crashes_the_whole_review(monkeypatch):
+    """Same isolation discipline as merge.py's own per-rule fallback -- one
+    rule_id's own extractor throwing must not take down anything else."""
+    def _broken(_fields):
+        raise ValueError("simulated extraction bug")
+
+    monkeypatch.setitem(fields.STABILIZED_RULE_CONTEXT, "HF-05", _broken)
+    finding = pipeline_module._stabilized_uncertain_finding("HF-05", {"full_text": "x", "pages": []})
+    assert finding["result"] == "uncertain"
+    assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT in finding["evidence"]

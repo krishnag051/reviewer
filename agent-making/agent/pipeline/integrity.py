@@ -40,16 +40,19 @@ Stability round already fixed once.
 """
 from . import judge
 
+# Fix Round (2026-09-15), "Language Regression": REAL FIX -- this
+# reviewer-facing text used to name internal mechanism ("self-consistency
+# check", "evidence_supports_result=false"), the exact kind of jargon
+# ma'am flagged by name. Rewritten in plain English -- same real meaning
+# (we tried more than once and still couldn't get a confirmed answer, so
+# we're marking it Not checkable instead of guessing), no internal terms.
 NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE = (
-    "The judgment layer could not produce a confirmed answer for this rule after "
-    "{attempts} attempt(s) (dropped from the self-consistency check each time, or "
-    "internally rejected as evidence_supports_result=false). Flagged not_checkable "
-    "rather than guessed at or silently omitted."
+    "We were unable to determine a confirmed answer for this item after {attempts} attempt(s). "
+    "Marked Not checkable rather than guessing."
 )
 
 PAGE_UNAVAILABLE_NOTE = (
-    " (A specific page could not be confirmed for this finding after {attempts} "
-    "attempt(s) -- the result itself is unaffected.)"
+    " (A specific page could not be confirmed for this finding -- the result itself is still accurate.)"
 )
 
 

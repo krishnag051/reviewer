@@ -722,26 +722,73 @@ def _natural_result_phrase(result: str) -> str:
     return _RESULT_TO_NATURAL_PHRASE.get(result, result)
 
 
+def _evidence_preview(evidence, *, max_len: int = 220) -> str:
+    """One plain-text preview of a finding's own evidence, for folding
+    into a disagreement summary -- handles all 3 real shapes this codebase's
+    evidence field can take (plain string, the {page, detail} multi-page
+    list form, or a malformed non-string/non-list value), truncated so one
+    side of a disagreement can't swamp the whole message."""
+    text = _coerce_evidence_for_finding(evidence)
+    if isinstance(text, list):
+        # {page, detail} form -- join each item's own detail, dropping the
+        # per-item page (the caller already cites this entry's own overall
+        # page separately) so this stays one flat sentence, not a nested list.
+        text = " ".join(_coerce_evidence_to_string(item.get("detail", item)) if isinstance(item, dict) else str(item) for item in text)
+    elif not isinstance(text, str):
+        text = _coerce_evidence_to_string(text)
+    text = text.strip()
+    if len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0] + "..."
+    return text
+
+
 def _short_uncertain_summary(entries: list[dict], *, split_desc: str) -> str:
-    """Fix Round (2026-09-10), item 4 -- REAL FIX: an Uncertain result's
-    evidence used to be a raw multi-call transcript dump -- "call 1 said
-    Fail (<call 1's full evidence text>); call 2 said Pass
-    (<call 2's full evidence text>); ..." -- confirmed a real usability
-    complaint (too long, reads like internal debugging output, not a
-    plain explanation). Replaced with a short vote-count summary (e.g.
-    "3 of 5 calls said Fail, 2 said Pass") and nothing else -- no
-    per-call evidence text at all. The full per-call detail was never
-    load-bearing for a reviewer's next action here (this result is always
-    "needs human review," regardless of what any individual call said);
-    dropping it is a real simplification, not a loss of anything the
-    reviewer needs to act on this specific finding.
+    """Fix Round (2026-09-10), item 4: an Uncertain result's evidence used
+    to be a raw multi-call transcript dump -- "call 1 said Fail (<call 1's
+    full evidence text>); call 2 said Pass (<call 2's full evidence
+    text>); ..." -- confirmed a real usability complaint (too long, reads
+    like internal debugging output). Replaced that round with a vote-count
+    summary instead.
+
+    Fix Round (2026-09-15), "Language Regression": the vote-count summary
+    itself was still internal language a BCBA reviewer wouldn't use ("3 of
+    5 calls said Fail") -- replaced with one plain sentence naming neither
+    side's actual content.
+
+    Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence" --
+    REAL FIX, reversing the over-correction above: that plain sentence was
+    honest about the tone but threw away the one thing a reviewer actually
+    needs -- the real substance each side of the disagreement was looking
+    at. Confirmed the real complaint: a reviewer landing on Uncertain had
+    to open the source document cold and re-derive everything, which
+    defeats the point of the tool for exactly the findings a human has to
+    act on. Now surfaces each DISTINCT result's own real, representative
+    evidence text (with page, when available) -- e.g. "Some reviews found:
+    fail -- '<real evidence>' (page 12). Others found: pass -- '<real
+    evidence>' (page 9)." `split_desc` still isn't shown verbatim (that
+    stays internal-only phrasing like "2-call disagreement") -- only the
+    plain-English result label and the real evidence text reach the
+    reviewer.
     """
-    counts = Counter(e["result"] for e in entries)
-    parts = [f"{n} of {len(entries)} calls said {_natural_result_phrase(r)}" for r, n in counts.most_common()]
-    return (
-        f"{', '.join(parts)} ({split_desc}) -- no clear agreement, needs human review rather than "
-        f"an automated pick."
-    )
+    groups: dict[str, dict] = {}
+    for e in entries:
+        result = e.get("result")
+        if result not in groups or (e.get("page") is not None and groups[result].get("page") is None):
+            groups[result] = e  # first entry for this result, or the first one with a real page
+
+    parts = []
+    for result, entry in groups.items():
+        preview = _evidence_preview(entry.get("evidence"))
+        page = entry.get("page")
+        page_str = f" (page {page})" if page is not None else ""
+        label = "Some reviews found" if not parts else "Others found"
+        if preview:
+            parts.append(f"{label}: {_natural_result_phrase(result)} -- \"{preview}\"{page_str}.")
+        else:
+            parts.append(f"{label}: {_natural_result_phrase(result)}{page_str}.")
+
+    summary = " ".join(parts) if parts else "The automated review could not reach a clear, consistent answer for this item."
+    return f"{summary} Please confirm manually."
 
 
 def _coerce_evidence_for_finding(evidence):

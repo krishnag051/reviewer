@@ -26,14 +26,18 @@ def test_two_of_three_majority_wins_over_the_outlier():
 
 
 def test_all_three_disagree_falls_back_to_uncertain():
+    """Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence":
+    the per-call disagreement now surfaces each distinct result's own
+    real evidence text (plain-English label + real content), not a bare
+    vote-count or a fully generic sentence -- the real invariant (no
+    majority -> uncertain, needs manual review) still holds."""
     results = [{"A-1": _finding("pass")}, {"A-1": _finding("fail")}, {"A-1": _finding("uncertain")}]
     reconciled = judge._reconcile_majority_vote(results)
     assert reconciled["A-1"]["result"] == "uncertain"
     assert reconciled["A-1"]["confidence"] == 0.0
-    # all three calls' own results are visible in the explanation
+    assert "confirm manually" in reconciled["A-1"]["evidence"].lower()
     assert "pass" in reconciled["A-1"]["evidence"]
     assert "fail" in reconciled["A-1"]["evidence"]
-    assert "uncertain" in reconciled["A-1"]["evidence"]
 
 
 def test_rule_id_missing_from_any_single_call_is_left_out_entirely():
@@ -114,7 +118,14 @@ def test_min_agreement_stricter_than_simple_majority_falls_back_to_uncertain():
     results = [{"A-1": _finding("fail")}] * 4 + [{"A-1": _finding("pass")}] * 3
     reconciled = judge._reconcile_majority_vote(results, min_agreement=5)
     assert reconciled["A-1"]["result"] == "uncertain"
-    assert "needed 5+ agreeing" in reconciled["A-1"]["evidence"]
+    # Fix Round (2026-09-15), "Language Regression": the internal "needed
+    # N+ agreeing" phrasing doesn't reach reviewer-facing text.
+    # Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence":
+    # but the real substance from both sides now does.
+    assert "needed" not in reconciled["A-1"]["evidence"].lower()
+    assert "confirm manually" in reconciled["A-1"]["evidence"].lower()
+    assert "fail" in reconciled["A-1"]["evidence"]
+    assert "pass" in reconciled["A-1"]["evidence"]
 
 
 def test_min_agreement_exactly_met_commits_to_the_answer():

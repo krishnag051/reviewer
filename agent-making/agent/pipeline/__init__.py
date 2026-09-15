@@ -201,24 +201,54 @@ STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
     "QA-BIO-06", "QA-GIP-11",
 })
 
-_STABILIZED_UNCERTAIN_EVIDENCE = (
-    "Uncertain — needs human review. This rule's judgment criteria were confirmed (real, "
-    "repeated sampling against real documents) to produce a near-random verdict across "
-    "identical input, and are being rewritten to remove that ambiguity. Until the rewrite is "
-    "confirmed genuinely stable, this rule is intentionally held at a fixed, honest "
-    "\"needs human review\" status rather than risk reporting an unstable pass/fail that could "
-    "differ from one review of the same document to the next."
+# Fix Round (2026-09-15), "Language Regression": REAL FIX -- this text
+# used internal engineering language ("repeated sampling", "near-random
+# verdict", "confirmed genuinely stable") that a BCBA reviewer wouldn't
+# use or need. Rewritten in plain English -- same real meaning (we're
+# still working on this question and it's not ready to trust yet, so
+# please check it by hand), no internal terms.
+_STABILIZED_UNCERTAIN_FRAMING = (
+    "Needs human review. We're still refining how this question is checked, so for now please "
+    "confirm this item yourself rather than relying on an automated answer."
 )
 
+_STABILIZED_UNCERTAIN_NO_CONTEXT = "No additional automated context is available for this item yet."
 
-def _stabilized_uncertain_finding() -> dict:
-    """Same finding, every single call, every single rule_id in
-    STABILIZED_UNCERTAIN_RULE_IDS -- byte-identical evidence text too (not
-    just the same result label with different reasoning each time), per
-    this round's own explicit verification requirement. No randomness
-    anywhere in this function -- that's the entire point.
+
+def _stabilized_uncertain_finding(rule_id: str | None = None, fields: dict | None = None) -> dict:
+    """Fix Round (2026-09-19), "Uncertain Results Must Show Real Evidence"
+    -- REAL FIX: this used to return byte-identical evidence for every
+    call regardless of rule_id or document, which was honest about the
+    tone but gave a reviewer nothing to start from -- confirmed real
+    complaint, this defeats a large part of the point of the tool for
+    exactly the findings a human has to act on manually.
+
+    Still makes ZERO model calls and stays fully deterministic -- the
+    real invariant an earlier round actually needed (zero variance across
+    repeated runs of the SAME document) still holds, because
+    `fields_module.get_stabilized_rule_context` is a plain, zero-API-cost
+    text scan (same shape as any other checker's own extraction), never
+    a model call. What changes: the evidence text now varies by rule_id
+    and by document (surfacing that document's own real goal data, dates,
+    or field values), not "byte-identical no matter what" -- byte-
+    identical-across-DOCUMENTS was never the actual point; byte-identical
+    across REPEATED RUNS of the same document is, and a deterministic
+    text scan guarantees exactly that.
+
+    `rule_id`/`fields` are optional (default None) so any caller that
+    hasn't been updated yet still gets the honest framing sentence alone,
+    same as before this round -- never a crash for a missing argument.
     """
-    return {"result": "uncertain", "evidence": _STABILIZED_UNCERTAIN_EVIDENCE, "page": None, "confidence": 0.0}
+    if rule_id is None or fields is None:
+        return {"result": "uncertain", "evidence": _STABILIZED_UNCERTAIN_FRAMING, "page": None, "confidence": 0.0}
+    context = fields_module.get_stabilized_rule_context(rule_id, fields)
+    tail = context if context else _STABILIZED_UNCERTAIN_NO_CONTEXT
+    return {
+        "result": "uncertain",
+        "evidence": f"{_STABILIZED_UNCERTAIN_FRAMING} Here's what was found: {tail}",
+        "page": None,
+        "confidence": 0.0,
+    }
 
 
 def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
@@ -301,7 +331,7 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
         full_judgment_batch, extracted_fields, rendered_images, tracker=tracker, model_override=model_override,
     )
     for rule_id in stabilized_rule_ids:
-        judgment_results[rule_id] = _stabilized_uncertain_finding()
+        judgment_results[rule_id] = _stabilized_uncertain_finding(rule_id, extracted_fields)
 
     # For escalated rules, the judgment result wins (more context to work
     # with) — but the original deterministic attempt is kept as a secondary

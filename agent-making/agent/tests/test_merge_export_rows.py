@@ -198,7 +198,10 @@ def test_one_rules_unrelated_internal_error_does_not_take_down_the_whole_batch(m
 
     # A-2 landed on a safe fallback, not a crash and not silently dropped.
     assert result["findings"]["A-2"]["result"] == "uncertain"
-    assert "internal error" in result["findings"]["A-2"]["evidence"].lower()
+    # Fix Round (2026-09-15), "Language Regression": no longer names the
+    # raw exception class in reviewer-facing text -- see merge.py's own
+    # comment at this fallback.
+    assert "could not be resolved" in result["findings"]["A-2"]["evidence"].lower()
     assert len(result["findings"]) == 3, "all three rules must still be present -- none silently dropped"
 
 

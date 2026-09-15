@@ -159,11 +159,12 @@ def merge_findings(rules: list[dict], det_results: dict[str, dict], judgment_res
             )
             entry = {
                 "result": "uncertain",
-                "evidence": (
-                    f"This rule's own result could not be safely finalized due to an internal "
-                    f"error ({type(exc).__name__}) -- flagged uncertain rather than silently "
-                    f"dropped or guessed at."
-                ),
+                # Fix Round (2026-09-15), "Language Regression": REAL FIX --
+                # this used to show the raw Python exception class name
+                # (e.g. "KeyError") to the reviewer. Plain English now,
+                # same real meaning (something went wrong resolving this
+                # item, so it's marked uncertain rather than guessed at).
+                "evidence": "This item could not be resolved. It's marked as needing human review rather than guessed at.",
                 "page": None,
                 "confidence": 0.0,
                 "category": rule["category"],

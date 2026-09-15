@@ -131,7 +131,9 @@ def test_one_persistently_missing_rule_id_among_many_degrades_gracefully_not_rai
     assert results["A-1"]["result"] == "pass"
     assert results["A-2"]["result"] == "pass"
     assert results["A-3"]["result"] == "not_checkable"
-    assert "not produce a confirmed answer" in results["A-3"]["evidence"]
+    # Fix Round (2026-09-15), "Language Regression": template text rewritten
+    # in plain English (see integrity.py's NOT_CHECKABLE_AFTER_RETRIES_TEMPLATE).
+    assert "unable to determine a confirmed answer" in results["A-3"]["evidence"]
     assert results["A-3"]["confidence"] == 0.0
 
 
