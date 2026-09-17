@@ -173,11 +173,13 @@ class Upload(Base):
     # supporting_document_path above, NOT required at the application
     # layer (a first-ever patient genuinely has no prior TP to attach).
     # Same retention lifecycle as file_path/supporting_document_path (see
-    # app/services/retention.py). Display-only for now (GET /uploads/:id/
-    # previous-tp-file) -- not read by review_treatment_plan or any part
-    # of the rule-checking pipeline yet; several rules that need "the
-    # previous TP" as a real data source may become buildable against
-    # this in a future round, but nothing wires into it this round.
+    # app/services/retention.py). Correction (2026-09-17): this is no longer
+    # display-only -- app/rule_engine/client.py::run_rule_checks reads this
+    # path and, when set, calls agent-making's review_previous_tp() for real
+    # (real Anthropic spend). Drives 5 rule_ids (QA-MAST-01, QA-MAST-02,
+    # QA-RPT-05, QA-ACF-04, QA-PROB-04) via app/agent_client.py's
+    # _PREVIOUS_TP_RULE_IDS. See docs/ARCHITECTURE.md §5. Still also served
+    # display-only via GET /uploads/:id/previous-tp-file.
     previous_tp_path: Mapped[str | None] = mapped_column(Text)
     file_purged: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

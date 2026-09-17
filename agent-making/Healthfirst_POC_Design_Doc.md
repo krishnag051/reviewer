@@ -1,3 +1,18 @@
+> **HISTORICAL — founding design doc, almost entirely superseded by the
+> actual build.** Written for a single-payor (Healthfirst-only), 114-rule
+> scope, before multi-payor support, the supporting document, majority-vote
+> judgment, or previous-TP comparison existed. Two specific claims below are
+> now flatly wrong, not just outdated: (1) the judgment layer does **not**
+> receive "the previous finalized TP's relevant fields" as described here —
+> the real prompt tells the model no previous version is available and to
+> answer `not_checkable` for a document reviewed in isolation (previous-TP
+> comparison is now a real, separate mechanism gated to 5 specific rule_ids,
+> see `docs/ARCHITECTURE.md` §5); (2) the integrity check described here as
+> "reject and retry, non-negotiable" is much softer in practice —
+> unresolved rule_ids downgrade to `not_checkable` rather than rejecting
+> the whole review. Kept as a record of original intent, not current
+> behavior. See [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+
 # Healthfirst Rule-Engine POC — End-to-End Design
 
 Standalone prototype. Lives in its own folder, outside the main backend repo, until it proves out. Claude only. Healthfirst only, for now — expand to the other 8 payors once this payor is validated against enough real TPs.

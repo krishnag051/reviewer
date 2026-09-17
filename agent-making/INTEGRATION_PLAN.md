@@ -168,7 +168,9 @@ No `payor`/`plan_type` input in this proposed signature — the pipeline
 already auto-detects both from the document's own text
 (`fields.py::_detect_payor`/`_detect_plan_type`) and scopes rules
 internally via `partition_rules_by_scope`. Callers currently pass the
-*full* `rules.json` (120 rules, all payors) into `run_full_pipeline`
+*full* `rules.json` (120 rules at the time this was written — now 188, see
+`docs/ARCHITECTURE.md`; the mechanism described here is unchanged, only the
+count has grown) into `run_full_pipeline`
 regardless of payor — the payor-specific export files (`aetna.json`, etc.)
 are reference copies for humans, not something the pipeline itself
 consumes. So there's nothing for the wrapper to take as a payor input; it

@@ -1,3 +1,9 @@
+> **Numbers below are stale (written at payor #2, a 114-rule/2-payor
+> snapshot; `rules.json` now has 188 rules across 7+ payors) — the
+> design *principles* (namespacing convention, reuse-vs-new-checker
+> heuristic) are still current practice and this doc doesn't need a
+> rewrite for that; just don't quote "111 of 114" as a current figure.**
+
 # Checker design — rule_id namespacing and the reuse-vs-new-checker decision
 
 Written ahead of payor #2, against the Healthfirst rule set alone, so this

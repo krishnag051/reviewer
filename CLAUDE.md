@@ -24,7 +24,7 @@ This applies everywhere in this repo — `backend/`, `frontend/`, and `agent-mak
 
 - `backend/tests/conftest.py`'s `_real_api_call_counter` is a module-level counter that survives across every real_api test in one pytest session (independent of each test's own monkeypatch teardown). `_block_real_api_calls` wraps whatever the real `review_treatment_plan` currently is — via `_make_ceiling_enforced_real_call` — for every real_api-marked test, so every real call, from any test, counts against the SAME shared total.
 - The ceiling is `MAX_REAL_API_CALLS_PER_SESSION`, read from that env var with an explicit default of **4** — never silently absent. Once hit, the next real call in that same pytest session raises immediately, **before** the request goes out — not a warning logged after the fact.
-- Counts in units of raw Anthropic API requests (`result["usage"]["api_calls"]`), not "one `review_treatment_plan` invocation" — one document review is itself 2+ real HTTP calls (agent-making's self-consistency pass; confirmed live, Round 45: exactly 2 per document). Counting invocations instead would silently let the ceiling mean half its stated number.
+- Counts in units of raw Anthropic API requests (`result["usage"]["api_calls"]`), not "one `review_treatment_plan` invocation" — one document review is itself several real HTTP calls, not a fixed 2. **Correction (2026-09-17): the "exactly 2 per document" figure this line originally cited is stale** — the production judgment layer's initial batch is now a 5-way majority vote (`judge.run_judgment_checks_majority_vote(n_calls=5, min_agreement=4)`), so a real document review's actual call count is materially higher than 2 before counting retries, page-recovery, supporting-doc extraction, or previous-TP comparison. Don't use "2" for any real-API cost estimate; see `docs/ARCHITECTURE.md` §1 for the current mechanism and count real calls from `result["usage"]["api_calls"]` itself, not from this historical figure. Counting invocations instead of raw calls would silently let the ceiling mean a fraction of its stated number.
 - Prints a running count after every real call (`[real-api-ceiling] real API calls this session: N/MAX`) so spend is visible live in the terminal, not just in a final report.
 - Proof: `backend/tests/test_real_api_guardrail.py`'s two ceiling tests — one confirms the (N+1)th call is blocked before the underlying function ever runs, the other confirms the raw-call-count (not invocation-count) accounting specifically.
 - To deliberately run more real calls than the default ceiling allows: raise `MAX_REAL_API_CALLS_PER_SESSION` explicitly for that invocation, and only with the user's explicit, per-instance approval for the higher count — same as every other real-API decision this file governs.
@@ -33,20 +33,24 @@ This applies everywhere in this repo — `backend/`, `frontend/`, and `agent-mak
 
 
 library, with mandatory human review. Frontend (React) in `/frontend`, backend
-(FastAPI + Postgres) in `/backend`. Full blueprint:
-`docs/TP_Review_Master_Build_Document.md` — read it before any structural
-change, new table, or new route.
+(FastAPI + Postgres) in `/backend`.
 
-Other reference docs in `/docs`, useful for background on *why*, not just
-*what*: `TP_Review_Backend_Architecture.md`, `TP_Review_End_to_End_Trial.md`,
-`TP_Review_Gap_Analysis.md`. Current build progress: `docs/BUILD_STATUS.md` —
-update it at the end of every build-order step.
+**Read `docs/ARCHITECTURE.md` first** — the current, verified-against-code
+description of the full pipeline (intake → deterministic checks → 5-way
+judgment vote → page recovery → humanization), the rule-authoring/sync
+model, the stabilization safety net, previous-TP comparison, reports, and
+deployment. It supersedes the docs below for describing *current* behavior.
 
-The backend build (steps 1-11) is complete. For what's actually built and
-how it actually behaves — not the plan, the implementation —
-see `docs/BACKEND_IMPLEMENTATION_SUMMARY.md`. For the exact seam the future
-rule-checking agent repo builds against, see
-`docs/AGENT_INTEGRATION_CONTRACT.md`.
+The docs below are earlier planning/status documents, several now marked
+historical in their own headers — useful for provenance and the schema/route
+detail that's still accurate, not as a current source of truth: full
+original blueprint `docs/TP_Review_Master_Build_Document.md`; background
+`TP_Review_Backend_Architecture.md`, `TP_Review_End_to_End_Trial.md`,
+`TP_Review_Gap_Analysis.md`; build-order tracker (steps 1-11 only, stale past
+that) `docs/BUILD_STATUS.md`; pre-agent-integration snapshot
+`docs/BACKEND_IMPLEMENTATION_SUMMARY.md`; cross-repo contract
+`docs/AGENT_INTEGRATION_CONTRACT.md` (already self-flags what's changed
+since).
 
 ## Invariants — never violate these, ever, regardless of what a task seems to ask for
 

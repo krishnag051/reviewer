@@ -82,34 +82,28 @@ sequence below and is what `app.py` (the Streamlit UI) and every test call.
    computed page number, that det-layer page wins over judgment's
    re-derived one (`pipeline/__init__.py`, confirmed live once against a
    real off-by-one — see the code comment there for the specific case).
-8. **Judgment layer** — `pipeline/judge.py::run_judgment_checks` is the
-   **production path**: it calls `_run_judgment_checks_once` (one real
-   `claude-sonnet-5` call, tool-forced structured output via the
-   `record_findings` tool, `thinking` disabled) **exactly twice** with
-   identical input; where both agree, that result is kept.
-9. **Best-of-3 tie-breaker on disagreement — NOW WIRED INTO PRODUCTION
-   (2026-08-14, Round 93 item 1)**, superseding this section's own earlier
-   "built, NOT wired in" framing. Where the two calls disagree on a
-   rule_id, `run_judgment_checks` sends ONE additional batched 3rd call
-   scoped to only the disagreeing rule_id(s) (never the rule_ids that
-   already agreed — zero extra cost on those), then majority-votes the 3
-   answers for each (`_three_way_majority_finding`); a rule_id the 3rd
-   call fails to answer falls back to the exact same two-call `"uncertain"`
-   this section used to describe as the only behavior
-   (`_two_way_uncertain_finding`). This applies to **every** judgment
-   rule, not just a small allow-list — confirmed live via a real
-   3-patient ground-truth comparison that a large share of disagreements
-   had one of the two calls already matching ground truth. Cost: +1 real
-   call per document, only if at least one rule_id in that batch's two
-   calls disagreed (not one extra call per disagreeing rule_id — all
-   disagreeing rule_ids for a document share the one 3rd call). The
-   separate, still-unwired `run_judgment_checks_majority_vote` function
-   (3 calls unconditionally, no disagreement-gating) is a different,
-   costlier experiment that predates this fix and remains unused;
-   `judge.MAJORITY_VOTE_RULE_IDS` (`QA-GIP-06`, `QA-HRS-07`, `QA-HRS-09`,
-   `QA-GIP-07`, `QA-PROB-01`) is that OLDER experiment's own allow-list,
-   now superseded in practice by the production tie-breaker applying to
-   every judgment rule — it's read nowhere in the current production path.
+8-9. **SUPERSEDED (2026-09-17) — see correction below.** The two items that
+   used to sit here described a 2-call-plus-conditional-3rd-tie-break
+   mechanism as "the production path." That is no longer true and hasn't
+   been for a while; corrected in place rather than left to mislead a
+   future cold read:
+
+   **Judgment layer, as it actually runs today**:
+   `pipeline/integrity.py::run_judgment_with_integrity_check` calls
+   `judge.run_judgment_checks_majority_vote(n_calls=5, min_agreement=4)`
+   for the initial batch — **5 real `claude-sonnet-5` calls per document,
+   requiring 4-of-5 agreement to commit to an answer**; anything short of
+   that becomes a genuine "uncertain" with each side's real evidence shown
+   (see `pipeline/__init__.py`/`judge.py`'s `_short_uncertain_summary`).
+   The 2-call `run_judgment_checks` function described above still exists
+   and still runs, but **only** for (a) the retry pass on rule_ids missing
+   after the initial 5-way batch, and (b) the separate page-recovery pass —
+   it is not the main judgment mechanism despite this section (and this
+   file's own history) previously saying so. `judge.MAJORITY_VOTE_RULE_IDS`
+   (`QA-GIP-06`, `QA-HRS-07`, `QA-HRS-09`, `QA-GIP-07`, `QA-PROB-01`) is an
+   older, now-fully-unused allow-list — not read anywhere in the current
+   production path. See `docs/ARCHITECTURE.md` §1 (in the `backend`/`docs`
+   tree) for the full write-up.
 10. **Integrity check** — `pipeline/integrity.py::run_judgment_with_integrity_check`
     diffs the rule_ids the judgment layer was asked about against what it
     actually returned. A missing rule_id triggers a retry (up to
@@ -141,6 +135,17 @@ reconciliation (Round 91) and Rounds 92-94's fixes on top of it moved this
 substantially. This section now reflects the real current state, re-read
 directly from `rules.json`/`fields.DET_CHECKS`, not carried forward from
 the prior snapshot.**
+
+> **STALE (2026-09-17) — the numbers in this section are out of date.**
+> `rules.json` currently has **188 total rules, 179 active** (not 173) — 81
+> deterministic total (79 active, **73 with a real `DET_CHECKS` entry**, not
+> 51) / 107 judgment total (100 active). The specific 13-rule "deliberately
+> unbuilt" enumeration below has grown/changed since and was NOT
+> re-verified for this pass — if you need the exact current unbuilt-deterministic
+> list, re-derive it from `rules.json` vs. `fields.DET_CHECKS` directly
+> rather than trusting the list below. `test_gip10_acf07_mislabeled_deterministic.py`'s
+> pinned count of 51 is also stale if the test itself hasn't been updated —
+> check that test's current assertion before relying on it.
 
 **173 total active rules** in `rules/rules.json` (the single source of
 truth — never hand-duplicated elsewhere). Of those:
