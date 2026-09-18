@@ -52,15 +52,33 @@ from datetime import datetime
 from typing import Any
 
 from .fields import _extract_evidenced_by_blocks, _normalize_goal_text
+from .fields import _page_for_offset as _raw_page_for_offset
+
+
+def _page_for_offset(fields: dict, offset: int | None) -> int | None:
+    """Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    thin None-safe wrapper -- fields.py's own _page_for_offset takes a
+    plain int and isn't None-safe; every call site in this file may have
+    a genuinely-missing offset (nothing found to anchor to), so guard
+    once here instead of repeating the same None check at every call
+    site."""
+    if offset is None:
+        return None
+    return _raw_page_for_offset(fields, offset)
 from .model_provider import CallTracker, call_tool_json, call_tool_json_with_images
 
 
-def _finding(result: str, evidence: str, confidence: float) -> dict[str, Any]:
-    return {"result": result, "evidence": evidence, "confidence": confidence}
+def _finding(result: str, evidence: str, confidence: float, page: int | None = None) -> dict[str, Any]:
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # `page` is new, optional, and additive -- always the CURRENT TP's own
+    # page (never the previous TP's), per this round's explicit
+    # requirement. Every existing call site that doesn't pass one still
+    # works exactly as before (page=None, same as today).
+    return {"result": result, "evidence": evidence, "confidence": confidence, "page": page}
 
 
-def _not_checkable(evidence: str) -> dict[str, Any]:
-    return _finding("not_checkable", evidence, 0.0)
+def _not_checkable(evidence: str, page: int | None = None) -> dict[str, Any]:
+    return _finding("not_checkable", evidence, 0.0, page)
 
 
 def _parse_date(date_str: str | None) -> datetime | None:
@@ -139,18 +157,30 @@ def _compare_mast01(current_fields: dict, previous_fields: dict) -> dict[str, An
 
     out_of_range = []
     checked_any = False
+    first_checked_offset = None
     for g in current_goals:
         d = _parse_date(g.get("date_mastered"))
         if d is None:
             continue
         checked_any = True
+        if first_checked_offset is None:
+            first_checked_offset = g.get("offset")
         if not (range_start <= d <= range_end):
-            out_of_range.append((g.get("name", "").strip(), g["date_mastered"]))
+            out_of_range.append((g.get("name", "").strip(), g["date_mastered"], g.get("offset")))
 
     if not checked_any:
         return _not_checkable(
             "No mastered goal on the current TP has a parseable Date Mastered value to check."
         )
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # cites the CURRENT TP's own page -- the first out-of-range goal's for
+    # a fail (a real, specific location a reviewer can jump to), or the
+    # first checked goal's for a pass (same "first checked" convention
+    # fields.py's own det checkers already use for a whole-document
+    # claim). Never the previous TP's page -- this function never even
+    # computes one.
+    cite_offset = out_of_range[0][2] if out_of_range else first_checked_offset
+    page = _page_for_offset(current_fields, cite_offset) if cite_offset is not None else None
     # Fix Round (2026-09-10), item 19 -- confirmed real evidence-labeling
     # gap: this rule's own description still says "previous AUTHORIZATION
     # dates," but the real, confirmed-correct window (see this function's
@@ -165,7 +195,7 @@ def _compare_mast01(current_fields: dict, previous_fields: dict) -> dict[str, An
         f"{current_range[1]} (current TP's 'Date of Current Report' end)"
     )
     if out_of_range:
-        detail = "; ".join(f"{name!r} (Date Mastered {dm})" for name, dm in out_of_range)
+        detail = "; ".join(f"{name!r} (Date Mastered {dm})" for name, dm, _offset in out_of_range)
         return _finding(
             "fail",
             (
@@ -173,6 +203,7 @@ def _compare_mast01(current_fields: dict, previous_fields: dict) -> dict[str, An
                 f"the elapsed-authorization window ({window_desc}): {detail}."
             ),
             0.75,
+            page,
         )
     return _finding(
         "pass",
@@ -181,6 +212,7 @@ def _compare_mast01(current_fields: dict, previous_fields: dict) -> dict[str, An
             f"elapsed-authorization window ({window_desc})."
         ),
         0.75,
+        page,
     )
 
 
@@ -216,10 +248,20 @@ def _compare_mast02(current_fields: dict, previous_fields: dict) -> dict[str, An
             continue
         norm = _normalize_goal_text(name)
         if norm in previous_by_norm:
-            duplicates.append(name)
+            duplicates.append((name, g.get("offset")))
+
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # cite the first duplicate's CURRENT-TP page for a fail, or the first
+    # current goal's page for a pass (whole-list claim, same convention
+    # as MAST-01 above). Never the previous TP's page.
+    if duplicates:
+        cite_offset = duplicates[0][1]
+    else:
+        cite_offset = current_goals[0].get("offset") if current_goals else None
+    page = _page_for_offset(current_fields, cite_offset) if cite_offset is not None else None
 
     if duplicates:
-        detail = "; ".join(repr(d) for d in duplicates)
+        detail = "; ".join(repr(name) for name, _offset in duplicates)
         return _finding(
             "fail",
             (
@@ -227,12 +269,14 @@ def _compare_mast02(current_fields: dict, previous_fields: dict) -> dict[str, An
                 f"Mastered Goals list: {detail}."
             ),
             0.75,
+            page,
         )
     return _finding(
         "pass",
         "No mastered goal name (formatting-normalized) appears on both the current and previous TP's "
         "Mastered Goals list.",
         0.75,
+        page,
     )
 
 
@@ -269,6 +313,12 @@ def _compare_rpt05_previous_auth_end(current_fields: dict, previous_fields: dict
             f"({previous_range[1]!r}) could not be parsed as a real date."
         )
 
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # the current TP's own "Authorization Dates Requested" offset -- never
+    # the previous TP's, which is where the OTHER half of this comparison
+    # lives but isn't what gets cited.
+    page = _page_for_offset(current_fields, current_fields.get("auth_dates_requested_offset"))
+
     gap_days = (current_start - previous_end).days - 1  # 0 = directly adjacent (no gap)
     if gap_days == 0:
         return _finding(
@@ -278,6 +328,7 @@ def _compare_rpt05_previous_auth_end(current_fields: dict, previous_fields: dict
                 f"previous TP's requested auth end ({previous_range[1]}) -- no gap."
             ),
             0.8,
+            page,
         )
     if gap_days > 0:
         return _finding(
@@ -287,6 +338,7 @@ def _compare_rpt05_previous_auth_end(current_fields: dict, previous_fields: dict
                 f"previous TP's requested auth end ({previous_range[1]}) -- a gap in coverage."
             ),
             0.8,
+            page,
         )
     return _finding(
         "fail",
@@ -295,6 +347,7 @@ def _compare_rpt05_previous_auth_end(current_fields: dict, previous_fields: dict
             f"requested auth end ({previous_range[1]}) by {-gap_days} day(s)."
         ),
         0.8,
+        page,
     )
 
 
@@ -447,18 +500,30 @@ def _extract_acf_score_narrative(
 
 def _get_acf_score(
     fields: dict, *, tracker: CallTracker, model_override: str | None,
-) -> tuple[float | None, str | None]:
+) -> tuple[float | None, str | None, int | None]:
     """Boxed extraction first (free, deterministic); then vision (if this
     document has a milestone-grid image); then the narrative-text judgment
     fallback last (in case a document has neither a box nor a grid image,
-    just prose). Returns (score, method) where method is "boxed",
+    just prose). Returns (score, method, page) where method is "boxed",
     "vision (milestone grid, dated <score_date>)" (the date included for
     real traceability -- U3 re-run round's own fix, so a reviewer can spot-
     check which of the grid's multiple historical rows was actually read),
-    or "narrative (judgment)", for evidence text."""
+    or "narrative (judgment)", for evidence text.
+
+    Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    `page` added -- the real page THIS document's score was found on.
+    "boxed"/"narrative" don't carry an exact character offset (neither
+    extractor tracks one), so both fall back to the ACF section's own
+    real page span (the coarsest anchor still genuinely correct -- the
+    score is somewhere in that section); "vision" uses the actual
+    milestone-grid image page(s) this document's grid was rendered from,
+    which is exact, not a fallback.
+    """
+    acf_pages = fields.get("acf_section_pages") or []
+    fallback_page = acf_pages[0] if acf_pages else None
     boxed = fields.get("acf_score_boxed")
     if boxed is not None:
-        return boxed, "boxed"
+        return boxed, "boxed", fallback_page
     assessment_tool = (fields.get("acf_fields") or {}).get("assessment_tool")
     grid_images = fields.get("milestone_grid_images") or {}
     if grid_images:
@@ -467,13 +532,13 @@ def _get_acf_score(
         )
         if vision_score is not None:
             method = f"vision (milestone grid, dated {score_date})" if score_date else "vision (milestone grid)"
-            return vision_score, method
+            return vision_score, method, sorted(grid_images.keys())[0]
     narrative = _extract_acf_score_narrative(
         fields.get("full_text", ""), assessment_tool, tracker=tracker, model_override=model_override,
     )
     if narrative is not None:
-        return narrative, "narrative (judgment)"
-    return None, None
+        return narrative, "narrative (judgment)", fallback_page
+    return None, None, None
 
 
 def _compare_acf04(
@@ -496,8 +561,15 @@ def _compare_acf04(
     evidence text is written to be unambiguous on its own terms
     regardless of what phase-1 said, so a reviewer never gets misled).
     """
-    current_score, current_method = _get_acf_score(current_fields, tracker=tracker, model_override=model_override)
-    previous_score, previous_method = _get_acf_score(previous_fields, tracker=tracker, model_override=model_override)
+    current_score, current_method, current_page = _get_acf_score(
+        current_fields, tracker=tracker, model_override=model_override,
+    )
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # previous_page is intentionally never used to cite anything below --
+    # only current_page is, per this round's explicit requirement.
+    previous_score, previous_method, _previous_page = _get_acf_score(
+        previous_fields, tracker=tracker, model_override=model_override,
+    )
 
     if current_score is None or previous_score is None:
         missing = []
@@ -529,6 +601,7 @@ def _compare_acf04(
                 f"{current_score:g} (current TP, {current_method})."
             ),
             confidence,
+            current_page,
         )
     return _finding(
         "pass",
@@ -537,6 +610,7 @@ def _compare_acf04(
             f"{current_score:g} (current TP, {current_method})."
         ),
         confidence,
+        current_page,
     )
 
 
@@ -638,6 +712,10 @@ def _compare_prob04(
     if not current_text.strip() or not previous_text.strip():
         return _not_checkable("'As evidenced by:' block(s) found but empty on one or both documents.")
 
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # the first CURRENT-TP block's own offset -- never the previous TP's.
+    page = _page_for_offset(current_fields, current_blocks[0].get("offset"))
+
     prompt = (
         "Compare the CURRENT treatment plan's 'As evidenced by:' findings (the patient-specific evidence "
         "for each Problem Area) against the PREVIOUS treatment plan's own 'As evidenced by:' findings for "
@@ -680,6 +758,7 @@ def _compare_prob04(
                 f"content found: {new_content} {reasoning}"
             ).strip(),
             0.6,
+            page,
         )
     if explained:
         return _finding(
@@ -690,6 +769,7 @@ def _compare_prob04(
                 f"{reasoning}"
             ).strip(),
             0.6,
+            page,
         )
     return _finding(
         "fail",
@@ -698,6 +778,7 @@ def _compare_prob04(
             f"the current TP does NOT explain this as due to limited/no additional services. {reasoning}"
         ).strip(),
         0.6,
+        page,
     )
 
 

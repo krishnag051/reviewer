@@ -19,9 +19,17 @@ def _fields_for(text: str) -> dict:
     return {"pages": [{"page_number": 14, "text": text}], "full_text": text}
 
 
-# Verbatim (whitespace-preserved) excerpt from the real Daylyn Holland TP.
+# Verbatim (whitespace-preserved) excerpt from the real Daylyn Holland TP,
+# except the goal name -- Fix Round (Jacob Freund 10-2026-U1), Item 15
+# scoped this checker to tantrum-named goals only; the real goal name here
+# ("count of instances that Daylyn lines up items") is a real behavior-
+# reduction goal but not tantrum-related, so it's out of scope under the
+# new filter. Renamed to keep this test exercising the actual regression
+# under test (the written-out-number duration-qualifier parsing), not the
+# unrelated tantrum-scoping filter -- the Mastery Criteria text itself,
+# which is what's actually being verified, is untouched.
 _REAL_BLOCK = (
-    "Target Name:\xa0count of instances that Daylyn lines up items\n"
+    "Target Name:\xa0decrease frequency of tantrum behavior\n"
     "Date Initiated:\xa005/18/2026\xa0\n"
     "Baseline:\xa05-6 times per session\xa0Frequency\n"
     "Mastery Criteria:\xa02 times or less per session for three consecutive sessions\xa0\n"

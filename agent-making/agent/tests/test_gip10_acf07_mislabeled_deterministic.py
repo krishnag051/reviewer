@@ -143,7 +143,11 @@ EXPECTED_MISMATCHED_RULE_IDS = frozenset({
     # partial limitation (the real numeric-compare branch itself is
     # unconfirmed against a real qualifying document) -- see that
     # function's own docstring.
-    "QA-SCH-03",
+    # QA-SCH-03 REMOVED from this set (Fix Round, Jacob Freund 10-2026-U1,
+    # Item 5) -- a real not-in-school not_applicable gate was built
+    # (_check_SCH03); the real overlap-detection logic below is still not
+    # built, so blocked_status stays, but this rule is no longer a
+    # zero-checker silent gap.
     # QA-SIG-06 REMOVED from this set (Master Fix Round, 2026-09-08) -- the
     # same silent-gap shape (deterministic label, zero checker), but this
     # round relabeled it to "judgment" (honest correction) instead of
@@ -192,7 +196,7 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_seventy_three_deterministic_labeled_rules_have_real_checkers():
+def test_exactly_eighty_deterministic_labeled_rules_have_real_checkers():
     """Renamed from "...seventy_one..." (Fix Round, 2026-09-11 night,
     same round) -- 2 more joined: QA-SCH-05, QA-GIP-22.
 
@@ -443,6 +447,20 @@ def test_exactly_seventy_three_deterministic_labeled_rules_have_real_checkers():
         # reusing the same Date-Initiated-vs-report-range anchor QA-GIP-07
         # already proved out) -- see each checker's own docstring.
         "QA-SCH-05", "QA-GIP-22",
+        # Fix Round (Jacob Freund 10-2026-U1): 7 more joined -- QA-SCH-03
+        # (real not-in-school N/A gate, Item 5; relabeled from
+        # deterministic-with-no-checker, see EXPECTED_MISMATCHED_RULE_IDS's
+        # own comment above), QA-HRS-07 (real no-increase N/A gate, Item 3;
+        # relabeled from judgment), QA-BIO-06 (real no-medication N/A gate,
+        # Item 7; relabeled from judgment), QA-ACF-09 (real at-most-one-tool
+        # N/A gate, Item 14; relabeled from judgment), QA-ACF-11 (real
+        # non-Vineland N/A gate, Item 11; relabeled from judgment),
+        # QA-MAST-04 (real parent-training-goal count checker, Item 17;
+        # relabeled from judgment), QA-PROB-04 (real not_applicable stub for
+        # the no-previous-TP case, Item 9; relabeled from judgment) -- see
+        # each checker's own docstring in pipeline/fields.py.
+        "QA-SCH-03", "QA-HRS-07", "QA-BIO-06", "QA-ACF-09", "QA-ACF-11",
+        "QA-MAST-04", "QA-PROB-04",
     }
 
 

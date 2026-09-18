@@ -134,10 +134,21 @@ def test_extract_previous_tp_fields_runs_end_to_end_against_a_real_pdf():
     # (Fix Round, Previous TP: 3 Real Bugs, Jacob F) -- see this function's
     # own docstring for both. The plumbing round's original 5 keys are
     # otherwise unchanged.
+    #
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # 5 more keys added so callers can compute a real CURRENT-TP page --
+    # "pages" (the raw page-text list _page_for_offset needs),
+    # "auth_dates_requested_offset"/"report_date_range_offset" (the exact
+    # character offset for each date-range match), "acf_section_pages"
+    # (coarse page-span fallback for ACF-04's boxed/narrative score
+    # extraction), "evidenced_by_blocks" (offset-carrying "As evidenced
+    # by:" blocks for QA-PROB-04). See this function's own docstring.
     assert set(result.keys()) == {
         "mastered_goals", "problem_areas", "acf_fields", "acf_score_boxed",
         "auth_dates_requested", "report_date_range", "milestone_grid_images",
         "page_count", "full_text",
+        "pages", "auth_dates_requested_offset", "report_date_range_offset",
+        "acf_section_pages", "evidenced_by_blocks",
     }
     assert result["page_count"] > 0
     assert result["full_text"]  # non-empty real extracted text

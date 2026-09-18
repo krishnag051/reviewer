@@ -25,10 +25,12 @@ from __future__ import annotations
 from .extract import extract_pdf_text
 from .fields import (
     _acf_section_page_range,
+    _extract_evidenced_by_blocks,
     _extract_mastered_goals_with_dates,
     _extract_problem_areas,
-    _find_labeled_date_range,
+    _find_labeled_date_range_with_offset,
     _milestone_grid_page_range,
+    _page_for_offset,
     extract_acf_fields,
     extract_acf_score_boxed,
     extract_fields,
@@ -119,14 +121,45 @@ def extract_previous_tp_fields(previous_tp_pdf_path: str) -> dict:
         if grid_pages else {}
     )
 
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # switched from _find_labeled_date_range to the offset-capturing
+    # sibling, and added "pages" + "evidenced_by_blocks" to this return --
+    # this dict previously had NO way to map anything back to a real page
+    # at all (no "pages" key -> _page_for_offset always returned None; the
+    # date-range fields carried no offset). This function serves BOTH the
+    # current TP and the previous TP (called once per file, see
+    # agent_client.py::review_previous_tp) -- callers must only ever use
+    # the CURRENT TP's own returned offsets/pages to cite a page, never
+    # the previous TP's, per this round's explicit requirement. The
+    # *_offset keys below are additive -- auth_dates_requested/
+    # report_date_range keep their original 2-tuple (start, end) shape so
+    # no existing consumer's unpacking breaks.
+    auth_found = _find_labeled_date_range_with_offset(text, "Authorization Dates Requested")
+    report_found = _find_labeled_date_range_with_offset(text, "Date of Current Report")
     return {
         "mastered_goals": _extract_mastered_goals_with_dates(text),
         "problem_areas": _extract_problem_areas(text),
+        "evidenced_by_blocks": _extract_evidenced_by_blocks(text),
         "acf_fields": extract_acf_fields(fields),
         "acf_score_boxed": extract_acf_score_boxed(fields),
-        "auth_dates_requested": _find_labeled_date_range(text, "Authorization Dates Requested"),
-        "report_date_range": _find_labeled_date_range(text, "Date of Current Report"),
+        "auth_dates_requested": (auth_found[0], auth_found[1]) if auth_found else None,
+        "auth_dates_requested_offset": auth_found[2] if auth_found else None,
+        "report_date_range": (report_found[0], report_found[1]) if report_found else None,
+        "report_date_range_offset": report_found[2] if report_found else None,
+        "acf_section_pages": sorted(_acf_section_page_range(fields)),
         "milestone_grid_images": milestone_grid_images,
         "page_count": fields["page_count"],
         "full_text": text,
+        "pages": fields["pages"],
     }
+
+
+def previous_tp_page_for_offset(extracted: dict, offset: int | None) -> int | None:
+    """Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    thin wrapper so callers in previous_tp_comparison.py don't need to
+    import _page_for_offset separately or remember this dict's own
+    "pages" key name -- one obvious call for "what page is this current-
+    TP offset on."""
+    if offset is None:
+        return None
+    return _page_for_offset(extracted, offset)

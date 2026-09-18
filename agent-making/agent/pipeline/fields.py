@@ -610,8 +610,16 @@ def _check_TEMP03(rule: dict, fields: dict) -> tuple:
     return "fail", " ".join(problems), page, 0.85
 
 
-def _find_embedded_reviewer_comments(text: str) -> list[str]:
-    """Finds embedded reviewer comments/questions left in the document's
+def _find_embedded_reviewer_comments(text: str) -> list[tuple[str, int]]:
+    """Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    now returns [(comment_text, offset), ...] instead of a bare list of
+    strings -- both call sites (QA-TEMP-04, QA-PROB-02) previously
+    discarded a real, computable page for every comment this function
+    finds; the offsets were already available internally (every match
+    below is via re.finditer), just never returned. Both callers updated
+    accordingly.
+
+    Finds embedded reviewer comments/questions left in the document's
     running text -- built to fix a confirmed regression (2026-07-28
     follow-up round, item 1): QA-TEMP-04's notes described the check as
     "pattern match (From:/Re:/email headers) catches most; free-form
@@ -706,9 +714,9 @@ def _find_embedded_reviewer_comments(text: str) -> list[str]:
             # its own (e.g. "(Is this correct?)") is NOT excluded -- that
             # shape has neither signal and still gets caught.
             continue
-        comments.append(matched.strip())
+        comments.append((matched.strip(), m.start()))
     for m in re.finditer(r"[Pp]lease (?!note\b)(?:reword|clarify|specify|update|add)[^\n]{0,80}", text):
-        comments.append(m.group(0).strip())
+        comments.append((m.group(0).strip(), m.start()))
     for m in re.finditer(r"\(([^()]{1,200})\)", text):
         inner = m.group(1).strip()
         if not inner:
@@ -723,7 +731,7 @@ def _find_embedded_reviewer_comments(text: str) -> list[str]:
             inner, re.IGNORECASE,
         )
         if starts_with_directive:
-            comments.append(f"({inner})")
+            comments.append((f"({inner})", m.start()))
     return comments
 
 
@@ -753,7 +761,7 @@ def _check_TEMP04(rule: dict, fields: dict) -> tuple:
     """
     text = fields["full_text"]
     comments = _find_embedded_reviewer_comments(text)
-    email_headers = re.findall(r"^(?:From|To|Re|Subject|Sent):[^\n]*", text, re.MULTILINE)
+    email_headers = [(m.group(0), m.start()) for m in re.finditer(r"^(?:From|To|Re|Subject|Sent):[^\n]*", text, re.MULTILINE)]
 
     # Fix Round (2026-09-10), item 8 -- REAL FALSE POSITIVE FOUND AND
     # FIXED: "listener responding" is normal ABA/VB-MAPP terminology (a
@@ -764,8 +772,8 @@ def _check_TEMP04(rule: dict, fields: dict) -> tuple:
     # document on hand; this exception is correct regardless of which
     # detector produced the false hit.
     _LISTENER_RESPONDING_RE = re.compile(r"listener\s+responding", re.IGNORECASE)
-    comments = [c for c in comments if not _LISTENER_RESPONDING_RE.search(c)]
-    email_headers = [h for h in email_headers if not _LISTENER_RESPONDING_RE.search(h)]
+    comments = [(c, off) for c, off in comments if not _LISTENER_RESPONDING_RE.search(c)]
+    email_headers = [(h, off) for h, off in email_headers if not _LISTENER_RESPONDING_RE.search(h)]
 
     if not comments and not email_headers:
         return (
@@ -775,15 +783,23 @@ def _check_TEMP04(rule: dict, fields: dict) -> tuple:
             None, 0.75,
         )
 
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # cite whichever type of problem was found first in the document.
+    first_offset = min(
+        (off for _c, off in comments + email_headers),
+        default=None,
+    )
+    page = _page_for_offset(fields, first_offset) if first_offset is not None else None
+
     problems = []
     if email_headers:
-        problems.append(f"{len(email_headers)} email-header-style line(s) found: {email_headers[:5]}.")
+        problems.append(f"{len(email_headers)} email-header-style line(s) found: {[h for h, _off in email_headers][:5]}.")
     if comments:
         problems.append(
             f"{len(comments)} embedded reviewer comment(s)/question(s) found, e.g.: "
-            f"{comments[:3]}."
+            f"{[c for c, _off in comments][:3]}."
         )
-    return "fail", " ".join(problems), None, 0.75
+    return "fail", " ".join(problems), page, 0.75
 
 
 # A whole line that's essentially just "Label: short value" -- the real,
@@ -880,6 +896,28 @@ def _check_PROB01(rule: dict, fields: dict) -> tuple:
     )
 
 
+def _check_PROB04(rule: dict, fields: dict) -> tuple:
+    """Fix Round (Jacob Freund 10-2026-U1), Item 9, second half: when
+    there genuinely is no previous TP available, this rule must resolve
+    to not_applicable, not a Pass whose own evidence text says identity
+    "cannot be verified" -- a self-contradicting label. This is the
+    phase-1 (TP-only) answer, which by definition never has previous-TP
+    data to compare against; it always returns not_applicable. The real
+    comparison -- current vs. previous TP's own Problem Areas text --
+    only happens in pipeline/previous_tp_comparison.py::_compare_prob04,
+    wired via app/agent_client.py::review_previous_tp, which uses that
+    real result on its own rather than blending it with this stub (see
+    that call site's own comment -- combining a fixed not_applicable
+    phase-1 with a real pass/fail through the generic compound-combine
+    policy would incorrectly collapse a resolved answer into "uncertain").
+    """
+    return (
+        "not_applicable",
+        "No previous TP is available in this run to compare Problem Areas against.",
+        None, 0.85,
+    )
+
+
 def _check_PROB02(rule: dict, fields: dict) -> tuple:
     """Round 63, item 5: "'As evidenced by' section matches goals listed" --
     deterministic pre-check ONLY for the confirmed objective violation (a
@@ -910,7 +948,7 @@ def _check_PROB02(rule: dict, fields: dict) -> tuple:
             evidence_value = m.group(1).strip()
             if not evidence_value:
                 continue
-            for comment in comments:
+            for comment, comment_offset in comments:
                 # _find_embedded_reviewer_comments matches greedily from up
                 # to 150 chars before the "?"/imperative phrase, which on
                 # this same line includes the "As evidenced by:" label
@@ -923,7 +961,7 @@ def _check_PROB02(rule: dict, fields: dict) -> tuple:
                         "fail",
                         f"An 'As evidenced by:' entry is an embedded reviewer comment, not real "
                         f"clinical content: {comment!r}.",
-                        None, 0.85,
+                        _page_for_offset(fields, comment_offset), 0.85,
                     )
     return (
         "not_checkable",
@@ -1454,6 +1492,53 @@ def _check_SCH01(rule: dict, fields: dict) -> tuple:
     )
 
 
+_NOT_IN_SCHOOL_RE = re.compile(
+    r"(?:does(?:n['’]t| not)|is\s+not|isn['’]t)\s+(?:currently\s+)?"
+    r"(?:attend(?:ing)?\s+)?(?:in\s+)?school\b",
+    re.IGNORECASE,
+)
+
+
+def _check_SCH03(rule: dict, fields: dict) -> tuple:
+    """Fix Round (Jacob Freund 10-2026-U1), Item 5: Ms. Yachnes's explicit
+    correction -- when the document clearly states the client isn't in
+    school, this rule has nothing to overlap-check and must resolve to
+    not_applicable, not escalate to a judgment call. Real evidence: the
+    judgment layer's own evidence text already reasoned through to exactly
+    this conclusion ("Jacob doesn't currently attend school [Page 4], so
+    there's no school schedule to overlap with ABA services") but still
+    returned Uncertain as the STATUS -- there was no not-in-school carve-
+    out anywhere that could turn that reasoning into a not_applicable
+    verdict; this checker is that carve-out.
+
+    This is a narrow, disclosed-limitation gate, not this rule's full real
+    overlap-detection logic (still not built -- see this rule's own
+    blocked_status: needs robust weekly-schedule-table extraction and a
+    payor in-school exception flag). It only catches the clearly-stated
+    not-in-school case; anything else -- including the real overlap check
+    when the client IS in school -- still escalates to judgment exactly
+    as before. NOT YET VERIFIED against a real document containing the
+    opposite case; flagged per this codebase's own convention rather than
+    assumed to generalize.
+    """
+    m = _NOT_IN_SCHOOL_RE.search(fields["full_text"])
+    if m:
+        page = _page_for_offset(fields, m.start())
+        return (
+            "not_applicable",
+            "Document states the client is not currently in school, so there is no school "
+            "schedule to check for overlap with ABA services.",
+            page, 0.85,
+        )
+    return (
+        "not_checkable",
+        "Client's school-enrollment status wasn't clearly stated as 'not in school,' and "
+        "this rule's own real overlap-detection logic (weekly-schedule-table extraction, "
+        "payor in-school exception) isn't built yet -- see blocked_status.",
+        None, 0.0,
+    )
+
+
 def _check_SCH07(rule: dict, fields: dict) -> tuple:
     """Round 63, item 3: ">3 hrs/day of 97153 -> approved by clinical
     director" -- a hard Director-tag trigger (Section 7.1) whenever ANY
@@ -1618,6 +1703,11 @@ def _hrs06_current_hours_and_rationale(text: str) -> list[dict]:
             "desc": desc.split("\n", 1)[0].strip()[:60],
             "hours": hours_str,
             "rationale": block[pos:next_pos],
+            # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19),
+            # Item 2: absolute offset in the full document text, not just
+            # within this local "Hours Requesting:" block slice -- lets
+            # callers compute a real page via _page_for_offset.
+            "offset": m.start(1) + pos,
         })
     return out
 
@@ -1656,7 +1746,7 @@ def _hrs06_to_number(s: str | None) -> float | None:
 _HRS06_ANNOTATION_PATTERN = re.compile(r"\?|\bVerifying\b|\bChange if\b", re.IGNORECASE)
 
 
-def _hrs06_unresolved_reviewer_annotation(text: str) -> str | None:
+def _hrs06_unresolved_reviewer_annotation(text: str) -> tuple[str, int] | None:
     """Second sub-check (2026-07-28 follow-up round, item 2): scans the
     Hours Requesting section for an embedded reviewer annotation
     questioning an hours line item -- the SAME shape as QA-TRANS-01's
@@ -1692,7 +1782,10 @@ def _hrs06_unresolved_reviewer_annotation(text: str) -> str | None:
         return None
     start = max(0, am.start() - 60)
     end = min(len(section), am.end() + 60)
-    return section[start:end].strip()
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # now returns (text, absolute_offset) instead of a bare string, so
+    # the one caller (_check_HRS06) can compute a real page.
+    return section[start:end].strip(), m.start(1) + start
 
 
 def _check_HRS06(rule: dict, fields: dict) -> tuple:
@@ -1735,6 +1828,7 @@ def _check_HRS06(rule: dict, fields: dict) -> tuple:
     """
     text = fields["full_text"]
     annotation = _hrs06_unresolved_reviewer_annotation(text)
+    annotation_text, annotation_offset = annotation if annotation else (None, None)
 
     previous = _hrs06_previous_auth_hours(text)
     current = _hrs06_current_hours_and_rationale(text)
@@ -1743,8 +1837,8 @@ def _check_HRS06(rule: dict, fields: dict) -> tuple:
             return (
                 "fail",
                 f"Unresolved reviewer annotation questioning hours in the Hours Requesting "
-                f"section: {annotation!r}.",
-                None, 0.75,
+                f"section: {annotation_text!r}.",
+                _page_for_offset(fields, annotation_offset), 0.75,
             )
         return (
             "not_checkable",
@@ -1754,12 +1848,16 @@ def _check_HRS06(rule: dict, fields: dict) -> tuple:
         )
 
     pairs = _hrs06_match_previous_to_current(previous, current)
-    increases = []
+    changes = []
     for p_desc, p_hours_str, curr in pairs:
         p_hours = _hrs06_to_number(p_hours_str)
         c_hours = _hrs06_to_number(curr["hours"])
-        if p_hours is None or c_hours is None or c_hours <= p_hours:
+        if p_hours is None or c_hours is None or c_hours == p_hours:
             continue
+        # Fix Round (Jacob Freund 10-2026-U1), Item 2: a decrease needs a
+        # rationale in place just as much as an increase does -- this used
+        # to only fire on c_hours > p_hours, silently skipping decreases.
+        direction = "increased" if c_hours > p_hours else "decreased"
         # Strip the first few structural lines (code/description, provider,
         # POS) before judging whether real rationale narrative exists --
         # those columns are always present and non-blank even with zero
@@ -1767,45 +1865,101 @@ def _check_HRS06(rule: dict, fields: dict) -> tuple:
         # missing rationale.
         non_boiler = re.sub(r"^[^\n]*\n(?:[^\n]*\n){0,4}", "", curr["rationale"], count=1)
         has_rationale = len(non_boiler.strip()) > 20
-        increases.append((curr["code"], curr["desc"], p_hours_str, curr["hours"], has_rationale))
+        changes.append((curr["code"], curr["desc"], p_hours_str, curr["hours"], direction, has_rationale, curr["offset"]))
 
-    missing = [i for i in increases if not i[4]]
+    missing = [i for i in changes if not i[5]]
     problems = []
     if missing:
         problems.append("; ".join(
-            f"{code}-{desc} increased from {p} to {c} hours with no accompanying rationale "
-            f"text found" for code, desc, p, c, _ in missing
+            f"{code}-{desc} {direction} from {p} to {c} hours with no accompanying rationale "
+            f"text found" for code, desc, p, c, direction, _has, _off in missing
         ))
     if annotation:
         problems.append(
             f"Unresolved reviewer annotation questioning hours in the Hours Requesting "
-            f"section: {annotation!r}."
+            f"section: {annotation_text!r}."
         )
 
     if problems:
-        return "fail", " ".join(problems), None, 0.8
+        # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+        # cite the first real problem's own offset -- a missing-rationale
+        # CPT-code row if one exists, else the annotation's own location.
+        cite_offset = missing[0][6] if missing else annotation_offset
+        return "fail", " ".join(problems), _page_for_offset(fields, cite_offset), 0.8
 
-    if not increases:
+    if not changes:
         return (
             "not_applicable",
-            "No CPT code's requested hours increased over the previous authorization, and no "
+            "No CPT code's requested hours changed from the previous authorization, and no "
             "unresolved reviewer annotation questioning hours was found -- nothing for this "
             "rule to check.",
             None, 0.85,
         )
     detail = "; ".join(
-        f"{code}-{desc} increased from {p} to {c} hours, with rationale text present"
-        for code, desc, p, c, _ in increases
+        f"{code}-{desc} {direction} from {p} to {c} hours, with rationale text present"
+        for code, desc, p, c, direction, _has, _off in changes
     )
-    return "pass", detail, None, 0.8
+    return "pass", detail, _page_for_offset(fields, changes[0][6]), 0.8
+
+
+def _check_HRS07(rule: dict, fields: dict) -> tuple:
+    """Fix Round (Jacob Freund 10-2026-U1), Item 3: this rule should be
+    not_applicable when there's no hours increase at all, not Uncertain --
+    previously QA-HRS-07 was pure judgment AND on the stabilized
+    safety-net list, so it landed on a forced Uncertain every time,
+    dumping raw per-code hours without ever determining whether an
+    increase actually occurred.
+
+    This deterministic gate reuses QA-HRS-06's own increase-detection
+    helpers to answer that question first, with zero model cost: no
+    increase anywhere -> not_applicable, confidently. An increase does
+    exist -> escalate (not_checkable here) so a real judgment call can
+    assess RATIONALE QUALITY specifically, using this rule's own
+    'ADEQUATE' bar (see rules.json notes) -- this checker only gates on
+    presence of an increase, it does not itself judge rationale quality.
+    """
+    text = fields["full_text"]
+    previous = _hrs06_previous_auth_hours(text)
+    current = _hrs06_current_hours_and_rationale(text)
+    if not previous or not current:
+        return (
+            "not_checkable",
+            "Could not find both a 'Hours Requesting:' and 'Hours Approved Previous "
+            "Authorization:' section with parseable per-code hours.",
+            None, 0.0,
+        )
+    pairs = _hrs06_match_previous_to_current(previous, current)
+    any_increase = False
+    for _p_desc, p_hours_str, curr in pairs:
+        p_hours = _hrs06_to_number(p_hours_str)
+        c_hours = _hrs06_to_number(curr["hours"])
+        if p_hours is not None and c_hours is not None and c_hours > p_hours:
+            any_increase = True
+            break
+    if not any_increase:
+        return (
+            "not_applicable",
+            "No CPT code's requested hours increased over the previous authorization -- "
+            "nothing for this rule to check.",
+            None, 0.85,
+        )
+    return (
+        "not_checkable",
+        "An hours increase was found; escalating for a real rationale-quality review.",
+        None, 0.0,
+    )
 
 
 def _check_COC04(rule: dict, fields: dict) -> tuple:
     months_allowed = rule["params"]["months_allowed"]
     fax_m = re.search(r"faxed to [^\n]*?on\s*(\d{1,2}/\d{1,2}/\d{4})", fields["full_text"], re.IGNORECASE)
-    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
-    if not fax_m or not report_range:
+    report_found = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
+    if not fax_m or not report_found:
         return "not_checkable", "Could not find both the COC fax date and 'Date of Current Report'.", None, 0.0
+    report_range = (report_found[0], report_found[1])
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # the fax date's own page -- what this rule is actually about.
+    page = _page_for_offset(fields, fax_m.start())
     fax_date = datetime.strptime(fax_m.group(1), "%m/%d/%Y")
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     earliest_valid = _add_months(report_end, -months_allowed)
@@ -1814,13 +1968,13 @@ def _check_COC04(rule: dict, fields: dict) -> tuple:
             "pass",
             f"TP faxed on {fax_m.group(1)}, within {months_allowed} months of the current "
             f"report end {report_range[1]}.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "fail",
         f"TP faxed on {fax_m.group(1)}, more than {months_allowed} months before the "
         f"current report end {report_range[1]}.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -1853,83 +2007,30 @@ def _check_BIO13(rule: dict, fields: dict) -> tuple:
 
 
 def _check_RPT05(rule: dict, fields: dict) -> tuple:
-    """Round 78, Item 4 -- REAL BUG FOUND AND FIXED: this rule was
-    unconditionally marked not_checkable, citing "needs backend prior-TP/
-    auth data" -- but Ms. Yachnes's own real ground-truth review proved
-    that's the wrong blocker: she computed the 6-month default window
-    herself directly from THIS document's own two dates (current report
-    end + 6 months, vs. the requested auth end), catching a real 14-day
-    discrepancy on Yisroel Leibowitz's real TP with zero external data.
+    """Fix Round (Jacob Freund 10-2026-U1), Item 1: Ms. Yachnes's explicit
+    correction -- this rule is the lapse/gap check ONLY (previous TP's
+    authorization end date vs. this TP's authorization start date), not
+    the 26-week-default-window check this function used to compute. That
+    window check was a different, unrelated check that had been bundled
+    into this rule_id's evidence/logic by mistake -- it's covered
+    separately by SM-01 for Straight Medicaid specifically, and removed
+    from here entirely rather than partially (per her own words: "that's
+    a different check and shouldn't be part of this rule's evidence or
+    logic").
 
-    This rule's own description covers TWO distinct comparisons ("based on
-    previous auth end OR new insurance start") -- only ONE of them is
-    actually computable from the current document alone, and this checker
-    deliberately implements only that one:
-      - "previous auth end" as a genuinely separate, stored prior
-        authorization record -- still not available in this standalone
-        pipeline, still correctly not_checkable if that's what a specific
-        payor's rule wording requires (see SM-01's own start-adjacency
-        half, which stays payor-specific and untouched by this rule).
-      - The 6-month DEFAULT window itself, anchored to THIS document's own
-        "Date of Current Report" end date -- exactly what Ms. Yachnes did
-        by hand, and exactly what SM-01 already computes for Straight
-        Medicaid specifically. Generalizing that one comparison to every
-        payor (not just Straight Medicaid) needs no data this pipeline
-        doesn't already have on page 1.
-
-    This checker does NOT enforce SM-01's stricter "auth start must be
-    exactly the day after report end" requirement -- that's Straight
-    Medicaid's own specific wording (SM-01 keeps it, payor-scoped); making
-    it universal here would risk a false fail for a payor that genuinely
-    allows a gap between the old auth's end and the new auth's start.
-
-    Fix Round, Section 1 (2026-08-27): REAL BUG FOUND AND FIXED -- the
-    2026-08-26 round already updated this rule's own DESCRIPTION from a
-    6-month default to a 26-week default (flagged explicitly in its own
-    notes as NOT YET carried into this function's actual code), but the
-    code itself was still doing month-math (_add_months, max_months=6)
-    until now. Confirmed real reason week-math is the right fix, not just
-    a unit relabeling: calendar months vary in length (28-31 days), so
-    "6 months" and "26 weeks" (182 days) are NOT the same real date in
-    general -- the params key is renamed accordingly
-    (max_weeks_after_report_end, default 26) so a stale month-shaped
-    param can never silently coexist with week-shaped code.
+    The real lapse comparison itself lives in
+    `previous_tp_comparison.py::_compare_rpt05_previous_auth_end` and only
+    runs when a previous TP is actually provided (see
+    `agent_client.py::review_previous_tp`). This phase-1, TP-only function
+    is what runs when no previous TP is available at all -- in that case
+    there is nothing left for this rule to check, so it's not_checkable,
+    plainly.
     """
-    # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
-    # to hardcode page=None; cites the real page 'Authorization Dates
-    # Requested' (the value this rule's window check is actually about)
-    # was found on.
-    max_weeks = rule.get("params", {}).get("max_weeks_after_report_end", 26)
-    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
-    found_auth = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
-    if not report_range or not found_auth:
-        return (
-            "not_checkable",
-            "Could not find both 'Date of Current Report' and 'Authorization Dates Requested' to compute the "
-            "26-week window.",
-            None, 0.0,
-        )
-    auth_range = (found_auth[0], found_auth[1])
-    page = _page_for_offset(fields, found_auth[2])
-
-    report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
-    auth_end = datetime.strptime(auth_range[1], "%m/%d/%Y")
-    max_allowed_end = report_end + timedelta(weeks=max_weeks)
-
-    if auth_end > max_allowed_end:
-        overage_days = (auth_end - max_allowed_end).days
-        return (
-            "fail",
-            f"Requested auth end ({auth_range[1]}) is {overage_days} day(s) beyond the {max_weeks}-week "
-            f"default window from the current report's end ({report_range[1]}); latest allowed under the "
-            f"default is {max_allowed_end.strftime('%m/%d/%Y')}.",
-            page, 0.75,
-        )
     return (
-        "pass",
-        f"Requested auth end ({auth_range[1]}) is within the {max_weeks}-week default window from the "
-        f"current report's end ({report_range[1]}); latest allowed is {max_allowed_end.strftime('%m/%d/%Y')}.",
-        page, 0.75,
+        "not_checkable",
+        "No previous TP is available in this run, so a lapse between the previous TP's "
+        "authorization end date and this TP's authorization start date cannot be checked.",
+        None, 0.0,
     )
 
 
@@ -1939,14 +2040,20 @@ def _check_SM01(rule: dict, fields: dict) -> tuple:
     Both fields are page-1 text, no backend/prior-auth data needed — see
     the rule's own notes for why this differs from the universal QA-RPT-05."""
     max_months = rule["params"]["max_months_after_report_end"]
-    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
-    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not report_range or not auth_range:
+    report_found = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
+    auth_found = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
+    if not report_found or not auth_found:
         return (
             "not_checkable",
             "Could not find both 'Date of Current Report' and 'Authorization Dates Requested'.",
             None, 0.0,
         )
+    report_range = (report_found[0], report_found[1])
+    auth_range = (auth_found[0], auth_found[1])
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # the "Authorization Dates Requested" field's own page -- what this
+    # rule is actually validating.
+    page = _page_for_offset(fields, auth_found[2])
 
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     auth_start = datetime.strptime(auth_range[0], "%m/%d/%Y")
@@ -1969,12 +2076,12 @@ def _check_SM01(rule: dict, fields: dict) -> tuple:
         )
 
     if problems:
-        return "fail", " ".join(problems), None, 0.75
+        return "fail", " ".join(problems), page, 0.75
     return (
         "pass",
         f"Authorization Dates Requested ({auth_range[0]} to {auth_range[1]}) correctly starts "
         f"the day after the current report ends and ends within {max_months} months.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -1984,10 +2091,13 @@ def _check_EMP01(rule: dict, fields: dict) -> tuple:
     end date vs the new authorization's start date (see the rule's notes
     for why)."""
     max_days = rule["params"]["max_days"]
-    report_range = _find_labeled_date_range(fields["full_text"], "Date of Current Report")
-    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not report_range or not auth_range:
+    report_found = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
+    auth_found = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
+    if not report_found or not auth_found:
         return "not_checkable", "Could not find both 'Date of Current Report' and 'Authorization Dates Requested'.", None, 0.0
+    report_range = (report_found[0], report_found[1])
+    auth_range = (auth_found[0], auth_found[1])
+    page = _page_for_offset(fields, auth_found[2])
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     auth_start = datetime.strptime(auth_range[0], "%m/%d/%Y")
     delta_days = abs((auth_start - report_end).days)
@@ -1996,13 +2106,13 @@ def _check_EMP01(rule: dict, fields: dict) -> tuple:
             "pass",
             f"Date of Current Report end ({report_range[1]}) is {delta_days} day(s) from "
             f"Authorization Dates Requested start ({auth_range[0]}), within the {max_days}-day allowance.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "fail",
         f"Date of Current Report end ({report_range[1]}) is {delta_days} day(s) from "
         f"Authorization Dates Requested start ({auth_range[0]}), exceeding the {max_days}-day allowance.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -2011,9 +2121,14 @@ def _check_EMP03(rule: dict, fields: dict) -> tuple:
     start date.'"""
     max_days = rule["params"]["max_days"]
     sig_m = re.search(r"Provider Signature,\s*Date:\s*(\d{1,2}/\d{1,2}/\d{4})", fields["full_text"], re.IGNORECASE)
-    auth_range = _find_labeled_date_range(fields["full_text"], "Authorization Dates Requested")
-    if not sig_m or not auth_range:
+    auth_found = _find_labeled_date_range_with_offset(fields["full_text"], "Authorization Dates Requested")
+    if not sig_m or not auth_found:
         return "not_checkable", "Could not find both the signature date and 'Authorization Dates Requested'.", None, 0.0
+    auth_range = (auth_found[0], auth_found[1])
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # cite the signature date's own page -- the field this rule's own
+    # description is actually about.
+    page = _page_for_offset(fields, sig_m.start())
     sig_date = datetime.strptime(sig_m.group(1), "%m/%d/%Y")
     auth_start = datetime.strptime(auth_range[0], "%m/%d/%Y")
     delta_days = abs((auth_start - sig_date).days)
@@ -2022,13 +2137,13 @@ def _check_EMP03(rule: dict, fields: dict) -> tuple:
             "pass",
             f"Signature date ({sig_m.group(1)}) is {delta_days} day(s) from Authorization "
             f"Dates Requested start ({auth_range[0]}), within the {max_days}-day allowance.",
-            None, 0.75,
+            page, 0.75,
         )
     return (
         "fail",
         f"Signature date ({sig_m.group(1)}) is {delta_days} day(s) from Authorization "
         f"Dates Requested start ({auth_range[0]}), exceeding the {max_days}-day allowance.",
-        None, 0.75,
+        page, 0.75,
     )
 
 
@@ -2038,17 +2153,27 @@ def _check_AET01(rule: dict, fields: dict) -> tuple:
     allowed one is also present — the rule bans AFLS outright, it doesn't
     just require at least one allowed tool alongside it."""
     text = fields["full_text"]
-    disallowed_hits = [t for t in rule["params"]["disallowed_tools"] if re.search(re.escape(t), text, re.IGNORECASE)]
-    if disallowed_hits:
+    disallowed_matches = [
+        (t, m.start()) for t in rule["params"]["disallowed_tools"]
+        for m in [re.search(re.escape(t), text, re.IGNORECASE)] if m
+    ]
+    if disallowed_matches:
+        disallowed_hits = [t for t, _off in disallowed_matches]
+        page = _page_for_offset(fields, disallowed_matches[0][1])
         return (
             "fail",
             f"Disallowed testing tool(s) found for this payor: {disallowed_hits}.",
-            None, 0.75,
+            page, 0.75,
         )
-    allowed_hits = [t for t in rule["params"]["allowed_tools"] if re.search(re.escape(t), text, re.IGNORECASE)]
-    if not allowed_hits:
+    allowed_matches = [
+        (t, m.start()) for t in rule["params"]["allowed_tools"]
+        for m in [re.search(re.escape(t), text, re.IGNORECASE)] if m
+    ]
+    if not allowed_matches:
         return "not_checkable", "No recognized testing tool (allowed or disallowed) found in this TP.", None, 0.0
-    return "pass", f"Testing tool(s) found: {allowed_hits}; no disallowed tool present.", None, 0.75
+    allowed_hits = [t for t, _off in allowed_matches]
+    page = _page_for_offset(fields, allowed_matches[0][1])
+    return "pass", f"Testing tool(s) found: {allowed_hits}; no disallowed tool present.", page, 0.75
 
 
 _ACF07_KNOWN_TOOLS = ["ABLLS-R", "ABLLS", "VB-MAPP", "AFLS", "Vineland-3", "Vineland", "PEAK", "ADOS", "CARS"]
@@ -2445,6 +2570,113 @@ def vision_eligible_pages(rules: list[dict], fields: dict) -> set[int]:
         if finder is not None:
             pages |= finder(fields)
     return pages
+
+
+def _check_ACF09(rule: dict, fields: dict) -> tuple:
+    """Fix Round (Jacob Freund 10-2026-U1), Item 14: Ms. Yachnes's explicit
+    correction -- this rule ("if a different testing tool is used than the
+    previous auth, rationale is included") should not land on Uncertain
+    when the document is this clear. Real evidence: a genuine 5-way
+    judgment split still had both sides agreeing on the SAME underlying
+    fact -- only one tool (e.g. VB-MAPP) is named anywhere, no prior/
+    different tool is documented at all, so there's no tool switch for
+    this rule to evaluate a rationale for. The disagreement was over
+    STATUS labeling of that shared fact (not_checkable vs. not_applicable),
+    not over the fact itself -- exactly the kind of case a deterministic
+    gate should resolve before judgment ever runs.
+
+    Reuses the same tool-name detection as _check_ACF07/_check_ACF11
+    (_ACF07_TOOL_PATTERN, read-only). At most one distinct tool named
+    anywhere in the Assessment of Current Functioning section ->
+    not_applicable, confidently -- nothing to compare a rationale
+    against. Two or more distinct tools named -> a real tool switch is
+    documented; escalate to judgment for the actual rationale-quality
+    check this rule still needs.
+    """
+    found_section = _find_acf_section_with_offset(fields["full_text"])
+    if not found_section:
+        return (
+            "not_checkable",
+            "Could not find the 'Assessment of Current Functioning' section to determine which "
+            "testing tool(s) were used.",
+            None, 0.0,
+        )
+    section, section_offset = found_section
+    tool_mentions = [tm.group(0) for tm in _ACF07_TOOL_PATTERN.finditer(section)]
+    distinct = {t.lower().replace("-3", "") for t in tool_mentions}
+    if len(distinct) <= 1:
+        page = _page_for_offset(fields, section_offset)
+        if tool_mentions:
+            return (
+                "not_applicable",
+                f"Only {tool_mentions[0]} is named in the Assessment of Current Functioning section "
+                f"-- no prior or different testing tool is documented, so there is no tool switch "
+                f"for this rule to check a rationale for.",
+                page, 0.85,
+            )
+        return (
+            "not_applicable",
+            "No testing tool is named in the Assessment of Current Functioning section -- nothing "
+            "for this rule to check.",
+            page, 0.8,
+        )
+    return (
+        "not_checkable",
+        f"Multiple distinct testing tools are named ({', '.join(sorted(distinct))}); escalating for "
+        f"a real rationale-quality review of the tool switch.",
+        _page_for_offset(fields, section_offset), 0.0,
+    )
+
+
+def _check_ACF11(rule: dict, fields: dict) -> tuple:
+    """Fix Round (Jacob Freund 10-2026-U1), Item 11: Ms. Yachnes's explicit
+    correction -- if the testing tool used is not Vineland, this rule
+    should resolve to not_applicable, not Uncertain. Real evidence: a
+    document clearly showing VB-MAPP (not Vineland) was used still landed
+    on the generic stabilized-safety-net Uncertain template, because
+    nothing anywhere detected which tool was actually named before this
+    rule was unpinned this round (see pipeline/__init__.py::
+    STABILIZED_UNCERTAIN_RULE_IDS).
+
+    Reuses _check_ACF07's own tool-name detection (_ACF07_TOOL_PATTERN /
+    _ACF07_KNOWN_TOOLS, read-only here, not modified) over the same
+    "Assessment of Current Functioning" section both rules read. Exactly
+    one distinct tool named, and it isn't Vineland -> not_applicable,
+    confidently. Vineland IS named (alone or alongside another tool) ->
+    escalate to judgment for the real no-legend-under-Vineland visual
+    check this rule still needs (that part is genuinely image-dependent
+    and not built here). No tool named at all, or section not found ->
+    escalate too, rather than guess.
+    """
+    found_section = _find_acf_section_with_offset(fields["full_text"])
+    if not found_section:
+        return (
+            "not_checkable",
+            "Could not find the 'Assessment of Current Functioning' section to determine which "
+            "testing tool was used.",
+            None, 0.0,
+        )
+    section, section_offset = found_section
+    tool_mentions = [tm.group(0) for tm in _ACF07_TOOL_PATTERN.finditer(section)]
+    if not tool_mentions:
+        return (
+            "not_checkable",
+            "No named testing tool (e.g. ABLLS-R, Vineland, VB-MAPP, AFLS) found in the "
+            "Assessment of Current Functioning section.",
+            _page_for_offset(fields, section_offset), 0.0,
+        )
+    distinct = {t.lower().replace("-3", "") for t in tool_mentions}
+    if "vineland" not in distinct:
+        return (
+            "not_applicable",
+            f"Testing tool used is {tool_mentions[0]}, not Vineland -- nothing for this rule to check.",
+            _page_for_offset(fields, section_offset), 0.85,
+        )
+    return (
+        "not_checkable",
+        "Vineland is named as a testing tool used; escalating for a real no-legend-under-Vineland review.",
+        _page_for_offset(fields, section_offset), 0.0,
+    )
 
 
 def _check_ACF07(rule: dict, fields: dict) -> tuple:
@@ -3046,6 +3278,60 @@ _BIO03_LABEL_RE = re.compile(
     r"(" + "|".join(re.escape(l) for l in _BIO03_DIAGNOSIS_LABELS) + r"):[ \t]*(\S[^\n]*)?",
     re.IGNORECASE,
 )
+
+
+_NO_MEDICATION_RE = re.compile(
+    r"not\s+taking\s+any\s+medications?"
+    r"|no\s+(?:current\s+)?medications?\b"
+    r"|not\s+on\s+any\s+medications?"
+    r"|denies?\s+(?:any\s+)?medication\s+use",
+    re.IGNORECASE,
+)
+
+
+def _check_BIO06(rule: dict, fields: dict) -> tuple:
+    """Fix Round (Jacob Freund 10-2026-U1), Item 7: Ms. Yachnes's explicit
+    correction -- a clean, unambiguous "not on medication" document must
+    produce a real answer (not_applicable), not Uncertain. Real evidence:
+    the system already found the exact fact needed ("allergies He is not
+    taking any medications") but still returned Uncertain, because this
+    rule was on the stabilized safety-net list (unpinned this round, see
+    pipeline/__init__.py::STABILIZED_UNCERTAIN_RULE_IDS) with no logic
+    anywhere to turn "no medication" into a verdict.
+
+    No medication mentioned at all, or explicitly denied -> not_applicable,
+    confidently, zero model cost -- this rule's premise (a listed
+    medication needing a stated reason, or an ADHD medication needing a
+    secondary diagnosis) doesn't apply. A real medication mention that
+    ISN'T a plain denial -> escalate to judgment for the genuine
+    reason-adequacy and ADHD-secondary-diagnosis review this rule still
+    needs. Narrow, disclosed limitation: a document mentioning both a
+    denial AND a real medication in different sections could be
+    misread as N/A by this checker -- not verified against a real
+    document with that shape.
+    """
+    text = fields["full_text"]
+    med_mention = re.search(r"\bmedications?\b", text, re.IGNORECASE)
+    if not med_mention:
+        return (
+            "not_applicable",
+            "No medication is mentioned anywhere in the document -- nothing for this rule to check.",
+            None, 0.85,
+        )
+    no_med = _NO_MEDICATION_RE.search(text)
+    if no_med:
+        page = _page_for_offset(fields, no_med.start())
+        return (
+            "not_applicable",
+            "Document states the client is not taking any medications -- nothing for this rule to check.",
+            page, 0.85,
+        )
+    return (
+        "not_checkable",
+        "Medication is mentioned but not clearly denied; escalating for a real reason-adequacy "
+        "and ADHD-secondary-diagnosis review.",
+        None, 0.0,
+    )
 
 
 def _check_BIO03(rule: dict, fields: dict) -> tuple:
@@ -4384,6 +4670,15 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
     'Target Goal:' (skill-acquisition) blocks are a different rule shape
     with no duration-qualifier requirement of this kind.
 
+    Fix Round (Jacob Freund 10-2026-U1), Item 15: Ms. Yachnes's explicit
+    correction -- this rule's own description ("All TANTRUM goals have a
+    duration") was never actually enforced; every Behavior Reduction Goal
+    was checked regardless of name. Real evidence: this rule flagged a
+    goal about "decrease frequency of freezing, refusing to answer,
+    looking away" -- a real behavior-reduction goal, but not tantrum-
+    related. Now scoped to goals whose own name mentions "tantrum" --
+    other behavior-reduction goals no longer trigger this check at all.
+
     For each block: FAIL if Mastery Criteria is blank/missing AND no
     nearby field in the same block explains the gap -- confirmed live on
     Yisroel's real 'Reduce Crying Episodes' goal (page 15/16: 'Mastery
@@ -4397,6 +4692,7 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
     (confirmed real PASS example: Reeda's Tantrum goal, 'near 0 levels
     per session for 5 consecutive sessions').
     """
+    _TANTRUM_RE = re.compile(r"tantrum", re.IGNORECASE)
     text = fields["full_text"]
     goal_starts = _goal_block_starts(text)
     if not goal_starts:
@@ -4407,14 +4703,18 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
     soft_problems = []
     checked = 0
     first_checked_offset = None
+    behavior_reduction_goals_seen = 0
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         if not block.startswith("Target Name:"):
             continue  # skill-acquisition ("Target Goal:") blocks are a different rule shape
+        behavior_reduction_goals_seen += 1
+        goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
+        if not _TANTRUM_RE.search(goal_name):
+            continue  # Item 15: not a tantrum goal -- out of scope for this rule
         checked += 1
         if first_checked_offset is None:
             first_checked_offset = goal_starts[i]
-        goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
 
         mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
         mc_val = mc_m.group(1).strip() if mc_m else ""
@@ -4441,6 +4741,13 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
         # else: a real duration qualifier is present -- satisfies the requirement.
 
     if checked == 0:
+        if behavior_reduction_goals_seen > 0:
+            return (
+                "not_applicable",
+                f"{behavior_reduction_goals_seen} Behavior Reduction Goal(s) found, but none are "
+                f"tantrum-related -- nothing for this rule to check.",
+                None, 0.85,
+            )
         return "not_checkable", "No Behavior Reduction Goal ('Target Name:') blocks found in this document.", None, 0.0
 
     if real_problems:
@@ -4463,17 +4770,21 @@ def _check_BIP04(rule: dict, fields: dict) -> tuple:
     # goal's page (a real, honest citation into where this passing result
     # was verified, even though it's a whole-document "all goals" claim).
     page = _page_for_offset(fields, first_checked_offset)
-    return "pass", f"All {checked} Behavior Reduction Goal(s) state a duration/consecutive-session qualifier in their Mastery Criteria.", page, 0.85
+    return "pass", f"All {checked} tantrum Behavior Reduction Goal(s) state a duration/consecutive-session qualifier in their Mastery Criteria.", page, 0.85
 
 
 def _check_SM02(rule: dict, fields: dict) -> tuple:
-    per_day_hits = re.findall(r"\d+(?:\.\d+)?\s*hours?\s*per\s*day\b", fields["full_text"], re.IGNORECASE)
-    if per_day_hits:
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # switched re.findall -> re.finditer -- findall discards match
+    # positions entirely, so a real page was never computable here.
+    per_day_matches = list(re.finditer(r"\d+(?:\.\d+)?\s*hours?\s*per\s*day\b", fields["full_text"], re.IGNORECASE))
+    if per_day_matches:
+        per_day_hits = [m.group(0) for m in per_day_matches]
         return (
             "fail",
             f"Found {len(per_day_hits)} hours value(s) expressed 'per day' instead of "
             f"'per week': {per_day_hits}.",
-            None, 0.7,
+            _page_for_offset(fields, per_day_matches[0].start()), 0.7,
         )
     return "pass", "All hours values are expressed 'per week' (no 'per day' phrasing found).", None, 0.7
 
@@ -5419,13 +5730,21 @@ def find_cross_rule_contradictions(det_results: dict[str, dict]) -> list[dict]:
 # documents, which is worse than leaving it to judgment.
 
 
-_HRS12_EXEMPT_PAYORS_DEFAULT = ("1199SEIU", "New York Medicaid", "Molina")
+_HRS12_REQUIRED_PAYORS_DEFAULT = ("1199SEIU", "New York Medicaid", "Molina")
 
 
 def _check_HRS12(rule: dict, fields: dict) -> tuple:
-    """QA-HRS-12: "Treatment Planning hours requested correctly -- flag if
-    Treatment Planning hours are missing for any payor except 1199SEIU, NY
-    Medicaid, and Molina."
+    """QA-HRS-12: "Treatment Planning hours only requested for 1199SEIU, NY
+    Medicaid or Molina, all other insurances - N/A. Flag otherwise."
+
+    Fix Round (Jacob Freund 10-2026-U1), Item 4: Ms. Yachnes's exact new
+    rule, rewritten from the OPPOSITE scoping this checker used to have.
+    The old version treated 1199SEIU/NY Medicaid/Molina as EXEMPT (N/A)
+    and required Treatment Planning hours for every OTHER payor -- her new
+    rule is the inverse: these 3 payors are the ONLY ones this requirement
+    applies to; every other payor is N/A. `params.excluded_payors` is
+    renamed `required_payors` accordingly so a stale, oppositely-named
+    param can never silently coexist with the new logic.
 
     Real layout confirmed on the Zyaan Ullah sample TP: the Hours
     Requesting section has a SEPARATE row for 97151-Treatment Planning
@@ -5441,12 +5760,13 @@ def _check_HRS12(rule: dict, fields: dict) -> tuple:
     either wording so a phrasing difference on that row alone doesn't
     cause a false not_checkable).
     """
-    excluded_payors = rule["params"].get("excluded_payors", _HRS12_EXEMPT_PAYORS_DEFAULT)
+    required_payors = rule.get("params", {}).get("required_payors", _HRS12_REQUIRED_PAYORS_DEFAULT)
     payor = fields.get("payor")
-    if payor in excluded_payors:
+    if payor not in required_payors:
         return (
             "not_applicable",
-            f"Payor detected as '{payor}', which is exempt from the Treatment Planning hours requirement.",
+            f"Payor detected as '{payor}', which is not 1199SEIU, NY Medicaid, or Molina -- "
+            f"Treatment Planning hours are not required for this payor.",
             None, 0.9,
         )
     m = re.search(
@@ -5666,26 +5986,31 @@ def _check_BAR01(rule: dict, fields: dict) -> tuple:
     """
     threshold = rule.get("params", {}).get("hours_threshold", 25)
     cpt_code = rule.get("params", {}).get("cpt_code", "97153")
-    hours = _find_weekly_hours_for_code(fields["full_text"], cpt_code)
-    if hours is None:
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # switched to the offset-capturing sibling -- it already existed,
+    # just wasn't the one this checker called.
+    found = _find_weekly_hours_for_code_with_offset(fields["full_text"], cpt_code)
+    if found is None:
         return (
             "not_checkable",
             f"Could not find {cpt_code} hours requested to check the {threshold}-hour threshold this rule "
             f"applies above.",
             None, 0.0,
         )
+    hours, offset = found
+    page = _page_for_offset(fields, offset)
     if hours <= threshold:
         return (
             "not_applicable",
             f"{cpt_code} hours requested: {hours}/week, at or below the {threshold}-hour threshold this "
             f"rule applies above -- rule does not apply.",
-            None, 0.85,
+            page, 0.85,
         )
     return (
         "not_checkable",
         f"{cpt_code} hours requested: {hours}/week, above the {threshold}-hour threshold -- rule applies; "
         f"whether a barrier is documented anywhere in the report requires reading the full narrative.",
-        None, 0.0,
+        page, 0.0,
     )
 
 
@@ -6300,6 +6625,73 @@ def _check_MAST03(rule: dict, fields: dict) -> tuple:
     )
 
 
+def _check_MAST04(rule: dict, fields: dict) -> tuple:
+    """QA-MAST-04: "At least 3 parent goals must have the goal status of
+    in progress." Fix Round (Jacob Freund 10-2026-U1), Item 17: Ms.
+    Yachnes's explicit correction -- this rule was pure judgment AND on
+    the stabilized safety-net list (unpinned this round), so every real
+    run forced it to Uncertain with no real attempt made at all.
+
+    Reuses this rule's own already-built, real evidence extractor
+    (_mast04_context_preview's exact logic, not modified): scan every
+    goal block (both 'Target Goal:'/'Target Name:') for a 'Skill Domain:'
+    containing 'parent training', read that goal's own 'Goal Status:'/
+    'Status:' value, and count how many read 'in progress'. This
+    deliberately reads from goal blocks generally, not the Mastered Goals
+    section specifically -- a prior round flagged that this rule's
+    category ('Mastered Goals') and its own wording ('...status of in
+    progress') structurally conflict, since the real Mastered Goals
+    section has no in-progress concept at all (every entry there is
+    mastered by definition); the Goals-in-Progress section's own status
+    field is what 'in progress' can actually mean here. That structural
+    question is still open (needs Ms. Yachnes's own confirmation, per
+    this rule's own notes) -- this checker answers the question AS ASKED
+    ("at least 3... in progress") against whichever goal blocks actually
+    carry that status, without assuming which section-level category is
+    "correct."
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text)
+    if not starts:
+        return "not_checkable", "No goal blocks ('Target Goal:'/'Target Name:') found in this document.", None, 0.0
+    starts = starts + [len(text)]
+    parent_goals = []
+    for i in range(len(starts) - 1):
+        block = text[starts[i]:starts[i + 1]]
+        sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block)
+        if not sd_m or "parent training" not in sd_m.group(1).lower():
+            continue
+        status_m = re.search(r"(?:Goal Status|Status):[ \t]*([^\n]+)", block)
+        marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+        goal_name = block[marker_len:].split("\n", 1)[0].strip()[:60]
+        status = status_m.group(1).strip() if status_m else ""
+        parent_goals.append((starts[i], goal_name, status))
+
+    if not parent_goals:
+        return (
+            "not_applicable",
+            "No Parent Training goals found in this document -- nothing for this rule to check.",
+            None, 0.85,
+        )
+
+    in_progress = [(offset, name) for offset, name, status in parent_goals if "in progress" in status.lower()]
+    page = _page_for_offset(fields, parent_goals[0][0])
+    if len(in_progress) >= 3:
+        names = ", ".join(f"'{n}'" for _, n in in_progress[:5])
+        return (
+            "pass",
+            f"{len(in_progress)} Parent Training goal(s) have status 'in progress' (>= 3 required): {names}.",
+            page, 0.8,
+        )
+    statuses = "; ".join(f"'{name}': {status or '(no status found)'}" for _, name, status in parent_goals)
+    return (
+        "fail",
+        f"Only {len(in_progress)} Parent Training goal(s) have status 'in progress' (3 required). "
+        f"Statuses found: {statuses}.",
+        page, 0.75,
+    )
+
+
 def _check_HF06(rule: dict, fields: dict) -> tuple:
     """HF-06: "Healthfirst client's testing tool/assessment has not been
     updated within 3 months" -- read as the real failure condition this
@@ -6440,6 +6832,9 @@ DET_CHECKS = {
     # -- see pipeline/schedule_hours.py and _check_SCH01/_check_SCH07's own
     # docstrings.
     "QA-SCH-01": _check_SCH01,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 5: not-in-school N/A gate
+    # only -- real overlap logic still escalates to judgment.
+    "QA-SCH-03": _check_SCH03,
     "QA-SCH-07": _check_SCH07,
     # Round 63, item 5: deterministic pre-check only, for the confirmed
     # objective violation (embedded reviewer comment counted as evidence)
@@ -6449,6 +6844,10 @@ DET_CHECKS = {
     # Round 84, item 3: hybrid DET pre-check, same shape as QA-PROB-02 --
     # see _check_PROB01's own docstring.
     "QA-PROB-01": _check_PROB01,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 9: phase-1, TP-only stub --
+    # always not_applicable (no previous TP data at this stage). Real
+    # comparison happens only via previous_tp_comparison.py::_compare_prob04.
+    "QA-PROB-04": _check_PROB04,
     # Round 64, item 3: real highlight detection via PyMuPDF (annotation
     # objects + a flattened-fill fallback), replacing the judgment layer's
     # text-only read, which structurally can never see highlight data at
@@ -6456,6 +6855,9 @@ DET_CHECKS = {
     "QA-TEMP-03": _check_TEMP03,
     "QA-COC-04": _check_COC04,
     "QA-BIO-02": _check_BIO02,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 7: no-medication N/A gate
+    # only -- reason-adequacy/ADHD review still escalates to judgment.
+    "QA-BIO-06": _check_BIO06,
     "QA-BIO-13": _check_BIO13,
     # Straight Medicaid-specific — built from the start, per instruction not
     # to leave these to fall through like the 44-rule audit found.
@@ -6517,6 +6919,10 @@ DET_CHECKS = {
     # function's own docstring above DET_CHECKS's own definition.
     "QA-HRS-08": _check_HRS08,
     "QA-MAST-03": _check_MAST03,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 17: real count-based
+    # checker -- reuses this rule's own pre-existing evidence extractor's
+    # exact logic (see fields.py::_mast04_context_preview).
+    "QA-MAST-04": _check_MAST04,
     "HF-06": _check_HF06,
     "QA-SCH-05": _check_SCH05,
     "QA-GIP-22": _check_GIP22,
@@ -6573,10 +6979,20 @@ DET_CHECKS = {
     # docstring for why this does NOT resolve Charny's original flagged
     # miss (a structurally different, reviewer-annotation-based issue).
     "QA-HRS-06": _check_HRS06,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 3: deterministic no-increase
+    # gate only -- escalates to judgment for rationale-quality when an
+    # increase is actually found. See _check_HRS07's own docstring.
+    "QA-HRS-07": _check_HRS07,
     # Item 4 (2026-07-28 round 3): diagnosed as a real, previously-unfixed
     # bug, not related to the earlier schema-reorder fix -- see
     # _check_ACF07's own docstring for the full real-evidence diagnosis.
     "QA-ACF-07": _check_ACF07,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 14: at-most-one-tool N/A
+    # gate only -- a real tool-switch still escalates for rationale review.
+    "QA-ACF-09": _check_ACF09,
+    # Fix Round (Jacob Freund 10-2026-U1), Item 11: non-Vineland N/A gate
+    # only -- the real no-legend-under-Vineland review still escalates.
+    "QA-ACF-11": _check_ACF11,
     # Round 83, item 1 follow-up: converted from judgment to deterministic
     # -- a narrower, separate gap from ACF-07/extract_acf_fields's
     # section-boundary bug -- see _check_ACF06's own docstring.

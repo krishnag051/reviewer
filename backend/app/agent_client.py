@@ -69,7 +69,9 @@ if settings.anthropic_api_key:
 from pipeline.api import _load_rules as _load_agent_making_rules  # noqa: E402
 from pipeline.api import review_treatment_plan as _raw_review_treatment_plan  # noqa: E402
 from pipeline.extract import extract_pdf_text as _extract_pdf_text  # noqa: E402
-from pipeline.fields import _find_labeled_date_range  # noqa: E402
+from pipeline.fields import _find_labeled_date_range_with_offset  # noqa: E402
+from pipeline.fields import _acf_section_page_range  # noqa: E402
+from pipeline.fields import _page_for_offset  # noqa: E402
 from pipeline.fields import extract_acf_fields as _extract_acf_fields  # noqa: E402
 from pipeline.fields import extract_fields as _extract_fields  # noqa: E402
 from pipeline.model_provider import CallTracker as _CallTracker  # noqa: E402
@@ -349,9 +351,17 @@ def review_session_notes(
     `agent-making/agent/app.py` already calls
     (`extract_session_note_file`, `compare_session_notes_to_tp`,
     `select_matching_session_note` internally) -- no rule-checking logic
-    of its own, same discipline as `review_treatment_plan` above. `page`
-    is always `[]` for these four: the evidence is a cross-document
-    comparison (TP vs. session note), not a single page reference.
+    of its own, same discipline as `review_treatment_plan` above.
+
+    Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    `page` is no longer always `[]` -- QA-RPT-03 cites the current TP's
+    own "Date of Current Report" location exactly; QA-ACF-02/QA-ACF-08/
+    QA-ACF-12 fall back to the current TP's ACF section page span (no
+    exact-offset extractor exists yet for those three's underlying
+    fields). Never the session note's own page. Still `[]` when genuinely
+    nothing in the current TP can be located (e.g. QA-COC-01's "session
+    detail level" half, which isn't a current-TP fact at all -- see its
+    own compound-combine fallback to phase 1's page instead).
 
     Fix Round (2026-08-27): QA-COC-01 added -- its "session note detailed"
     half only (the SAME already-existing, already-free per-note extraction
@@ -377,8 +387,20 @@ def review_session_notes(
     tp_pages = _extract_pdf_text(tp_pdf_path)
     tp_fields = _extract_fields(tp_pdf_path, tp_pages)
     tp_acf = _extract_acf_fields(tp_fields)
-    tp_report_range = _find_labeled_date_range(tp_fields["full_text"], "Date of Current Report")
+    tp_report_found = _find_labeled_date_range_with_offset(tp_fields["full_text"], "Date of Current Report")
+    tp_report_range = (tp_report_found[0], tp_report_found[1]) if tp_report_found else None
     tp_report_period = f"{tp_report_range[0]} to {tp_report_range[1]}" if tp_report_range else None
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # real CURRENT-TP pages for the session-note comparison rules, never
+    # the session note's own page. QA-RPT-03 has an exact offset (the
+    # "Date of Current Report" match itself); QA-ACF-02/QA-ACF-08 have no
+    # exact offset available from extract_acf_fields (no offset-capturing
+    # variant exists yet), so they fall back to the current TP's own ACF
+    # section page span -- still a real, current-TP location, just
+    # coarser than an exact character offset.
+    tp_report_page = _page_for_offset(tp_fields, tp_report_found[2]) if tp_report_found else None
+    tp_acf_pages = sorted(_acf_section_page_range(tp_fields))
+    tp_acf_fallback_page = tp_acf_pages[0] if tp_acf_pages else None
 
     extractions_by_filename = {
         filename: _extract_session_note_file(path, tracker=tracker, model_override=model_override)
@@ -394,6 +416,20 @@ def review_session_notes(
         tp_assessment_tool=tp_acf["assessment_tool"],
     )
 
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # per-rule_id current-TP page fallback, applied only when the
+    # comparison itself didn't already carry one -- session_note_
+    # comparison.py's check_field_match/check_tool_mentioned don't
+    # compute an offset today (see this round's own audit), so `raw`
+    # never has a "page" key for these; `.get("page")` handles that the
+    # same as an explicit None.
+    _SESSION_NOTES_PAGE_FALLBACK = {
+        "QA-RPT-03": tp_report_page,
+        "QA-ACF-02": tp_acf_fallback_page,
+        "QA-ACF-08": tp_acf_fallback_page,
+        "QA-ACF-12": tp_acf_fallback_page,
+    }
+
     results = []
     for rule_id in _SESSION_NOTES_RULE_IDS:
         raw = raw_results.get(rule_id)
@@ -402,16 +438,25 @@ def review_session_notes(
         if rule_id in _SESSION_NOTES_COMPOUND_RULE_IDS:
             phase1 = (phase1_results or {}).get(rule_id)
             phase1_plain = (
-                {"result": phase1.status, "evidence": phase1.evidence, "confidence": phase1.confidence}
+                {
+                    "result": phase1.status, "evidence": phase1.evidence, "confidence": phase1.confidence,
+                    # Fix Round (Item 2): phase1.page is this backend's
+                    # own list[int] shape (already a current-TP page,
+                    # computed by the main pipeline) -- pass its first
+                    # entry through rather than dropping it, so combine
+                    # can fall back to it when the real-data side has none.
+                    "page": phase1.page[0] if phase1.page else None,
+                }
                 if phase1 is not None else None
             )
             raw = _combine_compound_rule_result(phase1_plain, raw)
+        page = raw.get("page") or _SESSION_NOTES_PAGE_FALLBACK.get(rule_id)
         rule_meta = _AGENT_MAKING_RULES_BY_ID.get(rule_id, {})
         results.append(RuleResult(
             rule_id=rule_id,
             category=rule_meta.get("category", "Unknown"),
             status=raw["result"],
-            page=[],
+            page=[page] if page is not None else [],
             evidence=raw["evidence"],
             confidence=raw.get("confidence"),
             action_lane=rule_meta.get("action_lane"),
@@ -546,9 +591,14 @@ def review_previous_tp(
     same as every other real-API architecture decision in this codebase.
 
     Returns up to 5 `RuleResult`s (QA-MAST-01, QA-MAST-02, QA-RPT-05,
-    QA-ACF-04, QA-PROB-04). `page` is always `[]` -- same reasoning as
-    `review_session_notes`: the evidence is a cross-document comparison,
-    not a single page reference.
+    QA-ACF-04, QA-PROB-04). Fix Round (QA-ACF-11 wording + page numbers,
+    2026-09-19), Item 2: `page` is no longer always `[]` -- it's the real
+    page in the CURRENT TP each comparison's finding is anchored to
+    (never the previous TP's page, even though the underlying comparison
+    reads both documents), computed by pipeline/previous_tp_comparison.py.
+    Empty `[]` still happens when genuinely nothing in the current TP
+    itself can be located for this finding (e.g. neither document has a
+    parseable date to compare).
     """
     if not previous_tp_pdf_path:
         return []
@@ -584,28 +634,74 @@ def review_previous_tp(
             # THIS module's own evidence is already self-sufficient and
             # accurate on its own (see _compare_acf04's own docstring) --
             # skip blending in phase-1's stale claim rather than let it
-            # mislead a reviewer. Any OTHER phase1/raw combination (e.g.
-            # phase1 genuinely answered pass/fail despite its blind
-            # prompt) still goes through the normal, unmodified combine
-            # policy -- this is narrowly scoped to the one stale-text
-            # case, not a blanket bypass.
+            # mislead a reviewer.
+            #
+            # Fix Round (Jacob Freund 10-2026-U1), Item 12: the guard above
+            # only covered the both-not_checkable case -- Ms. Yachnes's real
+            # evidence showed the SAME stale "no prior TP version" clause
+            # still gets glued onto the front of a REAL, successfully
+            # resolved comparison (e.g. "98 -> 110.5, no drop occurred"),
+            # via combine_compound_rule_result's unconditional evidence
+            # concatenation. Whenever the real comparison itself resolved
+            # (pass/fail), it's self-sufficient and accurate on its own too
+            # -- skip blending phase-1's stale text in that case as well.
+            # Any OTHER combination (raw itself still uncertain/
+            # not_checkable, phase-1 genuinely contributing something) still
+            # goes through the normal, unmodified combine policy -- this
+            # stays narrowly scoped to the stale-text cases, not a blanket
+            # bypass.
             phase1 = (phase1_results or {}).get(rule_id)
             phase1_plain = (
-                {"result": phase1.status, "evidence": phase1.evidence, "confidence": phase1.confidence}
+                {
+                    "result": phase1.status, "evidence": phase1.evidence, "confidence": phase1.confidence,
+                    # Fix Round (QA-ACF-11 wording + page numbers,
+                    # 2026-09-19), Item 2: pass phase1's own real page
+                    # through instead of dropping it -- it's already a
+                    # current-TP page (computed by the main pipeline),
+                    # and combine_compound_rule_result can now fall back
+                    # to it when the real-data side has none.
+                    "page": phase1.page[0] if phase1.page else None,
+                }
                 if phase1 is not None else None
             )
             skip_stale_phase1 = (
-                rule_id == "QA-ACF-04" and raw["result"] == "not_checkable"
-                and (phase1_plain is None or phase1_plain["result"] == "not_checkable")
+                rule_id == "QA-ACF-04" and (
+                    raw["result"] in ("pass", "fail")
+                    or (
+                        raw["result"] == "not_checkable"
+                        and (phase1_plain is None or phase1_plain["result"] == "not_checkable")
+                    )
+                )
             )
-            if not skip_stale_phase1:
+            # Fix Round (Jacob Freund 10-2026-U1), Item 1: QA-RPT-05 is the
+            # lapse/gap check only (previous TP's auth end vs. this TP's
+            # auth start) -- phase-1's own TP-only answer for this rule_id
+            # no longer computes anything relevant (see
+            # fields.py::_check_RPT05), so never blend it in here; use the
+            # real previous-TP comparison's own result on its own.
+            #
+            # Fix Round (Jacob Freund 10-2026-U1), Item 9: QA-PROB-04's
+            # phase-1 answer is now a fixed not_applicable stub (see
+            # fields.py::_check_PROB04) -- the generic compound-combine
+            # policy has no branch for "not_applicable" and would
+            # incorrectly collapse a real, resolved raw pass/fail into
+            # "uncertain" if blended. Use raw alone here too.
+            if rule_id in ("QA-RPT-05", "QA-PROB-04"):
+                pass
+            elif not skip_stale_phase1:
                 raw = _combine_compound_rule_result(phase1_plain, raw)
+        # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+        # `raw["page"]` is now real for all 5 rule_ids (MAST-01/MAST-02
+        # pure; RPT-05/ACF-04/PROB-04 either raw-alone or combined, both
+        # of which now carry a page) -- always the CURRENT TP's own page,
+        # computed in previous_tp_comparison.py, never the previous TP's.
+        page = raw.get("page")
         rule_meta = _AGENT_MAKING_RULES_BY_ID.get(rule_id, {})
         results.append(RuleResult(
             rule_id=rule_id,
             category=rule_meta.get("category", "Unknown"),
             status=raw["result"],
-            page=[],
+            page=[page] if page is not None else [],
             evidence=raw["evidence"],
             confidence=raw.get("confidence"),
             action_lane=rule_meta.get("action_lane"),

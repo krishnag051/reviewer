@@ -191,14 +191,24 @@ from .render import render_flagged_pages
 #   doc NPI extraction)'s own sampling variance, not this rule's logic;
 #   genuinely out of THIS round's scope (a different call site entirely),
 #   left pinned with that real, specific reason, not silently dropped.
+#
+# UN-PINNED (Fix Round, Jacob Freund 10-2026-U1): QA-HRS-07 (Item 3, real
+# deterministic no-increase gate built), QA-BIO-06 (Item 7, real
+# medication-mention checker built), QA-ACF-11 (Item 11, real
+# Vineland-vs-other-tool scoping checker built), QA-MAST-04 (Item 17, real
+# checker built) -- see each one's own docstring in fields.py.
+# QA-SCH-09 (Item 6) stays pinned, deliberately, this round -- Ms. Yachnes
+# has offered to help define what real signal this rule can be checked
+# against, and nothing was built without that input; see this round's
+# report for the specific question back to her.
 STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
-    "QA-MAST-04", "QA-GIP-14",  # original 2, unchanged (see Part 2 above)
+    "QA-GIP-14",  # original 2 minus QA-MAST-04, unpinned this round (see above)
     "QA-AI-03", "QA-AI-05", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
     "QA-COC-07", "QA-GIP-02", "QA-GIP-17", "QA-GIP-20", "QA-GIP-23",
-    "QA-GIP-25", "QA-GIP-27", "QA-GIP-29", "QA-GIP-34", "QA-GIP-35", "QA-HRS-07",
+    "QA-GIP-25", "QA-GIP-27", "QA-GIP-29", "QA-GIP-34", "QA-GIP-35",
     "QA-PAR-02", "QA-SCH-09", "QA-TEMP-06",
-    "HF-05", "QA-ACF-03", "QA-ACF-11", "QA-PPI-05",
-    "QA-BIO-06", "QA-GIP-11",
+    "HF-05", "QA-ACF-03", "QA-PPI-05",
+    "QA-GIP-11",
 })
 
 # Fix Round (2026-09-15), "Language Regression": REAL FIX -- this text

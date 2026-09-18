@@ -186,6 +186,13 @@ def test_item4_bip06_still_fails_when_truly_blank_with_no_nearby_explanation():
 # to get a literal before-answer isn't part of the approved real-API
 # spend for this round. "After" is fields._check_BIP04, reusing the exact
 # same _nearby_block_explanation helper Item 4 already built for BIP-06.
+#
+# Fix Round (Jacob Freund 10-2026-U1), Item 15: this checker is now scoped
+# to tantrum-named goals only -- the goal names below were renamed to
+# "Reduce Tantrum Episodes" (were "Reduce Head-Banging Episodes") to stay
+# in scope; the actual behavior under test in each (blank Mastery
+# Criteria, nearby-explanation downgrade, duration-qualifier pass/fail) is
+# unaffected by that rename.
 # =========================================================================
 
 def test_item4b_bip04_fails_a_blank_mastery_criteria_with_no_nearby_duration_explanation():
@@ -193,7 +200,7 @@ def test_item4b_bip04_fails_a_blank_mastery_criteria_with_no_nearby_duration_exp
     Episodes' shape (blank Mastery Criteria, no duration language
     anywhere nearby)."""
     text = (
-        "Target Name: Reduce Head-Banging Episodes\n"
+        "Target Name: Reduce Tantrum Episodes\n"
         "Date Initiated: 02/16/2026 Baseline: 1 per hour as per caregiver report Frequency\n"
         "Mastery Criteria:  \n"
         "Sampling Method: Frequency \n"
@@ -211,7 +218,7 @@ def test_item4b_bip04_downgrades_to_uncertain_when_nearby_explanation_found():
     """Same shape, but a real explanation sits in 'Additional Notes:' a
     few lines away -- generic adjacency, the same mechanism BIP-06 uses."""
     text = (
-        "Target Name: Reduce Head-Banging Episodes\n"
+        "Target Name: Reduce Tantrum Episodes\n"
         "Date Initiated: 02/16/2026 Baseline: 1 per hour as per caregiver report Frequency\n"
         "Mastery Criteria:  \n"
         "Sampling Method: Frequency \n"
@@ -228,7 +235,7 @@ def test_item4b_bip04_passes_when_a_duration_qualifier_is_present():
     example (Reeda's 'near 0 levels per session for 5 consecutive
     sessions')."""
     text = (
-        "Target Name: Reduce Head-Banging Episodes\n"
+        "Target Name: Reduce Tantrum Episodes\n"
         "Baseline: 6x daily\n"
         "Mastery Criteria: near 0 levels per session for 4 consecutive sessions\n"
     )
@@ -241,7 +248,7 @@ def test_item4b_bip04_fails_a_populated_mastery_criteria_with_no_duration_qualif
     """The rule's own confirmed real FAIL example shape: a level/count is
     stated, but no consecutive-session/time-window qualifier at all."""
     text = (
-        "Target Name: Reduce Head-Banging Episodes\n"
+        "Target Name: Reduce Tantrum Episodes\n"
         "Baseline: 6x daily\n"
         "Mastery Criteria: near 0 levels per session\n"
     )

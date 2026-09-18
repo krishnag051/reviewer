@@ -4,9 +4,29 @@ layers into one findings object, split by each rule's action_lane/action_tag.
 import json
 import logging
 
+from .integrity import PAGE_UNAVAILABLE_NOTE
+
 logger = logging.getLogger(__name__)
 
 NEEDS_ACTION_RESULTS = {"fail", "uncertain"}
+
+# Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2: page
+# citation is now a hard, required field on every finding, with one
+# sanctioned exception -- genuinely nothing exists anywhere to cite. The
+# judgment layer already discloses this honestly via integrity.py's own
+# PAGE_UNAVAILABLE_NOTE (appended there after real page-recovery retries
+# are exhausted). The deterministic layer has no equivalent recovery
+# pass and no per-checker "confirmed nothing to cite" flag (a 5th tuple
+# element or dict-shaped return would be a real breaking change to all
+# ~80 checkers, out of scope for a page-citation-only round) -- so this
+# is the one central place, after det+judgment converge, where a
+# deterministic pass/fail/uncertain finding that still has no page gets
+# the SAME honest disclosure, rather than silently shipping a blank page
+# field. not_applicable/not_checkable are deliberately excluded: their
+# own evidence text already states plainly why there's nothing to check
+# (a genuine "nothing found" case), so appending this note there would
+# be redundant, not more honest.
+_PAGE_REQUIRED_RESULTS = {"pass", "fail", "uncertain"}
 
 
 def _format_page_display(page) -> str | int | None:
@@ -149,6 +169,21 @@ def merge_findings(rules: list[dict], det_results: dict[str, dict], judgment_res
                 "action_tag": rule.get("action_tag"),
                 "check_type": rule["check_type"],
             }
+            # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19),
+            # Item 2: deterministic-layer disclosure -- see
+            # _PAGE_REQUIRED_RESULTS's own comment above for why this is
+            # scoped to det-layer pass/fail/uncertain only, and why it
+            # never touches result/status. The judgment layer already
+            # gets this same disclosure from integrity.py's own page-
+            # recovery pass; not duplicated here for judgment results.
+            if (
+                rule["check_type"] == "deterministic"
+                and entry.get("result") in _PAGE_REQUIRED_RESULTS
+                and not entry.get("page")
+                and isinstance(entry.get("evidence"), str)
+                and PAGE_UNAVAILABLE_NOTE not in entry["evidence"]
+            ):
+                entry["evidence"] = entry["evidence"] + PAGE_UNAVAILABLE_NOTE
             rows = _explode_to_rows(rule_id, entry)
         except Exception as exc:
             logger.exception(

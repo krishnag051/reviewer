@@ -149,29 +149,29 @@ def test_coc02_stays_judgment_with_no_checker():
     assert "QA-COC-02" not in fields.DET_CHECKS
 
 
-# --- 7. QA-RPT-05 (fixed: month -> week math) --------------------------------
+# --- 7. QA-RPT-05 (SUPERSEDED, Fix Round Jacob Freund 10-2026-U1, Item 1) ----
+# The 26-week-default-window check this rule used to compute (month->week
+# math fixed here originally) was removed from this rule entirely per Ms.
+# Yachnes's explicit correction -- it was "a different check" bundled in by
+# mistake; QA-RPT-05 is the lapse/gap check only now (previous TP's auth end
+# vs. this TP's auth start), and the TP-only phase-1 half always returns
+# not_checkable (no previous TP -> nothing to check). See
+# fields.py::_check_RPT05's current docstring. The old params key
+# (max_weeks_after_report_end) and the pass/fail-on-window-overage tests
+# no longer apply to this rule_id at all -- SM-01 still covers that window
+# check for Straight Medicaid specifically, untouched.
 
-def test_rpt05_uses_week_based_params_not_month_based():
-    assert "max_weeks_after_report_end" in _rule_json("QA-RPT-05")["params"]
-    assert "max_months_after_report_end" not in _rule_json("QA-RPT-05")["params"]
+def test_rpt05_has_no_window_params_anymore():
+    assert "params" not in _rule_json("QA-RPT-05")
 
 
-def test_rpt05_passes_within_26_week_default():
+def test_rpt05_phase1_is_always_not_checkable_no_previous_tp():
     text = (
         "Date of Current Report: 07/01/2026 to 07/17/2026\n"
-        "Authorization Dates Requested: 08/01/2026 to 12/28/2026\n"  # ~24.5 weeks after report end
+        "Authorization Dates Requested: 08/01/2026 to 12/28/2026\n"
     )
-    result, evidence, page, confidence = fields._check_RPT05(_rule(_rule_json("QA-RPT-05")["params"]), _fields(text))
-    assert result == "pass"
-
-
-def test_rpt05_fails_beyond_26_week_default():
-    text = (
-        "Date of Current Report: 07/01/2026 to 07/17/2026\n"
-        "Authorization Dates Requested: 08/01/2026 to 03/01/2027\n"  # well beyond 26 weeks after report end
-    )
-    result, evidence, page, confidence = fields._check_RPT05(_rule(_rule_json("QA-RPT-05")["params"]), _fields(text))
-    assert result == "fail"
+    result, evidence, page, confidence = fields._check_RPT05(_rule({}), _fields(text))
+    assert result == "not_checkable"
 
 
 # --- 8. QA-HRS-02 (fixed: stale evidence text) --------------------------------
@@ -212,12 +212,17 @@ def test_par03_stays_judgment_but_reuses_gip_graph_vision_section():
     assert fields.VISION_ELIGIBLE_RULE_SECTIONS.get("QA-PAR-03") == "gip_graph"
 
 
-# --- 11. QA-MAST-04 (flagged genuinely ambiguous, not built) ------------------
+# --- 11. QA-MAST-04 (SUPERSEDED, Fix Round Jacob Freund 10-2026-U1, Item 17) -
+# No longer left unbuilt-and-judgment -- a real deterministic checker was
+# added (fields.py::_check_MAST04), un-pinned from the stabilized safety
+# net. The section-category ambiguity noted below is still open (still
+# needs Ms. Yachnes's clarification) but is no longer a reason to leave
+# this rule entirely unbuilt -- see that rule's own current notes.
 
-def test_mast04_stays_judgment_flagged_as_ambiguous_not_built():
-    assert _rule_json("QA-MAST-04")["check_type"] == "judgment"
-    assert "QA-MAST-04" not in fields.DET_CHECKS
-    assert "ambiguous" in _rule_json("QA-MAST-04")["notes"].lower()
+def test_mast04_now_has_a_real_deterministic_checker():
+    assert _rule_json("QA-MAST-04")["check_type"] == "deterministic"
+    assert "QA-MAST-04" in fields.DET_CHECKS
+    assert "ambiguous" in _rule_json("QA-MAST-04")["notes"].lower()  # still flagged, not silently resolved
 
 
 # --- 12. QA-SCH-06 (real gap: was labeled deterministic, zero checker) -------

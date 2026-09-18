@@ -94,7 +94,9 @@ def test_finds_a_declarative_parenthetical_reviewer_aside_no_question_mark():
         "Goals were addressed per the treatment plan."
     )
     comments = fields._find_embedded_reviewer_comments(text)
-    assert any("Confirm before signing" in c for c in comments)
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # now [(text, offset), ...], not a bare list of strings.
+    assert any("Confirm before signing" in c for c, _offset in comments)
 
 
 @pytest.mark.parametrize("directive", [

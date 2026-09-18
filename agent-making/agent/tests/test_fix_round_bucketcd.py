@@ -158,9 +158,14 @@ def test_gip02_notes_are_forwarded_to_the_judgment_prompt():
 
 
 # --- Bucket D, item 5: QA-BIP-04 duration-parsing fix -----------------------
+#
+# Fix Round (Jacob Freund 10-2026-U1), Item 15 scoped this checker to
+# tantrum-named goals only -- "Stay Calm" renamed to "Reduce Tantrum" below
+# to stay in scope; the actual minutes-based duration-qualifier parsing
+# under test is unaffected by that rename.
 
 def test_bip04_now_recognizes_a_minutes_based_duration_qualifier():
-    text = "Target Name: Stay Calm\nMastery Criteria: remain calm for 2 minutes\n"
+    text = "Target Name: Reduce Tantrum\nMastery Criteria: remain calm for 2 minutes\n"
     result, evidence, page, confidence = fields._check_BIP04(_rule(), _fields(text))
     assert result == "pass"
 

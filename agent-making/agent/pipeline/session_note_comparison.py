@@ -83,11 +83,11 @@ def parse_date_range(range_str: str | None) -> tuple[date | None, date | None]:
     return parse_date_flexible(parts[0]), parse_date_flexible(parts[1])
 
 
-def _uncertain(evidence: str) -> dict[str, Any]:
-    return {"result": "uncertain", "evidence": evidence, "confidence": 0.0}
+def _uncertain(evidence: str, page: int | None = None) -> dict[str, Any]:
+    return {"result": "uncertain", "evidence": evidence, "confidence": 0.0, "page": page}
 
 
-def _not_checkable(evidence: str) -> dict[str, Any]:
+def _not_checkable(evidence: str, page: int | None = None) -> dict[str, Any]:
     """Distinct from _uncertain() above: "uncertain" is this module's
     existing vocabulary for "the note/TP data is genuinely ambiguous or
     incomplete" (a data-content problem). This is for a real, different
@@ -96,11 +96,15 @@ def _not_checkable(evidence: str) -> dict[str, Any]:
     ambiguous ABOUT. Live incident fix (2026-08): see
     session_note_extraction.py's EXTRACTION_ERROR_KEY docstring for why
     this must never look identical to "this note states nothing"."""
-    return {"result": "not_checkable", "evidence": evidence, "confidence": 0.0}
+    return {"result": "not_checkable", "evidence": evidence, "confidence": 0.0, "page": page}
 
 
-def _finding(result: str, evidence: str, confidence: float) -> dict[str, Any]:
-    return {"result": result, "evidence": evidence, "confidence": confidence}
+def _finding(result: str, evidence: str, confidence: float, page: int | None = None) -> dict[str, Any]:
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # `page` is new, optional, and additive -- always a CURRENT-TP page.
+    # Every existing call site that doesn't pass one still works exactly
+    # as before (page=None, same as today).
+    return {"result": result, "evidence": evidence, "confidence": confidence, "page": page}
 
 
 def _extraction_error(extraction: dict[str, Any] | None) -> str | None:
@@ -422,23 +426,39 @@ def combine_compound_rule_result(phase1_result: dict[str, Any] | None, real_data
 
     `phase1_result=None` (no draft available for some reason) is treated
     the same as phase 1 being uncertain.
+
+    Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    both `phase1_result` and `real_data_result` may now carry a `page`
+    (always a CURRENT-TP page by convention -- both sides feed from
+    current-TP data; the previous-TP/session-note side is never cited).
+    `_pick_page` below just prefers whichever side actually decided the
+    combined result, falling back to the other side's page (real_data
+    first, then phase1) when the deciding side didn't have one -- never
+    drops a real page that either side already computed.
     """
+    def _pick_page(*preferred_order: dict[str, Any]) -> int | None:
+        for r in preferred_order:
+            page = r.get("page")
+            if page is not None:
+                return page
+        return None
+
     p1 = phase1_result or _uncertain("No phase 1 result available.")
     evidence = f"{p1['evidence']} | {real_data_result['evidence']}"
 
     if p1["result"] == "fail" or real_data_result["result"] == "fail":
         confidence = max(p1.get("confidence") or 0.0, real_data_result.get("confidence") or 0.0)
-        return _finding("fail", evidence, confidence)
+        return _finding("fail", evidence, confidence, _pick_page(real_data_result, p1))
     if p1["result"] == "pass" and real_data_result["result"] == "pass":
         confidence = min(p1.get("confidence") or 0.0, real_data_result.get("confidence") or 0.0)
-        return _finding("pass", evidence, confidence)
+        return _finding("pass", evidence, confidence, _pick_page(real_data_result, p1))
     if p1["result"] in ("uncertain", "not_checkable") and real_data_result["result"] == "pass":
-        return _finding("pass", evidence, real_data_result.get("confidence") or 0.0)
+        return _finding("pass", evidence, real_data_result.get("confidence") or 0.0, _pick_page(real_data_result, p1))
     if real_data_result["result"] in ("uncertain", "not_checkable") and p1["result"] == "pass":
-        return _finding("pass", evidence, p1.get("confidence") or 0.0)
+        return _finding("pass", evidence, p1.get("confidence") or 0.0, _pick_page(p1, real_data_result))
     if p1["result"] == "not_checkable" and real_data_result["result"] == "not_checkable":
-        return _not_checkable(evidence)
-    return _uncertain(evidence)
+        return _not_checkable(evidence, _pick_page(real_data_result, p1))
+    return _uncertain(evidence, _pick_page(real_data_result, p1))
 
 
 def select_matching_session_note(

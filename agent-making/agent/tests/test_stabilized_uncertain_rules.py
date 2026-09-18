@@ -102,7 +102,11 @@ def test_stabilized_rule_ids_include_every_rule_confirmed_unstable_by_the_real_p
     # real deterministic checker was built for it this round (reusing the
     # Date-Initiated-vs-report-range anchor QA-GIP-07 already proved out),
     # so it's un-pinned like QA-GIP-28 before it, not a coincidental gap.
-    still_applicable = confirmed_unstable - {"QA-BIP-03", "QA-GIP-22"}
+    #
+    # Fix Round (Jacob Freund 10-2026-U1), Item 3: QA-HRS-07 is a THIRD
+    # deliberate exception -- a real deterministic no-increase gate was
+    # built (fields.py::_check_HRS07), un-pinned this round.
+    still_applicable = confirmed_unstable - {"QA-BIP-03", "QA-GIP-22", "QA-HRS-07"}
     assert still_applicable.issubset(pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS)
     # Fix Round (2026-09-11 evening) added 8 more real, confirmed-unstable
     # rule_ids on top of this Part 3 baseline (see that round's own comment
@@ -121,11 +125,19 @@ def test_stabilized_rule_ids_still_include_the_ones_not_fixed_this_round():
     test below); the other 6 are genuinely NOT fixable this round for a
     real, specific reason (image-dependency discrepancy, or genuine
     residual judgment-call ambiguity) and correctly stay here."""
+    # Fix Round (Jacob Freund 10-2026-U1), Items 7/11/17: QA-BIO-06,
+    # QA-ACF-11, and QA-MAST-04 (the original-2 rule from Part 2, not
+    # listed in this specific set but see the sibling module-level
+    # assertions below) all got real checkers built and are un-pinned this
+    # round -- moved out of "still pinned."
     still_pinned = {
-        "HF-05", "QA-ACF-03", "QA-ACF-11",  # image/graph-dependent (2 approved-to-stay, 1 flagged discrepancy)
-        "QA-GIP-17", "QA-GIP-11", "QA-BIO-06", "QA-SCH-09", "QA-TEMP-06",  # genuine residual judgment calls
+        "HF-05", "QA-ACF-03",  # image/graph-dependent (approved to stay)
+        "QA-GIP-17", "QA-GIP-11", "QA-SCH-09", "QA-TEMP-06",  # genuine residual judgment calls
     }
     assert still_pinned.issubset(pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS)
+    assert "QA-BIO-06" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
+    assert "QA-ACF-11" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
+    assert "QA-MAST-04" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
 
 
 def test_stabilized_rule_ids_no_longer_include_the_7_real_fixes_this_round():

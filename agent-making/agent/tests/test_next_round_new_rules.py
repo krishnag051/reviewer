@@ -23,36 +23,43 @@ def _rule(params: dict | None = None) -> dict:
     return {"params": params or {}}
 
 
-# --- QA-HRS-12: Treatment Planning hours requested ------------------------
+# --- QA-HRS-12: Treatment Planning hours requested -------------------------
+# SUPERSEDED (Fix Round, Jacob Freund 10-2026-U1, Item 4): Ms. Yachnes's
+# exact new rule inverted this rule's payor scoping -- 1199SEIU/NY
+# Medicaid/Molina are now the ONLY payors this requirement applies to;
+# every other payor is not_applicable. params key renamed excluded_payors
+# -> required_payors. See fields.py::_check_HRS12's current docstring.
 
-def test_hrs12_fails_when_treatment_planning_hours_are_na_for_non_exempt_payor():
+def test_hrs12_fails_when_treatment_planning_hours_are_na_for_required_payor():
     text = "N/A hours per\nweek.\n97151-Treatment\nPlanning\nBCBA/LBA\n"
-    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor="Healthfirst"))
+    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor="Molina"))
     assert result == "fail"
     assert "N/A" in evidence
 
 
 def test_hrs12_passes_when_treatment_planning_hours_are_present():
     text = "2 hours per\nweek.\n97151-Treatment\nPlanning\nBCBA/LBA\n"
-    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor="Healthfirst"))
+    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor="Molina"))
     assert result == "pass"
 
 
-def test_hrs12_not_applicable_for_exempt_payors():
+def test_hrs12_not_applicable_for_non_required_payors():
     text = "N/A hours per\nweek.\n97151-Treatment\nPlanning\nBCBA/LBA\n"
-    for payor in ("1199SEIU", "New York Medicaid", "Molina"):
+    for payor in ("Healthfirst", "Aetna"):
         result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor=payor))
         assert result == "not_applicable", payor
 
 
 def test_hrs12_not_checkable_when_row_missing_entirely():
-    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields("Nothing relevant here.", payor="Aetna"))
+    result, evidence, page, confidence = fields._check_HRS12(
+        _rule(), _fields("Nothing relevant here.", payor="New York Medicaid"),
+    )
     assert result == "not_checkable"
 
 
 def test_hrs12_matches_ongoing_treatment_planning_wording_too():
     text = "3 hours per\nweek.\n97151-Ongoing Treatment\nPlanning\nBCBA/LBA\n"
-    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor="Aetna"))
+    result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor="1199SEIU"))
     assert result == "pass"
 
 

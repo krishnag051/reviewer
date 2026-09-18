@@ -9,6 +9,7 @@ this stays ONE export row, with the page list formatted into a readable
 string, not exploded into multiple rows the way {page, detail} evidence is.
 """
 from pipeline.merge import merge_findings, _format_page_display
+from pipeline.integrity import PAGE_UNAVAILABLE_NOTE
 from pipeline import judge
 
 
@@ -29,7 +30,12 @@ def test_single_string_evidence_produces_one_row():
     result = merge_findings(rules, det_results, {})
     assert len(result["export_rows"]) == 1
     row = result["export_rows"][0]
-    assert row["detail"] == "All fields filled."
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # a deterministic pass/fail/uncertain finding with no page now gets
+    # the same honest disclosure the judgment layer already appends via
+    # integrity.py's PAGE_UNAVAILABLE_NOTE, instead of silently shipping
+    # a blank page field -- see merge.py's own comment on this.
+    assert row["detail"] == "All fields filled." + PAGE_UNAVAILABLE_NOTE
     assert row["page"] is None
 
 

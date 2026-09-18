@@ -96,7 +96,9 @@ def test_charny_real_reviewer_comments_all_caught_and_locked_in():
         "Please specify the DRA",
         "please reword",
     ]
-    joined = " | ".join(comments)
+    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
+    # now [(text, offset), ...], not a bare list of strings.
+    joined = " | ".join(c for c, _offset in comments)
     for phrase in must_catch:
         assert phrase in joined, f"regression: {phrase!r} no longer detected as a reviewer comment"
     assert len(comments) >= 6, f"expected at least 6 distinct candidate reviewer comments, got {len(comments)}: {comments}"

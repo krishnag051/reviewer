@@ -257,6 +257,22 @@ def humanize_evidence_with_llm(
 
     protected, tags = _protect_page_tags(cleaned)
 
+    # Fix Round (Jacob Freund 10-2026-U1), Item 18: REAL BUG FOUND AND
+    # FIXED -- the emptiness guard above only checks `cleaned`, BEFORE
+    # page tags are protected into opaque PAGEREFnX placeholder tokens.
+    # Evidence that is nothing but a page citation (e.g. just "[Page 4]")
+    # passes that check (cleaned.strip() is non-empty) but reduces to a
+    # bare placeholder token with ZERO real sentence content once
+    # protected -- sent to the model like that, there is genuinely
+    # nothing to rewrite. Root-caused against this round's own confirmed
+    # real bug (a leaked, paraphrased system-prompt response -- "I'm
+    # ready to rewrite compliance checklist evidence text... I don't see
+    # the actual evidence text to rewrite yet") -- this is exactly the
+    # shape of input that provokes it. Guard on the PROTECTED text (what
+    # is actually sent), not the pre-protection text.
+    if not _PLACEHOLDER_RE.sub("", protected).strip():
+        return cleaned, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "pre_humanize_text": cleaned}
+
     real_client = client or anthropic.Anthropic()
     # Fix Round (2026-08-27): REAL BUG FOUND AND FIXED -- confirmed on a
     # real completed review, several genuinely long tie-break/merge
@@ -317,7 +333,21 @@ def humanize_evidence_with_llm(
     # its own real problem regardless of whether the page tags survived,
     # and must never ship silently either.
     was_truncated = response.stop_reason == "max_tokens"
-    if all_expected_present_once and not has_stray_out_of_range_token and not was_truncated:
+    # Fix Round (Jacob Freund 10-2026-U1), Item 18: second, belt-and-
+    # suspenders safeguard -- catches a leaked/paraphrased system-prompt
+    # response even if the input-side guard above somehow doesn't (e.g. a
+    # future prompt change, a different degenerate-input shape not
+    # anticipated here). A real rewrite of real evidence never talks
+    # ABOUT the rewriting task itself in the first person -- it just is
+    # the rewritten evidence. Reject outright, fall back to the (still
+    # real, still cleaned-up) deterministic-only text, same as every
+    # other rejection path here -- never surface this to a reviewer.
+    is_leaked_prompt_meta_response = bool(re.search(
+        r"\bI'm ready to rewrite\b|\bI don't see (?:the|any) (?:actual )?(?:evidence|compliance checklist)\b"
+        r"|\bplease provide the (?:compliance checklist|evidence) text\b",
+        rewritten_protected, re.IGNORECASE,
+    ))
+    if all_expected_present_once and not has_stray_out_of_range_token and not was_truncated and not is_leaked_prompt_meta_response:
         rewritten = _restore_page_tags(rewritten_protected, tags).strip()
         usage["rejected_missing_page_ref"] = False
         usage["rejection_reason"] = None
@@ -331,6 +361,8 @@ def humanize_evidence_with_llm(
         usage["rejection_reason"] = "truncated"
     elif has_stray_out_of_range_token:
         usage["rejection_reason"] = "stray_page_ref"
+    elif is_leaked_prompt_meta_response:
+        usage["rejection_reason"] = "leaked_prompt_meta_response"
     else:
         usage["rejection_reason"] = "missing_page_ref"
     return cleaned, usage
