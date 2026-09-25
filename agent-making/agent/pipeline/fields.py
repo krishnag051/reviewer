@@ -6846,6 +6846,21 @@ def _check_BAR01(rule: dict, fields: dict) -> tuple:
     assessed_items = [
         item for sec in assessment_sections for item in _split_assessment_items(sec["text"])
     ]
+    # Round 12 real fix (mc_current.pdf, real gap found): the label-based
+    # search above requires a real "VB-MAPP Barriers Assessment:"/
+    # "Barriers Assessment:" line-start LABEL -- confirmed against the
+    # real document that this section never appears as a labeled field at
+    # all. Its real shape is a plain sentence inside the narrative
+    # "Assessment Summary Statement:" paragraph: "The VB-MAPP Barriers
+    # Assessment increased from 20 to 21... Identified barriers include
+    # behavior problems, instructional-control difficulties, ...". Falls
+    # back to this free-prose pattern only when the label-based search
+    # found nothing, so a document that DOES use a real labeled section
+    # is unaffected.
+    if not assessed_items:
+        prose_m = re.search(r"Identified barriers include:?\s*([^.]+)\.", text, re.IGNORECASE)
+        if prose_m:
+            assessed_items = _split_assessment_items(prose_m.group(1))
     if assessed_items:
         missing = [item for item in assessed_items if not _assessment_item_reflected_in(item, section_text)]
         if missing:

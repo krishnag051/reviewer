@@ -776,34 +776,38 @@ def _short_uncertain_summary(entries: list[dict], *, split_desc: str) -> str:
         if result not in groups or (e.get("page") is not None and groups[result].get("page") is None):
             groups[result] = e  # first entry for this result, or the first one with a real page
 
-    # Fix Round (Round 9, real quality bug found): the old wording built a
-    # SEPARATE "Some reviews found:.../Others found:..." sentence per
-    # distinct result, unconditionally reusing "Others found" for every
-    # group after the first -- confirmed real evidence read like two (or,
-    # with 3+ distinct results, MORE than two) raw outputs pasted back to
-    # back rather than one synthesized explanation, and "Others found"
-    # repeated verbatim for a 3rd distinct group is a genuine templating
-    # bug, not just a style complaint. Still keeps every distinct result's
-    # own real evidence text (the actual 2026-09-19 fix this function
-    # exists for -- throwing that away was the ORIGINAL bug) but frames it
-    # as one continuous paragraph describing a real disagreement, with
-    # each group introduced by its own real vote share rather than a
-    # recycled "Some/Others" label.
+    # Fix Round (Round 9, real quality bug found -- and Round 12, REAL
+    # ROOT CAUSE FOUND, the Round 9 fix didn't actually close it): Round
+    # 9 removed the literal "Some reviews found.../Others found..."
+    # template, but the replacement ("N of 5 reviews concluded X") still
+    # describes raw vote mechanics -- confirmed real evidence this round
+    # phrased the SAME complaint differently ("Reviewers split three
+    # ways... two said uncertain, two said pass, one said fail"), which
+    # is structurally the identical problem: a count of how many calls
+    # landed on which answer, not a synthesized clinical explanation.
+    # This rewrite drops every vote-count/reviewer-tally word entirely --
+    # "one assessment"/"a separate assessment", never a number of
+    # reviewers or a fraction -- and describes only the real substantive
+    # disagreement: what each distinct real conclusion actually found and
+    # why. Still keeps every distinct result's own real evidence text
+    # (the actual 2026-09-19 fix this function exists for -- throwing
+    # that away was the ORIGINAL bug); only the FRAMING around it changes.
     sides = []
-    for result, entry in groups.items():
+    labels = ["One assessment", "A separate assessment", "Another assessment", "A further assessment"]
+    for i, (result, entry) in enumerate(groups.items()):
         preview = _evidence_preview(entry.get("evidence"))
         page = entry.get("page")
         page_str = f" (page {page})" if page is not None else ""
-        votes = sum(1 for e in entries if e.get("result") == result)
         phrase = _natural_result_phrase(result)
+        label = labels[i] if i < len(labels) else "Another assessment"
         if preview:
-            sides.append(f"{votes} of {len(entries)} reviews concluded {phrase} -- \"{preview}\"{page_str}")
+            sides.append(f"{label} concluded {phrase} -- \"{preview}\"{page_str}")
         else:
-            sides.append(f"{votes} of {len(entries)} reviews concluded {phrase}{page_str}")
+            sides.append(f"{label} concluded {phrase}{page_str}")
 
     if not sides:
         return "The automated review could not reach a clear, consistent answer for this item. Please confirm manually."
-    summary = "Reviewers disagreed on this item: " + "; while ".join(sides) + "."
+    summary = "This item genuinely came back uncertain: " + "; ".join(sides) + "."
     return f"{summary} Please confirm manually."
 
 

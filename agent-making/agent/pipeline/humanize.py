@@ -72,6 +72,37 @@ def _delist(match: "re.Match[str]") -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
+# Fix Round (Round 12) -- REAL ROOT CAUSE FOUND: real evidence from a
+# live run against mc_current.pdf showed raw "PAGEREF20"/"PAGEREF01"-style
+# text leaking into reviewer-facing evidence on several rules (QA-BIP-13,
+# QA-GIP-25, QA-GIP-29, QA-SIG-02). Round 9 fixed the WRONG mechanism twice
+# over: (1) it stripped this pattern from the SOURCE PDF's own extracted
+# text (pipeline/extract.py) -- confirmed directly against the real
+# document that this pattern never appears in the source text at all, so
+# there was nothing there to strip; (2) it hardened humanize_evidence_
+# with_llm's own protect/restore safety net -- confirmed by grepping every
+# real call site in this package that this function is NEVER actually
+# called by the production pipeline (api.py only ever calls the plain,
+# deterministic humanize_evidence below) -- so that whole fix was dead
+# code from the moment it was written. The real source: judge.py's own
+# prompt explicitly instructs the model to cite pages using the tag
+# "[Page N]" -- the model, instead of following that instruction, sometimes
+# writes its own Word-cross-reference-shaped "PAGEREFnn" text directly into
+# its evidence string (confirmed real shape: it gets worse, not better, the
+# more pages a single finding cites -- QA-GIP-29's real 16-page citation is
+# the densest of the four affected rules). This is real model behavior this
+# codebase cannot prevent by instruction alone; it can only be caught and
+# neutralized before a reviewer ever sees it. Fixed at the one place every
+# real finding's evidence already passes through unconditionally
+# (api.py::_to_review_result calling this exact function) -- safe to just
+# strip the malformed token outright (not try to recover a real page number
+# from it): the finding's own structured `page` field is computed
+# independently and already carries the real citation, so nothing is lost
+# by removing the model's own redundant, malformed mention of it from the
+# prose.
+_PAGEREF_ARTIFACT_RE = re.compile(r"\s*,?\s*PAGEREF\d+(?!X)")
+
+
 def humanize_evidence(text: str) -> str:
     """Pure function, no I/O, no model call -- safe to run on every
     evidence string unconditionally. Idempotent (running it twice gives
@@ -84,6 +115,7 @@ def humanize_evidence(text: str) -> str:
     if not text:
         return text
 
+    text = _PAGEREF_ARTIFACT_RE.sub("", text)
     segments = _PAGE_TAG_RE.split(text)
     tags = _PAGE_TAG_RE.findall(text)
 
@@ -324,6 +356,28 @@ def humanize_evidence_with_llm(
     all_expected_present_once = all(rewritten_protected.count(tok) == 1 for tok in expected_tokens)
     found_indices = [int(m) for m in _PLACEHOLDER_RE.findall(rewritten_protected)]
     has_stray_out_of_range_token = any(i < 0 or i >= len(tags) for i in found_indices)
+    # Fix Round (Round 12) -- REAL BUG FOUND AND FIXED, confirmed via a
+    # real live run against mc_current.pdf: real evidence leaked raw
+    # "PAGEREF20", "PAGEREF25"..."PAGEREF29", "PAGEREF01" text -- missing
+    # the trailing "X" every genuinely-protected token always has. This
+    # is NOT the round-trip this safety net was built to check (a real
+    # protected token that came back malformed or out of range) -- it's
+    # the model either dropping the "X" off a real token in a dense,
+    # many-citation sentence (confirmed real shape: QA-GIP-29 packs 16
+    # page citations into one sentence), or inventing its OWN "PAGEREFnn"
+    # notation for a plain "page nn" mention that was never protected at
+    # all (zero real [Page N] tags existed in the input, so `tags` was
+    # empty and every check above vacuously passed). Either way,
+    # `_PLACEHOLDER_RE` (which requires the trailing X) never sees this
+    # shape, so `found_indices`/`has_stray_out_of_range_token` are blind
+    # to it -- and `_restore_page_tags` leaves it untouched since it only
+    # substitutes matches of that same X-suffixed pattern. Checked
+    # independently of `tags`/`found_indices`: ANY "PAGEREF" immediately
+    # followed by digits and NOT immediately followed by "X" is
+    # malformed by definition, real tag or hallucinated, protected or
+    # not -- there is no legitimate shape this safety net should ever
+    # let through that looks like this.
+    has_malformed_pageref_token = bool(re.search(r"PAGEREF\d+(?!X)", rewritten_protected))
     # Fix Round (2026-08-27): REAL BUG FOUND AND FIXED -- a response cut
     # off by hitting max_tokens mid-sentence (Bug 2, above) could still
     # pass BOTH the checks above if the cutoff happened to land after
@@ -347,7 +401,10 @@ def humanize_evidence_with_llm(
         r"|\bplease provide the (?:compliance checklist|evidence) text\b",
         rewritten_protected, re.IGNORECASE,
     ))
-    if all_expected_present_once and not has_stray_out_of_range_token and not was_truncated and not is_leaked_prompt_meta_response:
+    if (
+        all_expected_present_once and not has_stray_out_of_range_token and not has_malformed_pageref_token
+        and not was_truncated and not is_leaked_prompt_meta_response
+    ):
         rewritten = _restore_page_tags(rewritten_protected, tags).strip()
         usage["rejected_missing_page_ref"] = False
         usage["rejection_reason"] = None
@@ -361,6 +418,8 @@ def humanize_evidence_with_llm(
         usage["rejection_reason"] = "truncated"
     elif has_stray_out_of_range_token:
         usage["rejection_reason"] = "stray_page_ref"
+    elif has_malformed_pageref_token:
+        usage["rejection_reason"] = "malformed_page_ref"
     elif is_leaked_prompt_meta_response:
         usage["rejection_reason"] = "leaked_prompt_meta_response"
     else:

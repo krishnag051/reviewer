@@ -358,26 +358,48 @@ def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple], fields: 
             if p in candidate_pages or fields_module.page_contains_verbal_operant_term(fields, p)
         }
 
-    if not candidate_pages and fields is None:
-        return result
-
     if isinstance(result.get("evidence"), list):
-        covered = {item["page"] for item in result["evidence"] if item.get("page") is not None}
-        kept = _prune_hallucinated(covered)
-        missing = sorted(candidate_pages - kept)
-        pruned = covered - kept
+        evidence_pages = {item["page"] for item in result["evidence"] if item.get("page") is not None}
+        # Round 12 real fix (mc_current.pdf, real bug found): confirmed
+        # live against the real document that a reconciled majority-vote
+        # result can carry a top-level `page` field (a plain list of
+        # ints) that DISAGREES with its own `evidence` list -- in the
+        # real case found, evidence came back an empty list while `page`
+        # separately cited 3 real pages. merge.py's own export dispatch
+        # (_explode_to_rows) reads a page-level entry's page from
+        # `evidence` ONLY whenever evidence is list-shaped -- it never
+        # looks at the top-level `page` field in that branch at all -- so
+        # those 3 pages would otherwise silently vanish from the final
+        # CSV/export the moment this branch returns, with nothing in this
+        # function's own logic ever having looked at them. `page_only_
+        # pages` tracks them separately from `evidence_pages` (pages that
+        # already have a real evidence entry) specifically so a page that
+        # was only ever cited via the `page` field -- and is kept by the
+        # hallucination check -- still gets a real entry synthesized for
+        # it below, instead of being treated as "already represented"
+        # when it never actually was.
+        page_only_pages = set(result.get("page")) - evidence_pages if isinstance(result.get("page"), list) else set()
+        all_judgment_pages = evidence_pages | page_only_pages
+        kept_judgment_pages = _prune_hallucinated(all_judgment_pages)
+        pruned = all_judgment_pages - kept_judgment_pages
+        needs_new_entry = sorted((candidate_pages | page_only_pages) - evidence_pages - pruned)
         evidence = [item for item in result["evidence"] if item.get("page") not in pruned]
-        if not missing and not pruned:
+        if not needs_new_entry and not pruned:
             return result
-        added = [
-            {
-                "page": page,
-                "detail": f"Deterministic keyword scan (real, not model-generated): goal "
-                          f"'{candidates_by_page[page][0]}' contains the literal verbal-operant term "
-                          f"'{candidates_by_page[page][1]}'.",
-            }
-            for page in missing
-        ]
+        added = []
+        for page in needs_new_entry:
+            if page in candidates_by_page:
+                name, term = candidates_by_page[page]
+                detail = (
+                    f"Deterministic keyword scan (real, not model-generated): goal '{name}' contains the "
+                    f"literal verbal-operant term '{term}'."
+                )
+            else:
+                detail = (
+                    "Judgment cited this page separately (in its own page field) without a matching "
+                    "evidence entry -- carried over here so it isn't silently lost from the export."
+                )
+            added.append({"page": page, "detail": detail})
         return {**result, "evidence": evidence + added}
 
     if isinstance(result.get("page"), list):
