@@ -446,6 +446,24 @@ def combine_compound_rule_result(phase1_result: dict[str, Any] | None, real_data
     p1 = phase1_result or _uncertain("No phase 1 result available.")
     evidence = f"{p1['evidence']} | {real_data_result['evidence']}"
 
+    # Fix Round 14 (mc_current.pdf, real gap found): QA-COC-01's real
+    # evidence opened with "This item genuinely came back uncertain:
+    # One assessment concluded pass..." while its own final status was
+    # Pass -- confirmed root cause: the unconditional `evidence` above
+    # blindly concatenates BOTH sides' raw text regardless of which side
+    # actually decided the combined result. In the two "one side resolves
+    # the other's uncertain/not_checkable half" branches below, the
+    # NON-resolving side can carry its own disagreement-synthesis
+    # "uncertain" wording (judge.py::_short_uncertain_summary) even
+    # though it had zero say in the real final status -- gluing that
+    # text in at face value reads as a direct contradiction of the
+    # status it's sitting next to. `_resolved_evidence` leads with the
+    # side that actually decided the outcome and folds the other side in
+    # as clearly-labeled context, instead of two raw strings glued
+    # together as if both were describing the same verdict.
+    def _resolved_evidence(resolving: dict[str, Any], other: dict[str, Any], other_label: str) -> str:
+        return f"{resolving['evidence']} ({other_label}: {other['evidence']})"
+
     if p1["result"] == "fail" or real_data_result["result"] == "fail":
         confidence = max(p1.get("confidence") or 0.0, real_data_result.get("confidence") or 0.0)
         return _finding("fail", evidence, confidence, _pick_page(real_data_result, p1))
@@ -453,9 +471,11 @@ def combine_compound_rule_result(phase1_result: dict[str, Any] | None, real_data
         confidence = min(p1.get("confidence") or 0.0, real_data_result.get("confidence") or 0.0)
         return _finding("pass", evidence, confidence, _pick_page(real_data_result, p1))
     if p1["result"] in ("uncertain", "not_checkable") and real_data_result["result"] == "pass":
-        return _finding("pass", evidence, real_data_result.get("confidence") or 0.0, _pick_page(real_data_result, p1))
+        resolved_evidence = _resolved_evidence(real_data_result, p1, "TP-only read")
+        return _finding("pass", resolved_evidence, real_data_result.get("confidence") or 0.0, _pick_page(real_data_result, p1))
     if real_data_result["result"] in ("uncertain", "not_checkable") and p1["result"] == "pass":
-        return _finding("pass", evidence, p1.get("confidence") or 0.0, _pick_page(p1, real_data_result))
+        resolved_evidence = _resolved_evidence(p1, real_data_result, "session-note/intake check")
+        return _finding("pass", resolved_evidence, p1.get("confidence") or 0.0, _pick_page(p1, real_data_result))
     if p1["result"] == "not_checkable" and real_data_result["result"] == "not_checkable":
         return _not_checkable(evidence, _pick_page(real_data_result, p1))
     return _uncertain(evidence, _pick_page(real_data_result, p1))
