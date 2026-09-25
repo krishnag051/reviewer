@@ -53,7 +53,13 @@ from typing import Any
 from . import fields as fields_module
 from . import integrity as integrity_module
 from . import merge as merge_module
-from . import STABILIZED_UNCERTAIN_RULE_IDS, _stabilized_uncertain_finding, run_full_pipeline
+from . import (
+    STABILIZED_UNCERTAIN_RULE_IDS,
+    _inject_gip12_candidate_context,
+    _merge_gip12_candidate_pages,
+    _stabilized_uncertain_finding,
+    run_full_pipeline,
+)
 from .call_tracker import ApiCallCapExceeded, ApiCallTracker
 from .extract import extract_pdf_text
 from .flag_pages import flag_image_only_pages, flagged_page_numbers
@@ -310,6 +316,20 @@ def _run_pipeline_with_extras(
     det_results = fields_module.run_deterministic_checks(applicable_rules, extracted_fields)
     rules_by_id = {r["rule_id"]: r for r in rules}
 
+    # Fix Round (Round 13) -- REAL BUG FOUND AND FIXED, the same class as
+    # the STABILIZED_UNCERTAIN_RULE_IDS gap just below: QA-GIP-12's whole
+    # two-pass hybrid mechanism (Pass 1 candidate injection here, and the
+    # merge-back after judgment returns below) lived ONLY in
+    # pipeline/__init__.py::run_full_pipeline, never duplicated into this
+    # function -- so it never actually ran against real production
+    # traffic at all (see _inject_gip12_candidate_context's own docstring
+    # for the full diagnosis). Extracted into that one shared function in
+    # this same round specifically so both orchestration paths call the
+    # identical logic and can't silently drift apart again.
+    gip12_candidates, applicable_rules, rules_by_id = _inject_gip12_candidate_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+
     escalated_ids = [rid for rid, r in det_results.items() if fields_module.needs_escalation(r)]
     escalated_rules = [rules_by_id[rid] for rid in escalated_ids]
     judgment_rules = [r for r in applicable_rules if r["check_type"] == "judgment" and r["active"]]
@@ -338,6 +358,16 @@ def _run_pipeline_with_extras(
     )
     for rule_id in stabilized_rule_ids:
         judgment_results[rule_id] = _stabilized_uncertain_finding(rule_id, extracted_fields)
+
+    # Fix Round (Round 13): the other half of QA-GIP-12's two-pass hybrid
+    # -- see _inject_gip12_candidate_context's own docstring for why this
+    # was missing from this function entirely until now. Same placement
+    # (right after judgment_results first comes back, before the
+    # escalation-merge loop below) as run_full_pipeline's own call.
+    if "QA-GIP-12" in judgment_results:
+        judgment_results["QA-GIP-12"] = _merge_gip12_candidate_pages(
+            judgment_results["QA-GIP-12"], gip12_candidates, fields=extracted_fields,
+        )
 
     # Round 55: scoped, two-phase supporting-document resolution -- see
     # pipeline/supporting_doc_resolution.py's module docstring. Phase 1

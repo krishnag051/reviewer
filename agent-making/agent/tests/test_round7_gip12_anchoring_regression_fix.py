@@ -64,13 +64,18 @@ def test_merge_never_removes_a_page_judgment_found_on_its_own():
     assert 40 in merged["page"]
 
 
-def test_merge_leaves_single_page_findings_untouched():
-    """Only the two documented multi-page shapes are merged into --
-    a genuinely single-citation finding is left alone rather than having
-    an unsupported shape invented for it."""
+def test_merge_upgrades_a_single_page_finding_when_pass1_has_more_real_pages():
+    """Round 13 real fix: a single-page result USED to be left untouched
+    here (the original, over-conservative version of this test) -- a
+    real live run found that this silently let a clean single-page
+    result never receive Pass 1's floor at all. Now upgraded to the
+    list[int] shape, since that's already a documented, supported page
+    shape elsewhere in this same function -- see
+    test_round13_gip12_single_page_upgrade.py for the dedicated coverage.
+    """
     judgment_result = {"result": "pass", "evidence": "x", "page": 27, "confidence": 0.8}
     merged = _merge_gip12_candidate_pages(judgment_result, _candidates())
-    assert merged == judgment_result
+    assert merged["page"] == [27, 28, 29, 30, 31, 32, 33]
 
 
 def test_merge_no_op_with_no_candidates():

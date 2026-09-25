@@ -319,17 +319,25 @@ def _stabilized_uncertain_finding(rule_id: str | None = None, fields: dict | Non
 
 def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple], fields: dict | None = None) -> dict:
     """Round 7 real fix (QA-GIP-12 regression) -- see the call site's own
-    comment above for why this exists. Only handles the two documented
-    multi-page shapes (`page` as list[int]; `evidence` as the
-    `[{page, detail}, ...]` list form -- see merge.py's own docstrings for
-    both) since those are the only shapes a "pages this finding covers"
-    union is well-defined for; a single-page `page`/plain-string
-    `evidence` finding is left completely untouched; adding candidate
-    pages to a genuinely single-citation finding would be inventing a
-    shape the rest of the pipeline (merge.py, humanize.py, the CSV
-    export) was never built to expect from this rule, not a safe
-    "floor" — case 3 in this fix's own report, an acceptable limitation
-    on THIS round's scope, not silently dropped.
+    comment above for why this exists. Handles all three real shapes
+    `page`/`evidence` can take here: `page` as list[int]; `evidence` as
+    the `[{page, detail}, ...]` list form; and (Round 13 addition) `page`
+    as a single int with plain-string `evidence` -- upgraded to the
+    list[int] form when Pass 1 has real pages beyond that one, since
+    list[int] and plain-string evidence are both already-documented,
+    already-supported shapes (merge.py's own docstrings), not an
+    invented one. A genuinely single-page result with nothing else for
+    Pass 1 to add is returned byte-identical, unchanged.
+
+    Round 13 real fix, root cause of the reported regression: the actual
+    coverage gap traced this round turned out to be a test-harness bug
+    in a PRIOR round's own diagnostic reconstruction (missing all 12 of
+    the real target pages' text entirely, silently replaced by generic
+    filler) -- not a defect in this merge logic itself, which a corrected
+    real run confirmed already unions Pass 1's real candidates in
+    correctly for the list-shaped cases. The single-page-int gap fixed
+    here is a genuinely new, real, additional gap this round's corrected
+    real run then surfaced on top of that.
 
     Round 9 real fix: `fields` (optional, default None for backward
     compatibility with any existing caller/test) enables a second real
@@ -378,7 +386,18 @@ def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple], fields: 
         # hallucination check -- still gets a real entry synthesized for
         # it below, instead of being treated as "already represented"
         # when it never actually was.
-        page_only_pages = set(result.get("page")) - evidence_pages if isinstance(result.get("page"), list) else set()
+        # Round 13 real fix: `page` can ALSO come back as a bare single
+        # int while `evidence` is (possibly empty) list-shaped -- a real
+        # live run hit exactly this (evidence: [], page: 23) -- so this
+        # now normalizes either shape into the same page-only-pages set,
+        # not just the list[int] case Round 12's own fix only covered.
+        raw_page = result.get("page")
+        if isinstance(raw_page, list):
+            page_only_pages = set(raw_page) - evidence_pages
+        elif isinstance(raw_page, int):
+            page_only_pages = {raw_page} - evidence_pages
+        else:
+            page_only_pages = set()
         all_judgment_pages = evidence_pages | page_only_pages
         kept_judgment_pages = _prune_hallucinated(all_judgment_pages)
         pruned = all_judgment_pages - kept_judgment_pages
@@ -426,7 +445,121 @@ def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple], fields: 
         extended_evidence = f"{evidence} {' '.join(notes)}" if isinstance(evidence, str) and notes else evidence
         return {**result, "page": final_pages, "evidence": extended_evidence}
 
+    # Round 13 real fix (mc_current.pdf, real live run): confirmed real
+    # gap -- a winning reconciled result can come back with `page` as a
+    # single int and `evidence` as a plain string (the genuinely common
+    # shape for a clean pass/fail with one representative citation), and
+    # this function used to leave it completely untouched, on the theory
+    # that upgrading it would invent an unsupported shape. That reasoning
+    # was wrong: `page` as list[int] and a plain-string `evidence` are
+    # BOTH already-documented, already-supported shapes (merge.py's own
+    # docstrings) -- upgrading a single int into that list form when Pass
+    # 1 has real additional pages isn't inventing anything new, it's
+    # using a shape this pipeline was already built to expect. Confirmed
+    # live: without this, a clean single-page "fail" result silently
+    # never got Pass 1's floor applied AT ALL, regardless of how many
+    # real pages Pass 1 found -- the exact "evidence text and page list
+    # don't agree" gap this round's own report named directly.
+    if isinstance(result.get("page"), int):
+        single_page = result["page"]
+        kept = _prune_hallucinated({single_page})
+        missing = sorted(candidate_pages - kept)
+        if not missing and single_page in kept:
+            return result
+        final_pages = sorted((kept | candidate_pages))
+        if not final_pages:
+            return result
+        evidence = result.get("evidence")
+        notes = []
+        if missing:
+            missing_desc = "; ".join(
+                f"page {page}: goal '{candidates_by_page[page][0]}' contains the literal term "
+                f"'{candidates_by_page[page][1]}'" for page in missing
+            )
+            notes.append(f"Deterministic keyword scan also confirmed these additional real pages: {missing_desc}.")
+        if single_page not in kept:
+            notes.append(
+                f"Page {single_page} was removed -- checked directly against the document and found no "
+                f"literal verbal-operant term anywhere on that page."
+            )
+        extended_evidence = f"{evidence} {' '.join(notes)}" if isinstance(evidence, str) and notes else evidence
+        return {**result, "page": final_pages, "evidence": extended_evidence}
+
     return result
+
+
+def _inject_gip12_candidate_context(
+    extracted_fields: dict, applicable_rules: list[dict], rules_by_id: dict[str, dict],
+) -> tuple[list[tuple], list[dict], dict[str, dict]]:
+    """QA-GIP-12 real fix (Round 6, Zaith 9-2026-U1): two-pass hybrid,
+    Pass 2 -- feed Pass 1's deterministic literal-verbal-operant-term
+    page scan (fields_module.gip12_verbal_operant_candidate_pages) into
+    the judgment call as forced additional context, using the SAME
+    extra_context convention pipeline/api.py's own extra_rule_context
+    param already established (judge.py::_build_prompt reads it as
+    "additional_real_data"). A staging run confirmed judgment alone
+    missed several real literal occurrences on the real Zaith document
+    (7 of ~12 real pages found); this gives the judge an explicit,
+    page-numbered floor to confirm and build on, closing that specific
+    miss without pretending the whole rule is deterministic -- a goal
+    that's operant-SHAPED without using one of these 4 literal words
+    still needs real judgment, and still gets it, same as before.
+
+    Extracted into its own function in Round 13 -- REAL BUG FOUND AND
+    FIXED: this logic (and the matching _merge_gip12_candidate_pages call
+    after judgment returns) existed ONLY inline in run_full_pipeline. It
+    was never duplicated into pipeline/api.py::_run_pipeline_with_extras,
+    which is a hand-maintained COPY of run_full_pipeline's own
+    orchestration (see that function's own docstring) -- and, since
+    supporting_doc_path is mandatory on every real backend upload (Round
+    51), _run_pipeline_with_extras, not run_full_pipeline, is the
+    orchestration path every real upload actually takes. This is the
+    exact same class of bug already found and fixed once before for the
+    STABILIZED_UNCERTAIN_RULE_IDS filter (see _run_pipeline_with_extras's
+    own comment on that fix) -- confirmed real: QA-GIP-12's entire
+    two-pass hybrid mechanism (Rounds 6-12) has never actually run
+    against real production traffic at all, only against direct
+    run_full_pipeline callers and this round's own diagnostic scripts.
+    Pulling this into one shared function that BOTH orchestration paths
+    call closes the gap structurally, not just for today -- a future
+    change to this logic can no longer silently apply to only one path.
+
+    Returns `(gip12_candidates, applicable_rules, rules_by_id)` --
+    `applicable_rules`/`rules_by_id` are returned back out (not mutated
+    in place) since callers hold their own references to the lists/dicts
+    passed in and Python's own copy-on-write-via-rebinding here means the
+    caller must reassign, exactly as run_full_pipeline's own pre-Round-13
+    inline version already required of itself.
+    """
+    gip12_candidates = fields_module.gip12_verbal_operant_candidate_pages(extracted_fields)
+    if gip12_candidates and "QA-GIP-12" in rules_by_id:
+        candidate_lines = "; ".join(
+            f"page {page if page is not None else '?'}: goal '{name}' contains the literal term '{term}'"
+            for page, name, term in gip12_candidates
+        )
+        # Round 7 real fix: reworded after a confirmed regression -- the
+        # previous wording ("treat this as a floor... must be included")
+        # is consistent with the model anchoring on this list and citing
+        # FEWER pages than it found unaided before this context existed
+        # (real evidence: 5 pages after vs. 7 before, all 5 a subset of
+        # the 7). This is now explicitly framed as a starting point to
+        # read PAST, not a list to reconcile down to, and the actual
+        # completeness guarantee is enforced in code afterward
+        # (_merge_gip12_candidate_pages below), not left to the model to
+        # honor on its own.
+        gip12_context = (
+            "As a starting point (not a complete list -- read the full document yourself for more), a "
+            f"deterministic keyword scan already found a literal verbal-operant term on these pages: "
+            f"{candidate_lines}. Your own citation list should be AT LEAST this long, most likely longer: "
+            "read the whole document for every goal naming an operant (mand/tact/intraverbal/echoic) "
+            "explicitly OR phrased that way without the literal word (e.g. 'will request...' counts as "
+            "mand-shaped)."
+        )
+        rules_by_id = {**rules_by_id, "QA-GIP-12": {**rules_by_id["QA-GIP-12"], "extra_context": gip12_context}}
+        applicable_rules = [
+            rules_by_id["QA-GIP-12"] if r["rule_id"] == "QA-GIP-12" else r for r in applicable_rules
+        ]
+    return gip12_candidates, applicable_rules, rules_by_id
 
 
 def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
@@ -473,48 +606,14 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
 
     rules_by_id = {r["rule_id"]: r for r in rules}
 
-    # QA-GIP-12 real fix (Round 6, Zaith 9-2026-U1): two-pass hybrid, Pass
-    # 2 -- feed Pass 1's deterministic literal-verbal-operant-term page
-    # scan (fields_module.gip12_verbal_operant_candidate_pages) into the
-    # judgment call as forced additional context, using the SAME
-    # extra_context convention pipeline/api.py's own extra_rule_context
-    # param already established (judge.py::_build_prompt reads it as
-    # "additional_real_data"). A staging run confirmed judgment alone
-    # missed several real literal occurrences on the real Zaith document
-    # (7 of ~12 real pages found); this gives the judge an explicit,
-    # page-numbered floor to confirm and build on, closing that specific
-    # miss without pretending the whole rule is deterministic -- a goal
-    # that's operant-SHAPED without using one of these 4 literal words
-    # (see this function's own docstring) still needs real judgment, and
-    # still gets it, same as before.
-    gip12_candidates = fields_module.gip12_verbal_operant_candidate_pages(extracted_fields)
-    if gip12_candidates and "QA-GIP-12" in rules_by_id:
-        candidate_lines = "; ".join(
-            f"page {page if page is not None else '?'}: goal '{name}' contains the literal term '{term}'"
-            for page, name, term in gip12_candidates
-        )
-        # Round 7 real fix: reworded after a confirmed regression -- the
-        # previous wording ("treat this as a floor... must be included")
-        # is consistent with the model anchoring on this list and citing
-        # FEWER pages than it found unaided before this context existed
-        # (real evidence: 5 pages after vs. 7 before, all 5 a subset of
-        # the 7). This is now explicitly framed as a starting point to
-        # read PAST, not a list to reconcile down to, and the actual
-        # completeness guarantee is enforced in code afterward
-        # (_merge_gip12_candidate_pages below), not left to the model to
-        # honor on its own.
-        gip12_context = (
-            "As a starting point (not a complete list -- read the full document yourself for more), a "
-            f"deterministic keyword scan already found a literal verbal-operant term on these pages: "
-            f"{candidate_lines}. Your own citation list should be AT LEAST this long, most likely longer: "
-            "read the whole document for every goal naming an operant (mand/tact/intraverbal/echoic) "
-            "explicitly OR phrased that way without the literal word (e.g. 'will request...' counts as "
-            "mand-shaped)."
-        )
-        rules_by_id["QA-GIP-12"] = {**rules_by_id["QA-GIP-12"], "extra_context": gip12_context}
-        applicable_rules = [
-            rules_by_id["QA-GIP-12"] if r["rule_id"] == "QA-GIP-12" else r for r in applicable_rules
-        ]
+    # QA-GIP-12 real fix (Round 6, Zaith 9-2026-U1; extracted into its own
+    # shared helper in Round 13 -- see that function's own docstring for
+    # why): two-pass hybrid, Pass 2 -- feed Pass 1's deterministic
+    # literal-verbal-operant-term page scan into the judgment call as
+    # forced additional context.
+    gip12_candidates, applicable_rules, rules_by_id = _inject_gip12_candidate_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
 
     # Any deterministic finding that came back not_checkable/uncertain, or
     # with confidence below the escalation threshold, gets a second look from
