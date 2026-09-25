@@ -380,11 +380,130 @@ def _find_blank_labels_with_offsets(text: str) -> list[tuple[str, int]]:
     return blanks
 
 
+# Fix Round (real root-cause, mc_current.pdf/old.pdf), Item 1: root-caused
+# a real QA-RPT-05 gap -- the previous TP's own PDF text extraction wraps
+# this exact label across a line break ("Authorization Dates\nRequested:"),
+# while the current TP's extracts it on one line ("Authorization Dates
+# Requested:"). Every one of these _find_labeled_date* helpers used to
+# build its label pattern via a single `re.escape(label)`, which requires
+# the label's own literal single spaces -- a newline (or any other run of
+# whitespace) between two of the label's words never matched at all. Purely
+# additive: a label that already appears on one line, single-spaced,
+# matches identically; only a label split across whitespace/newlines newly
+# matches, where before it produced nothing. Shared by every checker that
+# calls these four helpers (not just QA-RPT-05), since the same PDF-layout
+# line-wrap could split any multi-word label the same way.
+def _label_pattern(label: str) -> str:
+    """Builds a label's own regex piece, tolerant of any whitespace
+    (including newlines) between the label's words instead of requiring
+    the label's own literal single spaces -- see the comment above."""
+    return r"\s+".join(re.escape(word) for word in label.split())
+
+
+# Fix Round (Full Rule-by-Rule Fix List, Part A) -- the shared previous-TP
+# field extractor. Every rule that compares the current TP against a
+# previous TP (QA-RPT-05, QA-MAST-01/02/03, QA-PROB-04) had its own
+# hand-written "go find this label" logic, and each broke in a different
+# way: a line-break splitting a label (QA-RPT-05/QA-MAST-01), a guard that
+# couldn't tell "confirmed empty" from "never found" (QA-MAST-02), a
+# two-column table bleeding all its entries under one label instead of
+# one label per entry (QA-PROB-04). One shared primitive, built once and
+# tested once, closes all of these at the source instead of leaving each
+# rule to independently rediscover the same edge cases.
+DEFAULT_SECTION_STOP_LABELS = (
+    "Goals in Progress:", "Target Goal:", "Target Name:", "Goal Progress:",
+    "Areas of Focus", "Clinical Interpretation", "Problem Area:", "Problem Areas:",
+    "As evidenced by:", "Assessment of Current Functioning:",
+)
+
+
+def find_labeled_sections(
+    text: str, label: str, *, stop_labels: tuple[str, ...] | None = DEFAULT_SECTION_STOP_LABELS,
+    max_length: int = 20000, require_colon: bool = True, require_line_start: bool = False,
+) -> list[dict]:
+    """The shared primitive: finds every occurrence of "{label}:" in
+    `text` (whitespace/newline-tolerant between the label's own words --
+    same `_label_pattern` every other checker in this file already uses),
+    and returns one dict per occurrence: {"text": str, "offset": int},
+    where "text" is everything from right after that occurrence's own
+    colon up to whichever comes first: any of `stop_labels`, the label's
+    OWN next occurrence, or `max_length` characters. "text" is NOT
+    stripped -- callers decide what "real content" means for their own
+    field (a bare, un-stripped section is exactly how a confirmed-empty
+    section looks: real whitespace, no real words).
+
+    Returns [] only when the label itself never appears anywhere in
+    `text` -- this is the one thing every caller must check FIRST,
+    before ever looking at an entry's own "text": an empty RETURN LIST
+    means "never found"; a non-empty list whose entry's "text" happens to
+    be blank means "found, and confirmed empty" -- two different real
+    document states that must never collapse into the same answer (the
+    exact bug that broke QA-MAST-02: its old guard treated "extracted
+    name list is empty" as "can't check," when a document's own
+    "Mastered Goals:" section can be found and genuinely, confirmedly
+    have nothing under it).
+
+    Multiple real occurrences of the same label (e.g. a document with
+    "Mastered Goals:" under both Skill Acquisition and Parent/Caregiver)
+    are all returned, in document order -- never just the first. A label
+    that only appears ONCE for an entire table, with several real
+    entries' content concatenated beneath it (a two-column PDF table
+    extracted column-by-column instead of row-by-row -- the QA-PROB-04
+    "As evidenced by:" shape), is handled the same way any other
+    multi-line value is: as one occurrence whose own "text" happens to be
+    longer and contain several entries' worth of content -- callers that
+    need to split that content further do so on their own terms, but
+    they at least always receive the real, full text instead of losing
+    everything past the first "row."
+    """
+    colon_piece = r"\s*:?" if not require_colon else r"\s*:"
+    # Fix Round (Full Rule-by-Rule Fix List), Item 4: require_line_start
+    # guards against the label's own words recurring mid-sentence
+    # elsewhere in the document (real shape: "Barriers to Treatment:"
+    # as a real section header, vs. "...no noted barriers to treatment
+    # at this time" -- the SAME words, in prose, not a real second
+    # section -- which would otherwise get treated as this label's own
+    # "next occurrence" and truncate the first section's real content).
+    line_start_piece = r"(?m:^[ \t]*)" if require_line_start else ""
+    pattern = re.compile(line_start_piece + _label_pattern(label) + colon_piece, re.IGNORECASE)
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return []
+    stop_pattern = None
+    if stop_labels:
+        own_label_lower = label.strip().lower()
+        other_stops = [s for s in stop_labels if s.rstrip(":").strip().lower() != own_label_lower]
+        if other_stops:
+            stop_pattern = re.compile(
+                "|".join(_label_pattern(s.rstrip(":")) + r"\s*:" for s in other_stops), re.IGNORECASE,
+            )
+    sections = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = min(start + max_length, matches[i + 1].start() if i + 1 < len(matches) else len(text))
+        section_text = text[start:end]
+        if stop_pattern:
+            stop_m = stop_pattern.search(section_text)
+            if stop_m:
+                section_text = section_text[:stop_m.start()]
+        # Skip leading whitespace for both "text" and "offset" -- same
+        # "[ \t]*" skip-before-capture convention the original per-rule
+        # regexes used, so offsets point at the real content's own first
+        # character, not at the whitespace between the label's colon and
+        # it. Trailing whitespace is left alone (that's exactly what a
+        # confirmed-empty section's own "text" looks like after this
+        # skip -- still all whitespace, still resolves to "" once a
+        # caller strips it).
+        skip = len(section_text) - len(section_text.lstrip())
+        sections.append({"text": section_text[skip:], "offset": start + skip})
+    return sections
+
+
 def _find_labeled_date(text: str, label: str) -> str | None:
     """Finds a single MM/DD/YYYY date following a "Label:" field, e.g.
     "Date of Most Recent Diagnosis: 11/20/2024". Returns the raw matched
     date string, or None if the label or a date after it isn't found."""
-    m = re.search(rf"{re.escape(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})", text, re.IGNORECASE)
+    m = re.search(rf"{_label_pattern(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})", text, re.IGNORECASE)
     return m.group(1) if m else None
 
 
@@ -394,8 +513,24 @@ def _find_labeled_date_with_offset(text: str, label: str) -> tuple[str, int] | N
     callers can resolve a real page via _page_for_offset instead of the
     None several checkers used to hardcode -- the position was always
     right there in the regex match, just never carried through."""
-    m = re.search(rf"{re.escape(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})", text, re.IGNORECASE)
+    m = re.search(rf"{_label_pattern(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})", text, re.IGNORECASE)
     return (m.group(1), m.start()) if m else None
+
+
+# Fix Round (Matthielly Cruz 9-2026-U1), Item 4: root-caused a real
+# extraction gap against QA-RPT-05 -- ma'am confirmed "Authorization Dates
+# Requested" is genuinely present on both TPs, but this exact regex (the
+# ONLY thing both _check_RPT05's own params-fallback path and the
+# previous-TP comparison rely on) required the literal word "to" between
+# the two dates, with no tolerance for any other real-document separator.
+# Without her actual document, the date FORMAT itself (MM/DD/YYYY) isn't
+# touched here -- every other real document in this engagement has used
+# that exact format consistently, so changing it would be guessing. The
+# separator is the one part confirmed genuinely narrow and safe to widen:
+# this is purely additive (a document that already matched "to" still
+# matches identically; only documents using a different separator word/
+# dash newly match, where before they produced nothing at all).
+_DATE_RANGE_SEPARATOR_RE = r"(?:to|through|until|-|–|—)"
 
 
 def _find_labeled_date_range(text: str, label: str) -> tuple[str, str] | None:
@@ -403,7 +538,7 @@ def _find_labeled_date_range(text: str, label: str) -> tuple[str, str] | None:
     Dates Requested: 02/21/2026 to 08/21/2026". Returns (start, end) as raw
     matched date strings, or None if not found."""
     m = re.search(
-        rf"{re.escape(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})\s*to\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})",
+        rf"{_label_pattern(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})\s*{_DATE_RANGE_SEPARATOR_RE}\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})",
         text, re.IGNORECASE,
     )
     return (m.group(1), m.group(2)) if m else None
@@ -414,7 +549,7 @@ def _find_labeled_date_range_with_offset(text: str, label: str) -> tuple[str, st
     _find_labeled_date_range, plus the match's character offset -- see
     _find_labeled_date_with_offset's own docstring for why this exists."""
     m = re.search(
-        rf"{re.escape(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})\s*to\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})",
+        rf"{_label_pattern(label)}\s*:?\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})\s*{_DATE_RANGE_SEPARATOR_RE}\s*(\d{{1,2}}/\d{{1,2}}/\d{{4}})",
         text, re.IGNORECASE,
     )
     return (m.group(1), m.group(2), m.start()) if m else None
@@ -839,9 +974,22 @@ def _looks_like_structured_matrix(text: str) -> bool:
     return label_value_lines >= 2 and (label_value_lines / len(lines)) >= 0.5
 
 
+# Fix Round (Matthielly Cruz 9-2026-U1), Item 7: root-caused a real
+# extraction gap against QA-PROB-04 -- ma'am confirmed "As evidenced by:"
+# blocks with real content exist on both TPs, but this exact regex had NO
+# re.IGNORECASE (a real document rendering the label "As Evidenced By:" or
+# any other capitalization would silently match zero blocks) and required
+# a literal colon with no tolerance for its absence. Both widened, purely
+# additively (a document already matching the exact original casing/colon
+# matches identically; only documents using different capitalization or no
+# colon newly match, where before they produced nothing). Shared by
+# QA-PROB-01 and QA-PROB-04 -- verified via this round's own required
+# before/after 179-rule real-document comparison that QA-PROB-01's result
+# on the test document is unaffected by this change.
 _EVIDENCED_BY_BLOCK_RE = re.compile(
-    r"As evidenced by:[ \t]*([\s\S]{1,3000}?)"
-    r"(?=\n\s*(?:Problem Area:|Problem Areas:|As evidenced by:|Areas of Focus|Goal Progress:)|\Z)",
+    r"As evidenced by:?[ \t]*([\s\S]{1,3000}?)"
+    r"(?=\n\s*(?:Problem Area:|Problem Areas:|As evidenced by:?|Areas of Focus|Goal Progress:)|\Z)",
+    re.IGNORECASE,
 )
 
 
@@ -1044,6 +1192,51 @@ def _check_RPT01(rule: dict, fields: dict) -> tuple:
     # summary a reviewer would have to decode.
     evidence = [
         {"page": page, "detail": f"Possible unfilled field(s): {labels}."}
+        for page, labels in blanks
+    ]
+    return "fail", evidence, None, 0.65
+
+
+def _check_TEMP06(rule: dict, fields: dict) -> tuple:
+    """QA-TEMP-06: "Empty fields should be marked N/A rather than left
+    blank." Fix Round (Matthielly Cruz 9-2026-U1), Item 3: REAL BUG FOUND
+    AND FIXED -- real evidence showed multiple blank fields across
+    multiple pages named inline in the evidence TEXT ("'Report
+    Information:' (page 1)... 'Provider Information:' (page 1)...'"),
+    but the finding's own structured `page` field carried only one page
+    number. Root cause: this rule was pure judgment with no deterministic
+    checker at all -- the only fields.py involvement was
+    _temp06_context_preview, a hint string fed to the judge, never the
+    mechanism that sets the finding's actual `page`. judge.py's own
+    schema already supports a real {page, detail} multi-page array for
+    exactly this shape, but nothing forced the model to use it here.
+
+    Converted to a real deterministic checker instead, reusing the EXACT
+    same pattern QA-RPT-01 already trusts for a real (not preview-only)
+    fail verdict on the identical _find_blank_labels_with_offsets
+    detector: group every blank label by its real page, one {page,
+    detail} evidence entry per page when 2+ pages are implicated -- never
+    a single page collapsing multiple real locations.
+    """
+    found = _find_blank_labels_with_offsets(fields["full_text"])
+    if not found:
+        return "pass", "No blank/unfilled fields detected -- nothing found that should read N/A instead.", None, 0.6
+
+    by_page: dict[int | None, list[str]] = {}
+    for label, offset in found:
+        page = _page_for_offset(fields, offset)
+        by_page.setdefault(page, []).append(label)
+    blanks = sorted(by_page.items(), key=lambda kv: (kv[0] is None, kv[0]))
+
+    if len(blanks) == 1:
+        page, labels = blanks[0]
+        return (
+            "fail",
+            f"Blank/unfilled field(s) found that should read N/A instead: {labels}. [Page {page}]",
+            page, 0.65,
+        )
+    evidence = [
+        {"page": page, "detail": f"Blank/unfilled field(s) found that should read N/A instead: {labels}."}
         for page, labels in blanks
     ]
     return "fail", evidence, None, 0.65
@@ -1536,6 +1729,83 @@ def _check_SCH03(rule: dict, fields: dict) -> tuple:
         "this rule's own real overlap-detection logic (weekly-schedule-table extraction, "
         "payor in-school exception) isn't built yet -- see blocked_status.",
         None, 0.0,
+    )
+
+
+_SCH09_GENERIC_LOCATION_RE = re.compile(
+    r"^\s*(?:community(?:[\s-]based)?(?:\s+program)?|day\s+program)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _check_SCH09(rule: dict, fields: dict) -> tuple:
+    """QA-SCH-09: "If ABA is provided in a community-based program, the
+    location field should name the specific place, not just say
+    'community' or 'day program' generically." Fix Round (Matthielly
+    Cruz 9-2026-U1), new rule build: Ms. Yachnes's concrete spec --
+    "If it says community in any part of the schedule of ABA services...
+    It would be in the POS under the schedule grid." Real deterministic
+    checker, reusing this rule's own pre-existing evidence extractor's
+    exact POS-field regex (_sch09_context_preview, unmodified): read the
+    POS field, check for the word "community" (case-insensitive); if
+    present, check whether the value is JUST a generic phrasing
+    ("community", "community-based", "community-based program", "day
+    program") or names something more specific (a real place name).
+
+    Healthfirst-specific carve-out (unchanged, still judgment): even when
+    the POS field itself doesn't say "community" at all, Healthfirst
+    patients still need the separate POS-vs-Hours-Requesting-grid
+    mismatch check this rule's own notes already describe (POS says
+    "Home" but the grid shows community-based hours) -- so a non-
+    community POS for a Healthfirst patient still escalates rather than
+    resolving not_applicable; every other payor's non-community POS is a
+    confident not_applicable.
+
+    NOT YET VERIFIED against a real document with an actual community
+    POS entry -- none was available this round. Verified the logic
+    reads correctly against synthetic cases (generic phrasing -> fail,
+    a real named place -> pass, non-community -> not_applicable/
+    escalate per payor) -- flagging plainly that a real community-POS
+    document is still needed for full confidence.
+    """
+    text = fields["full_text"]
+    payor = fields.get("payor")
+    m = re.search(r"POS[^\n:]{0,10}:[ \t]*([^\n]+)", text, re.IGNORECASE)
+    if not m:
+        return (
+            "not_checkable",
+            "Could not find a 'POS:' (place of service) field in the schedule to check.",
+            None, 0.0,
+        )
+    value = m.group(1).strip()
+    page = _page_for_offset(fields, m.start())
+    if "community" not in value.lower():
+        if payor == "Healthfirst":
+            return (
+                "not_checkable",
+                f"POS/location field reads {value!r} -- not community-based on its face, but escalating "
+                f"for the Healthfirst-specific check against whether the Hours Requesting grid shows "
+                f"community-based hours anyway.",
+                page, 0.0,
+            )
+        return (
+            "not_applicable",
+            f"POS/location field reads {value!r} -- not a community-based program, nothing for this "
+            f"rule to check.",
+            page, 0.85,
+        )
+    if _SCH09_GENERIC_LOCATION_RE.match(value):
+        return (
+            "fail",
+            f"POS/location field reads {value!r} -- names the setting generically ('community'/'day "
+            f"program') rather than the specific community location.",
+            page, 0.8,
+        )
+    return (
+        "pass",
+        f"POS/location field reads {value!r} -- names a specific community location, not just "
+        f"'community' or 'day program' generically.",
+        page, 0.8,
     )
 
 
@@ -2354,6 +2624,31 @@ VISION_ELIGIBLE_RULE_SECTIONS: dict[str, str] = {
     "QA-GIP-32": "gip_graph",
     "QA-GIP-34": "gip_graph",
     "QA-GIP-35": "gip_graph",
+    # Fix Round (Wire the Real Graph Image), Items 1-3: QA-GIP-28 ("fewer
+    # than 3 real data points -> rationale"), ANT-02 and EMP-02 ("Graph
+    # data within 30 days of authorization start date") all ask a
+    # question about a goal's own embedded "Graph:" image -- the exact
+    # same per-goal image QA-GIP-32/34/35 already read -- but were never
+    # registered here at all, so vision_eligible_pages() never rendered
+    # their needed pages and the judgment call for all three ran fully
+    # blind, with no image ever attached. Root cause was a missing
+    # registration, not a broken renderer -- same "gip_graph" section,
+    # no new finder needed, per this round's own instruction to reuse the
+    # existing pattern rather than build new image-handling logic.
+    # EMP-02 is labeled check_type="deterministic" with no DET_CHECKS
+    # entry (deliberately unbuilt -- see its own blocked_status/notes on
+    # a separate, real scope-ambiguity question), so it always escalates
+    # to judgment via the no-checker fallback (confidence 0.0) -- this
+    # registration is what makes that escalation actually see the image.
+    "QA-GIP-28": "gip_graph",
+    "ANT-02": "gip_graph",
+    "EMP-02": "gip_graph",
+    # Fix Round (Full Rule-by-Rule Fix List), Item 11: QA-GIP-29 ("if no
+    # graph is included, is a rationale provided") was un-pinned from
+    # STABILIZED_UNCERTAIN_RULE_IDS this round (see pipeline/__init__.py)
+    # -- registering it here is what actually lets its now-real judgment
+    # call see the per-goal graph image, instead of guessing blind.
+    "QA-GIP-29": "gip_graph",
     # Fix Round, Section 1 (2026-08-27): QA-PAR-03 ("parent training >4
     # data points per graph") reads the SAME per-goal "Graph:" image as
     # QA-GIP-02/32 -- parent-training goals are goal blocks like any
@@ -3432,6 +3727,76 @@ def _goal_block_starts(text: str) -> list[int]:
     return [m.start() for m in re.finditer(r"Target Goal:|Target Name:", text)]
 
 
+_VERBAL_OPERANT_TERMS_RE = re.compile(r"\b(mand|tact|intraverbal|echoic)s?\b", re.IGNORECASE)
+
+
+def gip12_verbal_operant_candidate_pages(fields: dict) -> list[tuple[int | None, str, str]]:
+    """QA-GIP-12 real fix (Round 6, Zaith 9-2026-U1): Pass 1 of a two-pass
+    hybrid. QA-GIP-12 ("Goals include verbal operant/behavioral term") is
+    pure judgment -- no code exists to convert it to a deterministic
+    checker outright, because its own rules.json notes document a real,
+    confirmed-necessary semantic exception: a goal can be operant-SHAPED
+    ("will request...") and correctly pass without ever using one of the
+    4 literal words (mand/tact/intraverbal/echoic) -- recognizing that
+    shape genuinely requires judgment, not a keyword scan. A staging run
+    against the real Zaith document still only covered 7 of the ~12 real
+    pages containing a literal verbal-operant term when judgment worked
+    from the raw document alone.
+
+    This function is the deterministic FLOOR that closes that specific
+    gap: scan every goal block ('Target Goal:'/'Target Name:') for a
+    literal verbal-operant term and return its real page, goal name, and
+    matched term, in document order. It does not resolve the rule by
+    itself (see run_full_pipeline's own use of this: the result is fed
+    into QA-GIP-12's judgment call as forced additional context, not used
+    to short-circuit the judgment call), because the literal-keyword floor
+    and the operant-shaped-without-the-word residual are two genuinely
+    different things -- this closes the "judgment missed a literal
+    occurrence" failure mode specifically, not the whole rule.
+    """
+    text = fields["full_text"]
+    # Round 8 real fix: uses its OWN marker scan, not the shared
+    # _goal_block_starts (which only recognizes "Target Goal:"/"Target
+    # Name:") -- this rule's own real coverage gap (12 target pages, only
+    # 4 found) is also consistent with real goals marked "Program Goal:"
+    # only (confirmed real shape elsewhere in this codebase: HF-05's own
+    # fix note on mc_current.pdf, "Program Goal: eye contact" / "Target
+    # Goal: Parent will make eye contact..." goals that have NO "Target
+    # Goal:"/"Target Name:" marker of their own at all). Kept local to
+    # this function rather than changing _goal_block_starts itself, which
+    # ~10 OTHER rules' checkers also call and this round must not touch.
+    starts = [m.start() for m in re.finditer(r"Target Goal:|Target Name:|Program Goal:", text)]
+    if not starts:
+        return []
+    starts = starts + [len(text)]
+    hits = []
+    for i in range(len(starts) - 1):
+        block = text[starts[i]:starts[i + 1]]
+        for marker in ("Target Goal:", "Target Name:", "Program Goal:"):
+            if block.startswith(marker):
+                marker_len = len(marker)
+                break
+        else:
+            marker_len = 0
+        goal_name = block[marker_len:].split("\n", 1)[0].strip()[:60]
+        # Round 8 real fix (mc_current.pdf, real page-coverage gap): this
+        # used to take only the block's FIRST match (.search()) and report
+        # it under the block's own START page (_page_for_offset(starts[i]))
+        # -- wrong whenever a goal's real content (Baseline/Current Data/
+        # Status/Graph, filled out over the pages AFTER "Target Goal:"
+        # itself) spans multiple pages and the actual operant-term mention
+        # sits on a LATER page than the block's start, or when a block
+        # contains more than one real mention across different pages.
+        # Every real match now gets its OWN real page, computed from the
+        # match's own offset within the full document, not the enclosing
+        # block's start -- confirmed real evidence (12 real target pages,
+        # only 4 found) is consistent with exactly this class of miss.
+        for m in _VERBAL_OPERANT_TERMS_RE.finditer(block):
+            match_page = _page_for_offset(fields, starts[i] + m.start())
+            hits.append((match_page, goal_name, m.group(1).lower()))
+    return hits
+
+
 def _check_GIP23(rule: dict, fields: dict) -> tuple:
     """Round 92 (2026-08-14): HYBRID deterministic-then-judgment checker,
     same pattern as QA-PROB-02 (see that rule's own notes). Confirmed
@@ -3520,12 +3885,15 @@ def _check_GIP07(rule: dict, fields: dict) -> tuple:
 
     checked = 0
     old_goals = []
+    first_checked_offset = None
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         m = re.search(r"Date Initiated:[ \t\xa0]*(\d{1,2}/\d{1,2}/\d{4})", block)
         if not m:
             continue
         checked += 1
+        if first_checked_offset is None:
+            first_checked_offset = goal_starts[i]
         initiated = datetime.strptime(m.group(1), "%m/%d/%Y")
         six_months_out = _add_months(initiated, 6)
         if six_months_out <= report_end:
@@ -3541,14 +3909,23 @@ def _check_GIP07(rule: dict, fields: dict) -> tuple:
             "not_applicable",
             f"None of the {checked} goal(s) with a Date Initiated are open 6 months or more as of "
             f"the current report's end date ({report_range[1]}) -- this rule doesn't apply.",
-            None, 0.85,
+            _page_for_offset(fields, first_checked_offset), 0.85,
         )
+    # Fix Round (Full Rule-by-Rule Fix List), Item 12: she confirmed the
+    # rule LOGIC is correct -- she just wants the page number to point
+    # specifically to where a rationale for an old goal would actually
+    # live (this document type's "Skill Acquisition Summary and
+    # Rationale:" section), not a broad goal-block page range. Falls
+    # back to the old goal's own page if that section can't be found.
+    rationale_sections = find_labeled_sections(text, "Skill Acquisition Summary and Rationale")
+    rationale_page = _page_for_offset(fields, rationale_sections[0]["offset"]) if rationale_sections else None
+    page = rationale_page or _page_for_offset(fields, first_checked_offset)
     return (
         "not_checkable",
         f"{len(old_goals)} of {checked} goal(s) are open 6 months or more as of the current report's "
         f"end date ({report_range[1]}): {old_goals}. Whether a real rationale is documented for these "
         f"still requires a judgment read.",
-        None, 0.0,
+        page, 0.0,
     )
 
 
@@ -3710,12 +4087,14 @@ def _check_GIP10(rule: dict, fields: dict) -> tuple:
     goal_starts = goal_starts + [len(text)]
     problems = []
     real_goals = 0
+    real_goal_offsets = []
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         sm_m = re.search(r"Sampling Method:[ \t]*([^\n]*)", block)
         if not sm_m:
             continue  # not every block hit is a fully structured goal entry
         real_goals += 1
+        real_goal_offsets.append(goal_starts[i])
         mc_m = re.search(r"Mastery Criteria:[ \t]*", block)
         bl_m = re.search(r"Baseline:[ \t]*", block)
         sm_val = sm_m.group(1).strip()
@@ -3740,11 +4119,18 @@ def _check_GIP10(rule: dict, fields: dict) -> tuple:
     if real_goals == 0:
         return "not_checkable", "No goal blocks with a 'Sampling Method:' field found in this document.", None, 0.0
     if not problems:
+        # Fix Round (Matthielly Cruz 9-2026-U1), Global page-number audit:
+        # REAL BUG FOUND AND FIXED -- this pass branch hardcoded page=None
+        # despite every one of the `real_goals` goals scanned having a
+        # real, known offset (real_goal_offsets, collected above). Cites
+        # every goal's own page now, same as the fail branch already did
+        # for 2+ problems.
+        pages = [_page_for_offset(fields, off) for off in real_goal_offsets]
         return (
             "pass",
             f"All {real_goals} goal(s) with a Sampling Method have a recognized method name "
             f"and non-blank Baseline/Mastery Criteria.",
-            None, 0.85,
+            pages, 0.85,
         )
     if len(problems) == 1:
         page, detail = problems[0]
@@ -3864,12 +4250,14 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     goal_starts = goal_starts + [len(text)]
     problems = []
     total = 0
+    checked_offsets = []
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         mc_m = re.search(r"Mastery Criteria:[ \t]*([^\n]*)", block)
         if not mc_m:
             continue
         total += 1
+        checked_offsets.append(goal_starts[i])
         marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
         goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
 
@@ -3891,10 +4279,15 @@ def _check_GIP16(rule: dict, fields: dict) -> tuple:
     if total == 0:
         return "not_checkable", "No goal blocks with a Mastery Criteria field found.", None, 0.0
     if not problems:
+        # Fix Round (Matthielly Cruz 9-2026-U1), Global page-number audit:
+        # REAL BUG FOUND AND FIXED -- same shape as QA-GIP-10's pass
+        # branch: hardcoded page=None despite every one of the `total`
+        # goals scanned having a real, known offset.
+        pages = [_page_for_offset(fields, off) for off in checked_offsets]
         return (
             "pass",
             f"None of the {total} goal(s)' Mastery Criteria use a zero/near-zero endpoint phrasing.",
-            None, 0.85,
+            pages, 0.85,
         )
     if len(problems) == 1:
         page, detail = problems[0]
@@ -3958,6 +4351,22 @@ _MASTERED_SKILL_WITH_DATE_RE = re.compile(
     r"Name of Skill:[ \t]*([\s\S]{1,400}?)\s*Date Mastered:[ \t]*(\d{1,2}/\d{1,2}/\d{2,4})?",
 )
 
+# Fix Round (real root-cause, mc_current.pdf/old.pdf), Item 2: a second,
+# genuinely different real document template has no "Name of Skill:"/
+# "Date Mastered:" labels at all -- confirmed real text (mc_current.pdf,
+# page 23): "Client will mand for preferred item in sight using mand
+# training to increase communication skills. Date of\nMastery: 8/19/2026"
+# -- a plain goal sentence directly under "Mastered Goals:", terminated by
+# "Date of Mastery:" (note: "Mastery", not "Mastered" -- a different label
+# entirely -- and "Date of"/"Mastery:" land on separate lines after this
+# document's own PDF text extraction, same line-wrap shape as QA-RPT-05's
+# "Authorization Dates\nRequested:"). Tried only as a fallback, when the
+# primary Name-of-Skill/Date-Mastered pattern finds nothing in a given
+# section, so a document using the original template is unaffected.
+_MASTERED_GOAL_DATE_OF_MASTERY_RE = re.compile(
+    r"([\s\S]{1,400}?)Date\s+of\s+Mastery:[ \t]*(\d{1,2}/\d{1,2}/\d{2,4})?",
+)
+
 
 def _extract_mastered_goals_with_dates(text: str) -> list[dict]:
     """Same 'Mastered Goals:' section boundary as
@@ -3970,20 +4379,46 @@ def _extract_mastered_goals_with_dates(text: str) -> list[dict]:
     raw "MM/DD/YYYY"-shaped string as it appears in the document (no date
     parsing/validation here -- that's a future round's job, same as the
     actual comparison logic).
+
+    Fix Round (Matthielly Cruz 9-2026-U1), Items 13-15: REAL BUG FOUND AND
+    FIXED -- ma'am confirmed this document type has TWO separate
+    "Mastered Goals:" sections (one under Parent Training, one under
+    Skill Acquisition), and a real mastered goal in the second section
+    was never being caught. This function used a single `re.search`,
+    which only ever captures the FIRST "Mastered Goals:" occurrence in
+    the whole document -- every goal in a second/third occurrence was
+    silently invisible to QA-MAST-01/QA-MAST-02 (the two rules that read
+    this function's output via previous_tp_extraction.py). Confirmed this
+    was NOT a bug in fields.py::_check_MAST03 itself -- that checker
+    already correctly scans every "Mastered Goals:" occurrence via
+    `re.finditer`, per its own docstring ("a real document has one per
+    goal domain"). This function just never matched that same pattern.
+    Now scans every occurrence, same as _check_MAST03, and concatenates
+    goals across all of them -- a document with only one section is
+    completely unaffected (same single-section result as before).
     """
-    m = re.search(
-        r"Mastered Goals:([\s\S]{0,20000}?)(?:Goals in Progress:|Target Goal:|Target Name:|Goal Progress:|"
-        r"Areas of Focus|Clinical Interpretation)",
-        text,
-    )
-    if not m:
-        return []
-    section = m.group(1)
-    base_offset = m.start(1)
-    return [
-        {"name": sm.group(1).strip(), "date_mastered": sm.group(2), "offset": base_offset + sm.start(1)}
-        for sm in _MASTERED_SKILL_WITH_DATE_RE.finditer(section)
-    ]
+    # Fix Round (Full Rule-by-Rule Fix List, Part A): migrated off this
+    # function's own hand-written re.finditer + stop-boundary scan onto
+    # the shared find_labeled_sections primitive -- same multi-occurrence
+    # behavior (every real "Mastered Goals:" section, not just the
+    # first), now shared with _check_MAST03 instead of drifting from it.
+    entries = []
+    for section in find_labeled_sections(text, "Mastered Goals"):
+        section_text, base_offset = section["text"], section["offset"]
+        section_entries = [
+            {"name": sm.group(1).strip(), "date_mastered": sm.group(2), "offset": base_offset + sm.start(1)}
+            for sm in _MASTERED_SKILL_WITH_DATE_RE.finditer(section_text)
+        ]
+        if not section_entries:
+            # Fallback template -- see _MASTERED_GOAL_DATE_OF_MASTERY_RE's
+            # own comment above.
+            section_entries = [
+                {"name": sm.group(1).strip(), "date_mastered": sm.group(2), "offset": base_offset + sm.start(1)}
+                for sm in _MASTERED_GOAL_DATE_OF_MASTERY_RE.finditer(section_text)
+                if sm.group(1).strip()
+            ]
+        entries.extend(section_entries)
+    return entries
 
 
 # Previous TP round (extraction plumbing only): "Problem Area:"/"Problem
@@ -4028,10 +4463,16 @@ def _extract_problem_areas(text: str) -> list[dict]:
     genuinely is "every Problem Area category label's own rubric text," just
     not what a cross-document identity check needs.
     """
+    # Fix Round (Full Rule-by-Rule Fix List, Part A): migrated onto the
+    # shared find_labeled_sections primitive -- two calls (singular +
+    # plural) merged and re-sorted by document order, preserving the
+    # original "Problem Areas?:" tolerance for either spelling.
+    sections = find_labeled_sections(text, "Problem Area") + find_labeled_sections(text, "Problem Areas")
+    sections.sort(key=lambda s: s["offset"])
     return [
-        {"text": m.group(1).strip(), "offset": m.start(1)}
-        for m in _PROBLEM_AREA_RE.finditer(text)
-        if m.group(1).strip()
+        {"text": s["text"].strip(), "offset": s["offset"]}
+        for s in sections
+        if s["text"].strip()
     ]
 
 
@@ -4047,10 +4488,15 @@ def _extract_evidenced_by_blocks(text: str) -> list[dict]:
     TP when there's been real progress, unlike the fixed rubric text
     _extract_problem_areas above captures).
     """
+    # Fix Round (Full Rule-by-Rule Fix List, Part A): migrated onto the
+    # shared find_labeled_sections primitive -- require_colon=False keeps
+    # this label's own original tolerance for a missing colon
+    # ("As evidenced by" with nothing after it), same as _EVIDENCED_BY_BLOCK_RE
+    # always allowed.
     return [
-        {"text": m.group(1).strip(), "offset": m.start(1)}
-        for m in _EVIDENCED_BY_BLOCK_RE.finditer(text)
-        if m.group(1).strip()
+        {"text": s["text"].strip(), "offset": s["offset"]}
+        for s in find_labeled_sections(text, "As evidenced by", require_colon=False)
+        if s["text"].strip()
     ]
 
 
@@ -5581,6 +6027,183 @@ def _check_severity_rating_not_all_mild(rule: dict, fields: dict) -> tuple:
     return "fail", f"All severity ratings are Mild (or N/A) -- none reach Moderate: {ratings_str}.", page, 0.85
 
 
+def _check_BIP01(rule: dict, fields: dict) -> tuple:
+    """QA-BIP-01: same severity-rating check as _check_severity_rating_
+    not_all_mild (shared with QA-GIP-03), but as its OWN function -- Fix
+    Round (Matthielly Cruz 9-2026-U1), Item 10: Ms. Yachnes's explicit
+    ask to ALSO cite the skill acquisition summary/rationale location(s)
+    in addition to the behavior summary page, so a reviewer sees every
+    relevant location, not just one section. Built as a dedicated
+    function rather than modifying the shared one, so QA-GIP-03's own
+    output is completely untouched by this change (confirmed via this
+    round's own required 179-rule before/after comparison).
+    """
+    text = fields["full_text"]
+    ratings = [
+        (m.group(0).split(":")[0].strip(), m.group(1).strip(), m.start())
+        for m in _SEVERITY_LABEL_PATTERN.finditer(text)
+    ]
+    if not ratings:
+        return "not_checkable", "No 'Severity of ...:' rating fields found.", None, 0.0
+
+    non_na = [(label, value, offset) for label, value, offset in ratings if value.strip().lower() not in ("n/a", "na", "")]
+    if not non_na:
+        return "not_checkable", "Severity fields found but all are N/A.", None, 0.0
+
+    # The skill acquisition summary/rationale location -- a second, real
+    # anchor this rule's own text is also about, per her explicit ask.
+    # Genuinely optional: not every document has this exact label, and
+    # its absence isn't itself part of this rule's own pass/fail logic.
+    skill_acq_m = re.search(r"Skill Acquisition Summary and Rationale:", text, re.IGNORECASE)
+    skill_acq_page = _page_for_offset(fields, skill_acq_m.start()) if skill_acq_m else None
+
+    non_mild = [(label, value, offset) for label, value, offset in non_na if value.lower() in _NON_MILD_SEVERITY_VALUES]
+    ratings_str = ", ".join(f"{label}: {value}" for label, value, _ in ratings)
+    if non_mild:
+        behavior_page = _page_for_offset(fields, non_mild[0][2])
+        pages = [behavior_page] + ([skill_acq_page] if skill_acq_page is not None else [])
+        return (
+            "pass",
+            f"At least one severity rating is Moderate or higher ({ratings_str}).",
+            pages if len(pages) > 1 else behavior_page, 0.85,
+        )
+    behavior_page = _page_for_offset(fields, ratings[0][2])
+    pages = [behavior_page] + ([skill_acq_page] if skill_acq_page is not None else [])
+    return (
+        "fail",
+        f"All severity ratings are Mild (or N/A) -- none reach Moderate: {ratings_str}.",
+        pages if len(pages) > 1 else behavior_page, 0.85,
+    )
+
+
+# Fix Round (real re-verification, MC 9-2026-U1), Item 4: a real, but
+# DISCLOSED-LIMITATION list of common ABA problem-behavior category
+# names, used to identify which behaviors are "referenced" in Problem
+# Areas/Reason for Referral text. This is a fixed keyword list, not a
+# semantic understanding of arbitrary phrasing -- if the real document
+# names a behavior using different terminology than this list, this
+# checker will not recognize it as "referenced" at all (a false
+# not_checkable/undercount, never a false fail). NOT YET VERIFIED
+# against a real document's actual Problem Areas/Reason for Referral
+# wording -- flagged plainly, same convention this codebase already
+# uses elsewhere for a first, unverified attempt.
+_COMMON_BEHAVIOR_KEYWORDS = (
+    "tantrum", "elopement", "aggression", "self-injurious behavior", "self-injury", "sib",
+    "property destruction", "non-compliance", "noncompliance", "disruptive behavior",
+    "stereotypy", "verbal aggression", "physical aggression", "pica", "screaming", "yelling",
+    "inappropriate sexual behavior", "food refusal", "spitting", "biting", "hitting", "kicking",
+)
+
+
+def _check_BIP08(rule: dict, fields: dict) -> tuple:
+    """QA-BIP-08: "Behaviors mentioned in Problem Areas/Reason for
+    Referral have a corresponding BIP and behavior goal." Fix Round
+    (real re-verification, MC 9-2026-U1), Item 4: was pure judgment,
+    landing on a real split-vote Uncertain on a hard, countable
+    condition (3 of 5 referenced behaviors have a BIP) that should never
+    have been judgment-vote-dependent. Converted to a real deterministic
+    checker: extracts every recognized behavior name (from
+    _COMMON_BEHAVIOR_KEYWORDS, see its own disclosed limitation above)
+    mentioned in a "Reason for Referral:" field (searched fresh here --
+    never extracted anywhere else in this codebase before), the Problem
+    Areas category text (_extract_problem_areas), and the "As evidenced
+    by:" patient-specific findings (_extract_evidenced_by_blocks) --
+    then checks whether each one also appears in a real Behavior
+    Reduction Goal ("Target Name:" block, the same real BIP-goal
+    convention QA-BIP-01/04/06 already use). Fails with the SPECIFIC
+    missing behavior(s) named, per her explicit ask -- never a generic
+    "some behaviors lack a BIP" statement.
+    """
+    text = fields["full_text"]
+    referral_m = re.search(
+        r"Reason for Referral:[ \t]*([\s\S]{0,2000}?)(?=\n\s*[A-Z][A-Za-z /]{2,40}:|\Z)", text, re.IGNORECASE,
+    )
+    referral_text = referral_m.group(1) if referral_m else ""
+    referral_offset = referral_m.start(1) if referral_m else None
+
+    problem_area_blocks = _extract_problem_areas(text)
+    evidenced_blocks = _extract_evidenced_by_blocks(text)
+    referenced_sources = (
+        ([(referral_text, referral_offset)] if referral_text else [])
+        + [(b["text"], b["offset"]) for b in problem_area_blocks]
+        + [(b["text"], b["offset"]) for b in evidenced_blocks]
+    )
+    if not referenced_sources:
+        return (
+            "not_checkable",
+            "Could not find a 'Reason for Referral:' field, 'Problem Area(s):' section, or 'As evidenced "
+            "by:' block to check for referenced behaviors.",
+            None, 0.0,
+        )
+
+    referenced: dict[str, int] = {}
+    for src_text, src_offset in referenced_sources:
+        for kw in _COMMON_BEHAVIOR_KEYWORDS:
+            m = re.search(rf"\b{re.escape(kw)}\b", src_text, re.IGNORECASE)
+            if m and kw not in referenced:
+                referenced[kw] = src_offset + m.start()
+    if not referenced:
+        return (
+            "not_checkable",
+            "Found Problem Areas/Reason for Referral content, but no recognized behavior name "
+            "(from a fixed common-ABA-behavior list) was found in it to check.",
+            None, 0.0,
+        )
+
+    # Fix Round (Full Rule-by-Rule Fix List), Item 5: REAL EXTENSION --
+    # a "BIP" and a "behavior-reduction goal" are two genuinely separate
+    # real document sections, not one: the "Behavior Intervention Plan:"
+    # section (repeated "Behavior: <name>" entries, each with its own
+    # Baseline/Operational Definition/FBA Hypotheses) is the BIP itself;
+    # the "Target Name:" goal blocks under "Recommended Behavior
+    # Reduction Goals" are the matching GOAL. The previous version of
+    # this checker only ever looked at "Target Name:" blocks and called
+    # that "the BIP" -- confirmed via real document structure that these
+    # are two distinct things a reviewer needs named separately when
+    # missing.
+    bip_sections = find_labeled_sections(text, "Behavior Intervention Plan")
+    bip_text = bip_sections[0]["text"] if bip_sections else ""
+    bip_named_behaviors = " ".join(
+        m.group(1) for m in re.finditer(r"Behavior:[ \t]*([^\n]+)", bip_text, re.IGNORECASE)
+    )
+
+    goal_starts = _goal_block_starts(text) + [len(text)]
+    goal_text = " ".join(
+        text[goal_starts[i]:goal_starts[i + 1]] for i in range(len(goal_starts) - 1)
+        if text[goal_starts[i]:goal_starts[i + 1]].startswith("Target Name:")
+    )
+
+    missing_bip = {kw for kw in referenced if not re.search(rf"\b{re.escape(kw)}\b", bip_named_behaviors, re.IGNORECASE)}
+    missing_goal = {kw for kw in referenced if not re.search(rf"\b{re.escape(kw)}\b", goal_text, re.IGNORECASE)}
+
+    if missing_bip or missing_goal:
+        both = sorted(missing_bip & missing_goal)
+        only_bip_missing = sorted(missing_bip - missing_goal)  # has a goal, missing the BIP itself
+        only_goal_missing = sorted(missing_goal - missing_bip)  # has a BIP, missing the goal
+        details = []
+        if both:
+            details.append(f"missing BOTH a BIP and a behavior-reduction goal: {both}")
+        if only_bip_missing:
+            details.append(f"has a behavior-reduction goal but no BIP: {only_bip_missing}")
+        if only_goal_missing:
+            details.append(f"has a BIP but no behavior-reduction goal: {only_goal_missing}")
+        first_missing = sorted(missing_bip | missing_goal, key=lambda k: referenced[k])[0]
+        page = _page_for_offset(fields, referenced[first_missing])
+        return (
+            "fail",
+            f"Behavior(s) referenced in Problem Areas/Reason for Referral: " + "; ".join(details) + ".",
+            page, 0.75,
+        )
+    first_offset = min(referenced.values())
+    page = _page_for_offset(fields, first_offset)
+    return (
+        "pass",
+        f"Every referenced behavior ({sorted(referenced)}) has both a corresponding BIP and a matching "
+        f"behavior-reduction goal.",
+        page, 0.75,
+    )
+
+
 # --- Fix Round, item 3: cross-rule contradiction detection ---------------
 #
 # REAL BUG this closes: on one real document, QA-ACF-07 reported the
@@ -5759,21 +6382,50 @@ def _check_HRS12(rule: dict, fields: dict) -> tuple:
     only reads the CURRENT Hours Requesting section's own row, matching
     either wording so a phrasing difference on that row alone doesn't
     cause a false not_checkable).
+
+    Fix Round (Matthielly Cruz 9-2026-U1), Item 6: Ms. Yachnes's explicit
+    correction -- the "other payor" branch used to be a blanket
+    not_applicable, no matter what the document actually said. New
+    requirement: for any payor NOT in the required list, actually check
+    whether Treatment Planning hours were requested at all -- if they
+    were, that's a real fail (shouldn't be requested for this payor); if
+    they weren't (or the row can't be found/is N/A), that's the real
+    pass, not an assumed one. Reuses the exact same row regex both
+    branches always shared -- only the verdict polarity differs by payor.
     """
     required_payors = rule.get("params", {}).get("required_payors", _HRS12_REQUIRED_PAYORS_DEFAULT)
     payor = fields.get("payor")
-    if payor not in required_payors:
-        return (
-            "not_applicable",
-            f"Payor detected as '{payor}', which is not 1199SEIU, NY Medicaid, or Molina -- "
-            f"Treatment Planning hours are not required for this payor.",
-            None, 0.9,
-        )
     m = re.search(
         r"(\S+)\s*hours?\s*per\s*\n?\s*(?:authorization\s*\n?\s*Period\.|week\.)\s*\n?\s*"
         r"97151-\s*(?:Ongoing\s*)?Treatment\s*Planning",
         fields["full_text"], re.IGNORECASE,
     )
+    if payor not in required_payors:
+        if not m:
+            return (
+                "pass",
+                f"Payor detected as '{payor}' (not 1199SEIU, NY Medicaid, or Molina); no "
+                f"'97151-Treatment Planning' row found -- Treatment Planning hours were not requested, "
+                f"as expected for this payor.",
+                None, 0.85,
+            )
+        value = m.group(1).strip()
+        page = _page_for_offset(fields, m.start())
+        if re.match(r"^\d+(\.\d+)?$", value) and float(value) > 0:
+            return (
+                "fail",
+                f"Payor detected as '{payor}' (not 1199SEIU, NY Medicaid, or Molina); Treatment Planning "
+                f"hours WERE requested ({value} for this authorization period) -- should not be requested "
+                f"for this payor.",
+                page, 0.8,
+            )
+        return (
+            "pass",
+            f"Payor detected as '{payor}' (not 1199SEIU, NY Medicaid, or Molina); '97151-Treatment "
+            f"Planning' row is {value!r} (missing/zero) -- Treatment Planning hours were not requested, "
+            f"as expected for this payor.",
+            page, 0.8,
+        )
     if not m:
         return (
             "not_checkable",
@@ -5868,6 +6520,23 @@ def _check_GIP30(rule: dict, fields: dict) -> tuple:
     return "fail", evidence, None, 0.75
 
 
+def _goals_in_progress_section_start(fields: dict) -> int | None:
+    """Fix Round (Full Rule-by-Rule Fix List), Item 8 -- REAL BUG FOUND:
+    confirmed via zaith_new.pdf, the real 'Goals in Progress:' section
+    starts on page 21, but QA-GIP-31's own pass-case citation pointed to
+    page 17 -- because _iter_goal_target_text scans EVERY "Target Goal:"/
+    "Target Name:" block in the whole document, including the earlier
+    Behavior Reduction Goals section's own blocks (BIP goals, a
+    different real section that comes before "Goals in Progress:").
+    Scoped to QA-GIP-31 only (not a change to the shared
+    _iter_goal_target_text/QA-GIP-30, which are left untouched): returns
+    the real "Goals in Progress:" label's own offset, so callers can
+    filter out any goal block that starts before it.
+    """
+    m = re.search(_label_pattern("Goals in Progress") + r"\s*:", fields["full_text"], re.IGNORECASE)
+    return m.start() if m else None
+
+
 def _check_GIP31(rule: dict, fields: dict) -> tuple:
     """QA-GIP-31: "Recall Goal -- any goal that is a recall goal should be
     flagged." Plain keyword match against each goal's own Target Goal/
@@ -5875,6 +6544,9 @@ def _check_GIP31(rule: dict, fields: dict) -> tuple:
     same shared helper as QA-GIP-30 above.
     """
     all_targets = _iter_goal_target_text(fields)
+    section_start = _goals_in_progress_section_start(fields)
+    if section_start is not None:
+        all_targets = [t for t in all_targets if t[0] >= section_start]
     mentions = [(block_start, target) for block_start, _, target in all_targets if _RECALL_KEYWORD_RE.search(target)]
     if not mentions:
         # Fix Round (2026-09-11), page-number enforcement gap: same fix as
@@ -5890,6 +6562,74 @@ def _check_GIP31(rule: dict, fields: dict) -> tuple:
         for block_start, target in mentions
     ]
     return "fail", evidence, None, 0.8
+
+
+# Fix Round (Full Rule-by-Rule Fix List), Item 14 -- a real attempt, not a
+# blanket "left pinned": a passing goal needs (1) a real SD/antecedent
+# condition, (2) a concrete deficit statement, (3) an observable/
+# measurable expectation. (1) and (3) are objectively checkable from
+# text (a recognizable antecedent phrase; a numeric Mastery Criteria
+# value) -- a goal missing BOTH is a real, confident structural fail.
+# (2) genuinely isn't: "states a concrete deficit being remediated" is a
+# semantic judgment about whether descriptive text is specific enough,
+# not a keyword match -- a goal can use every antecedent/deficit-shaped
+# WORD and still not actually establish what's being measured, or vice
+# versa. This checker resolves the objectively-checkable half
+# deterministically and escalates the genuinely semantic half to real
+# judgment, instead of guessing at a keyword list for something that
+# isn't keyword-shaped.
+_GIP17_SD_ANTECEDENT_RE = re.compile(
+    r"when (?:presented with|given|asked|denied|provided|informed|instructed|prompted)|"
+    r"in the (?:presence|absence) of|given (?:a|an|the)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_GIP17(rule: dict, fields: dict) -> tuple:
+    """QA-GIP-17: "Goals observable/measurable with SD, deficit,
+    expectation." See the module comment above _GIP17_SD_ANTECEDENT_RE
+    for what this checker does and doesn't attempt.
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text) + [len(text)]
+    if len(starts) <= 1:
+        return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
+
+    missing_structure = []
+    checked = 0
+    for i in range(len(starts) - 1):
+        block = text[starts[i]:starts[i + 1]]
+        marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+        goal_text = block[marker_len:].split("\n", 1)[0].strip()
+        if not goal_text:
+            continue
+        checked += 1
+        has_sd = bool(_GIP17_SD_ANTECEDENT_RE.search(goal_text))
+        has_measurable = bool(re.search(r"Mastery Criteria:[ \t]*\d", block, re.IGNORECASE))
+        if not has_sd and not has_measurable:
+            missing_structure.append((starts[i], goal_text[:100]))
+
+    if checked == 0:
+        return "not_checkable", "No goal block with real Target Goal/Target Name text found.", None, 0.0
+
+    if missing_structure:
+        page = _page_for_offset(fields, missing_structure[0][0])
+        names = [name for _, name in missing_structure]
+        return (
+            "fail",
+            f"{len(missing_structure)} of {checked} goal(s) are missing BOTH a recognizable SD/antecedent "
+            f"phrase (e.g. 'when presented with', 'when given') and a numeric Mastery Criteria value -- "
+            f"not structurally observable/measurable with an antecedent condition: {names}.",
+            page, 0.7,
+        )
+    return (
+        "not_checkable",
+        f"All {checked} goal(s) have a recognizable SD/antecedent phrase or a measurable Mastery Criteria "
+        f"value. Whether each ALSO states a concrete deficit being remediated (this rule's third "
+        f"requirement) is a real semantic judgment a keyword scan can't reliably make -- still needs a "
+        f"judgment read.",
+        None, 0.0,
+    )
 
 
 def _check_GIP33(rule: dict, fields: dict) -> tuple:
@@ -5969,47 +6709,177 @@ def _check_COC08(rule: dict, fields: dict) -> tuple:
 # own docstring for what was found and fixed for that specific rule_id.
 
 
-def _check_BAR01(rule: dict, fields: dict) -> tuple:
-    """QA-BAR-01: "a barrier/goal requirement that only kicks in
-    conditionally around a 25-hour threshold" (per this rule's own
-    current description: applies only when the request exceeds 25 hours
-    of 97153). REAL GAP FOUND AND FIXED: the 2026-08-26 round added this
-    threshold to the description and flagged explicitly, in its own
-    notes, that nothing enforced it in code -- the LLM was only ever told
-    the condition in English, with no real precondition gate. Same
-    hybrid shape as _check_HRS05: the threshold gate is a real DET
-    precondition (zero judgment call when the threshold genuinely isn't
-    met); the actual "is a barrier mentioned" question stays genuinely
-    judgment (a holistic read across the whole document, not reducible
-    to a keyword scan -- see this rule's own notes for the real PASS/FAIL
-    examples already established).
+# Fix Round (Full Rule-by-Rule Fix List), Item 4 -- REAL BUG FOUND: the
+# 25-hour/97153 gate below was removed entirely. Confirmed real evidence
+# (zaith_new.pdf, page 8): the "Barriers to Treatment:" section reads
+# "There are no noted barriers to treatment at this time," but this
+# rule's own displayed evidence instead explained a 97153 hours-requested
+# vs. 25-hour-cap comparison that has nothing to do with barriers at
+# all. Confirmed this rule's own CURRENT rules.json description never
+# mentions an hours threshold at all ("If any barriers are mentioned in
+# the report, they should also be listed in this section.") -- the gate
+# appears to have been wired in from a different rule (QA-SCH-07's own
+# hours-based gate shape) at some point and never actually matched this
+# rule's real question. A fixed, disclosed-limitation keyword list (not
+# exhaustive semantic understanding) for barrier-indicating language,
+# checked against the whole document outside the Barriers to Treatment
+# section itself, then against whether that section reads as a real,
+# populated barrier statement or a blank/negative one ("N/A", "no
+# barriers", "none noted").
+_BARRIER_LANGUAGE_RE = re.compile(
+    r"\bbarrier(?:s)?\b|\bimpede[sd]?\b|resistance to|struggles?\s+to|scheduling conflict|"
+    r"caregiver availability|environmental constraint|difficulty\s+(?:with|tolerating)|reluctan(?:t|ce)",
+    re.IGNORECASE,
+)
+_BLANK_OR_NEGATIVE_BARRIER_RE = re.compile(
+    r"\bN/?A\b\.?|\bnone(?:\s+noted)?\b\.?|\bno(?:t)?\s+(?:noted\s+)?barriers?\b",
+    re.IGNORECASE,
+)
+
+# Fix Round (Round 8, mc_current.pdf, real gap found): the generic keyword
+# scan above matches on the bare word "barrier(s)" or a handful of fixed
+# phrases -- real evidence showed a document with a formal "VB-MAPP
+# Barriers Assessment" section listing SPECIFIC named barrier categories
+# (behavior problems, instructional-control difficulties, weak motivation,
+# response-requirement difficulty, articulation concerns, hyperactive
+# behavior, sensory-related needs) that mostly don't contain the literal
+# word "barrier" or match any of the fixed phrases at all -- the keyword
+# scan would only ever catch this section via the word "Barriers" in its
+# own heading, never notice WHICH specific barriers it names, and so could
+# never tell a reviewer which of them the Barriers to Treatment section
+# actually failed to reflect. When this named assessment section exists,
+# it's a much stronger, more specific real evidence source than a generic
+# keyword scan over the whole document -- so it's checked FIRST, item by
+# item, and only falls back to the generic scan below when no such section
+# is found at all (preserves this rule's existing, already-real behavior
+# on every other document unchanged).
+_BARRIERS_ASSESSMENT_STOPWORDS = frozenset({
+    "and", "the", "some", "under", "when", "with", "for", "any", "related",
+    "needs", "concerns", "behavior", "behaviors", "difficulty", "difficulties",
+    "weak", "increase", "increases", "requirement", "requirements",
+})
+
+
+def _split_assessment_items(text: str) -> list[str]:
+    """Splits a comma/semicolon-delimited real barrier list (e.g. "behavior
+    problems, instructional-control difficulties, ..., and sensory-related
+    needs") into its individual items, stripping a leading "and"/"&" off
+    the final item.
     """
-    threshold = rule.get("params", {}).get("hours_threshold", 25)
-    cpt_code = rule.get("params", {}).get("cpt_code", "97153")
-    # Fix Round (QA-ACF-11 wording + page numbers, 2026-09-19), Item 2:
-    # switched to the offset-capturing sibling -- it already existed,
-    # just wasn't the one this checker called.
-    found = _find_weekly_hours_for_code_with_offset(fields["full_text"], cpt_code)
-    if found is None:
+    items = []
+    for part in re.split(r"[,;]", text.strip().rstrip(".")):
+        part = re.sub(r"^\s*(?:and|&)\s+", "", part.strip(), flags=re.IGNORECASE).strip()
+        if part:
+            items.append(part)
+    return items
+
+
+def _assessment_item_reflected_in(item: str, target_text: str) -> bool:
+    """Real, disclosed-limitation word-overlap check (not exhaustive
+    semantic understanding, same convention _BARRIER_LANGUAGE_RE's own
+    module comment already uses) -- true when `item`'s own distinctive
+    words (4+ letters, excluding a small connector stopword list) appear
+    anywhere in `target_text`, or the item appears there near-verbatim.
+    """
+    target_lower = target_text.lower()
+    item_lower = item.lower()
+    if item_lower in target_lower:
+        return True
+    words = [w for w in re.findall(r"[a-z]{4,}", item_lower) if w not in _BARRIERS_ASSESSMENT_STOPWORDS]
+    if not words:
+        return False
+    return any(re.search(rf"\b{re.escape(w)}", target_lower) for w in words)
+
+
+def _check_BAR01(rule: dict, fields: dict) -> tuple:
+    """QA-BAR-01: "If any barriers are mentioned in the report, they
+    should also be listed in this section." See the module-level comment
+    above _BARRIER_LANGUAGE_RE for the real bug this replaces.
+    """
+    text = fields["full_text"]
+    # DEFAULT_SECTION_STOP_LABELS' own markers (tailored to
+    # Goals-in-Progress/Problem-Areas boundaries) don't include this
+    # section's real follow-on heading -- adding it, plus a short
+    # max_length safeguard, so the capture stops at the real section
+    # boundary instead of bleeding later content into "the section" and
+    # hiding real outside mentions from the scan below.
+    sections = find_labeled_sections(
+        text, "Barriers to Treatment", require_line_start=True, max_length=1500,
+        stop_labels=DEFAULT_SECTION_STOP_LABELS + ("Results of Preference Assessment:", "Behavior Intervention Plan:"),
+    )
+    if not sections:
+        return "not_checkable", "Could not find a 'Barriers to Treatment:' section anywhere in this document.", None, 0.0
+    barrier_section = sections[0]
+    section_text, section_offset = barrier_section["text"], barrier_section["offset"]
+    page = _page_for_offset(fields, section_offset)
+
+    # Tries the more specific label first, "Barriers Assessment" only as a
+    # fallback -- NOT additively with the first (unlike this file's other
+    # two-label patterns, e.g. "Parent/Caregiver Goals"/"...Involvement",
+    # which name genuinely different sections). "Barriers Assessment" is a
+    # literal substring of "VB-MAPP Barriers Assessment", so searching both
+    # unconditionally would match the SAME real section twice and double-
+    # count every item in it.
+    assessment_sections = find_labeled_sections(
+        text, "VB-MAPP Barriers Assessment", require_line_start=True, max_length=1500,
+        stop_labels=DEFAULT_SECTION_STOP_LABELS + ("Barriers to Treatment:", "Results of Preference Assessment:"),
+    ) or find_labeled_sections(
+        text, "Barriers Assessment", require_line_start=True, max_length=1500,
+        stop_labels=DEFAULT_SECTION_STOP_LABELS + ("Barriers to Treatment:", "Results of Preference Assessment:"),
+    )
+    assessed_items = [
+        item for sec in assessment_sections for item in _split_assessment_items(sec["text"])
+    ]
+    if assessed_items:
+        missing = [item for item in assessed_items if not _assessment_item_reflected_in(item, section_text)]
+        if missing:
+            return (
+                "fail",
+                f"The VB-MAPP Barriers Assessment names {len(assessed_items)} real barrier(s) "
+                f"({'; '.join(assessed_items)}), but the 'Barriers to Treatment:' section (page {page}) "
+                f"does not reflect: {'; '.join(missing)}.",
+                page, 0.75,
+            )
         return (
-            "not_checkable",
-            f"Could not find {cpt_code} hours requested to check the {threshold}-hour threshold this rule "
-            f"applies above.",
-            None, 0.0,
+            "pass",
+            f"All {len(assessed_items)} barrier(s) named in the VB-MAPP Barriers Assessment are reflected "
+            f"in the 'Barriers to Treatment:' section (page {page}).",
+            page, 0.75,
         )
-    hours, offset = found
-    page = _page_for_offset(fields, offset)
-    if hours <= threshold:
+
+    # Exclude the LABEL's own text too (it contains the word "barrier"
+    # itself, e.g. "Barriers to Treatment:") -- not just the captured
+    # content after it -- so the outside-language scan below never
+    # matches on the section's own label.
+    label_start_m = re.search(_label_pattern("Barriers to Treatment"), text[:section_offset], re.IGNORECASE)
+    exclude_start = label_start_m.start() if label_start_m else section_offset
+    rest_of_doc = text[:exclude_start] + text[section_offset + len(section_text):]
+    outside_mentions = list(_BARRIER_LANGUAGE_RE.finditer(rest_of_doc))
+    if not outside_mentions:
         return (
-            "not_applicable",
-            f"{cpt_code} hours requested: {hours}/week, at or below the {threshold}-hour threshold this "
-            f"rule applies above -- rule does not apply.",
-            page, 0.85,
+            "pass",
+            "No barrier-indicating language (a fixed keyword list -- 'barrier', 'impede', 'struggles to', "
+            "'reluctance', etc.) found anywhere else in the report outside the 'Barriers to Treatment:' "
+            "section itself, so there's nothing that should also be listed there.",
+            page, 0.7,
+        )
+    section_is_blank_or_negative = not section_text.strip() or bool(
+        _BLANK_OR_NEGATIVE_BARRIER_RE.search(section_text)
+    )
+    if section_is_blank_or_negative:
+        excerpt = rest_of_doc[max(0, outside_mentions[0].start() - 60):outside_mentions[0].end() + 60].strip()
+        return (
+            "fail",
+            f"Barrier-indicating language was found elsewhere in the report (e.g. {excerpt!r}), but the "
+            f"'Barriers to Treatment:' section itself reads as blank/negative ({section_text.strip()[:120]!r}) "
+            f"-- the barrier mentioned elsewhere is not reflected in this section.",
+            page, 0.7,
         )
     return (
         "not_checkable",
-        f"{cpt_code} hours requested: {hours}/week, above the {threshold}-hour threshold -- rule applies; "
-        f"whether a barrier is documented anywhere in the report requires reading the full narrative.",
+        "Barrier-indicating language was found both elsewhere in the report and within the 'Barriers to "
+        "Treatment:' section itself -- whether the section's own content genuinely covers the same barrier(s) "
+        "mentioned elsewhere needs a real semantic read, not a keyword match.",
         page, 0.0,
     )
 
@@ -6309,19 +7179,36 @@ def _check_GIP19(rule: dict, fields: dict) -> tuple:
     text = fields["full_text"]
     behavior_goal_m = re.search(r"Skill Domain:[ \t]*[^\n]*Behavior", text, re.IGNORECASE)
     has_behavior_goal = bool(behavior_goal_m)
+    # Fix Round (Full Rule-by-Rule Fix List), Item 10 -- REAL BUG FOUND:
+    # confirmed via zaith_new.pdf, the real "Behavioral Summary:" field
+    # lives on page 16, under "Recommended Behavior Reduction Goals" --
+    # but this rule's own citation always pointed at whichever page the
+    # Behavior-domain GOAL happened to be found on, never at the summary
+    # field's own real location. Finds the summary's own offset
+    # separately so the citation can point specifically there.
+    # has_summary keeps using _extract_labeled_value's own blank-line-run/
+    # bare-label-stopping smarts (a genuinely blank field followed by the
+    # NEXT field's own bare label must still read as blank) -- the
+    # generic find_labeled_sections primitive only stops at its own known
+    # stop_labels, not at an arbitrary next "Label:" line, so it isn't a
+    # safe swap-in for THIS specific blank-detection question. Only the
+    # PAGE citation below uses find_labeled_sections, for its offset.
     has_summary = bool(_extract_labeled_value(text, "Behavioral Summary"))
+    summary_sections = find_labeled_sections(text, "Behavioral Summary")
+    summary_offset = summary_sections[0]["offset"] if summary_sections else None
+    summary_page = _page_for_offset(fields, summary_offset) if summary_offset is not None else None
     if has_behavior_goal and has_summary:
         return (
             "pass",
             "At least one Behavior-domain goal and a non-blank Behavioral Summary section are both present.",
-            _page_for_offset(fields, behavior_goal_m.start()), 0.8,
+            summary_page or _page_for_offset(fields, behavior_goal_m.start()), 0.8,
         )
     missing = []
     if not has_behavior_goal:
         missing.append("no goal with a Behavior-related Skill Domain found")
     if not has_summary:
         missing.append("Behavioral Summary section is missing or blank")
-    page = _page_for_offset(fields, behavior_goal_m.start()) if behavior_goal_m else None
+    page = summary_page or (_page_for_offset(fields, behavior_goal_m.start()) if behavior_goal_m else None)
     return "fail", "; ".join(missing) + ".", page, 0.75
 
 
@@ -6569,6 +7456,17 @@ def _check_HRS08(rule: dict, fields: dict) -> tuple:
     )
 
 
+# Fix Round (real root-cause, mc_current.pdf/old.pdf), Item 3: a line that
+# is JUST a label (fullmatch, nothing real after the colon) -- used by
+# _check_MAST03's own local rationale extractor below to tell a genuinely
+# new field ("Parent/Caregiver Goals:" with nothing under it) apart from a
+# sub-label that still carries real content on the same line ("Additonal
+# Notes: No goals were mastered..."), which _LABEL_ONLY_LINE_RE's own
+# start-anchored-only match (used elsewhere, shared by many other
+# checkers) cannot distinguish.
+_BARE_LABEL_LINE_RE = re.compile(r"^[A-Z][A-Za-z0-9 /&'()#.-]{0,58}:$")
+
+
 def _check_MAST03(rule: dict, fields: dict) -> tuple:
     """QA-MAST-03: "If no mastered goals, rationale is provided."
     Fix Round (2026-09-11 night) -- REAL FIX, not a re-vote: confirmed
@@ -6587,25 +7485,83 @@ def _check_MAST03(rule: dict, fields: dict) -> tuple:
     every other checker in this file already uses).
     """
     text = fields["full_text"]
-    matches = list(re.finditer(r"Mastered Goals:", text))
-    if not matches:
+    # Fix Round (Full Rule-by-Rule Fix List, Part A): migrated off this
+    # function's own hand-written re.finditer + stop-boundary scan onto
+    # the shared find_labeled_sections primitive -- same multi-occurrence
+    # behavior as before, now shared with _extract_mastered_goals_with_dates
+    # (MAST-01/02's own extractor) instead of two independent scans that
+    # can drift out of sync (exactly what happened last round).
+    sections = find_labeled_sections(text, "Mastered Goals")
+    if not sections:
         return "not_checkable", "No 'Mastered Goals:' section found anywhere in this document.", None, 0.0
 
     empty_sections = []
-    for m in matches:
-        window = text[m.end():m.end() + 500]
-        if re.search(r"Name of Skill:", window):
+    for section in sections:
+        section_text, base_offset = section["text"], section["offset"]
+        window = section_text[:500]
+        # Fix Round (real root-cause, mc_current.pdf), Item 3: "Name of
+        # Skill:" is only ONE of two real templates for a populated
+        # section -- the other has no such label at all, just a goal
+        # sentence terminated by "Date of Mastery:" (see
+        # _MASTERED_GOAL_DATE_OF_MASTERY_RE's own comment). Without this,
+        # a real, non-empty Skill Acquisition section using that second
+        # template was misread as empty and failed for "no rationale
+        # stated" even though it lists a real mastered goal.
+        if re.search(r"Name of Skill:|Date\s+of\s+Mastery:", window, re.IGNORECASE):
             continue  # real mastered goals present here -- precondition not met for this section
-        rationale = _extract_labeled_value(text[m.start():], "Mastered Goals")
-        page = _page_for_offset(fields, m.start())
+        # Fix Round (real root-cause, mc_current.pdf/old.pdf), Item 3: REAL
+        # BUG FOUND -- the generic _extract_labeled_value used here before
+        # stops collecting a wrapped value as soon as it sees a line that
+        # itself starts like "SomeLabel:", even when that same line
+        # already has real content after its own colon. On the real
+        # document (old.pdf, page 33) this rule's own empty-section
+        # rationale is introduced by exactly that shape: "Mastered
+        # Goals:\nAdditonal Notes: No goals were mastered..." -- the
+        # generic helper misread "Additonal Notes:" as the START of a new
+        # field and returned "" instead of the real rationale sitting
+        # right there. Scoped locally to this rule (not the shared
+        # _extract_labeled_value/_LABEL_ONLY_LINE_RE, which many other
+        # checkers also rely on): stripping one leading "<word(s)> Notes:"
+        # sub-label if present (matches both "Additonal Notes:" and
+        # "Additional Notes:").
+        collected: list[str] = []
+        blank_run = 0
+        for line in section_text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                blank_run += 1
+                if blank_run >= 2:
+                    break
+                continue
+            if _BARE_LABEL_LINE_RE.match(stripped):
+                break  # a genuinely bare "SomeLabel:" line -- the next real field, not this rationale
+            notes_m = re.match(r"[A-Za-z][A-Za-z ]{0,30}Notes:\s*", stripped)
+            if notes_m:
+                stripped = stripped[notes_m.end():]
+            if stripped:
+                collected.append(stripped)
+            blank_run = 0
+        rationale = " ".join(collected)
+        page = _page_for_offset(fields, base_offset)
         empty_sections.append((page, rationale.strip()))
 
+    # Fix Round (Matthielly Cruz 9-2026-U1), Item 15: REAL BUG FOUND AND
+    # FIXED -- the not_applicable and single-page-pass branches below used
+    # to cite only page=None or only the FIRST empty section's page, even
+    # when this document has multiple "Mastered Goals:" occurrences (one
+    # per domain -- Parent Training, Skill Acquisition, Behavior
+    # Reduction). Her real complaint ("page cited only goes to the Parent
+    # Training Mastered Goals section, missing the Skill Acquisition one
+    # entirely") is exactly this -- the per-occurrence scan above was
+    # always correct (finditer, not the single-search bug found in
+    # _extract_mastered_goals_with_dates for MAST-01/02), but the final
+    # page citation collapsed multiple real locations down to one.
     if not empty_sections:
         return (
             "not_applicable",
             "Every 'Mastered Goals:' section in this document lists real mastered goals -- this rule's "
             "'if no mastered goals' precondition doesn't apply here.",
-            None, 0.85,
+            [_page_for_offset(fields, s["offset"]) for s in sections], 0.85,
         )
 
     problems = [(page, "'Mastered Goals:' section is empty with no rationale stated for why there are no mastered goals.")
@@ -6617,12 +7573,222 @@ def _check_MAST03(rule: dict, fields: dict) -> tuple:
         evidence = [{"page": page, "detail": detail} for page, detail in problems]
         return "fail", evidence, None, 0.8
 
-    page = empty_sections[0][0]
+    if len(empty_sections) == 1:
+        page = empty_sections[0][0]
+        return (
+            "pass",
+            f"{len(empty_sections)} empty 'Mastered Goals:' section(s) found, each with a real rationale stated.",
+            page, 0.8,
+        )
     return (
         "pass",
         f"{len(empty_sections)} empty 'Mastered Goals:' section(s) found, each with a real rationale stated.",
-        page, 0.8,
+        [page for page, _rationale in empty_sections], 0.8,
     )
+
+
+_LIVES_WITH_PARENTS_RE = re.compile(
+    r"lives?\s+with\s+(?:(?:his|her|their)\s+)?(?:"
+    r"mother\s*(?:,|and|&)?\s*(?:and\s+)?father|father\s*(?:,|and|&)?\s*(?:and\s+)?mother|"
+    r"both\s+parents|parents\b|mom\s+and\s+dad|dad\s+and\s+mom|mother\s+and\s+father|father\s+and\s+mother"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _check_PAR02(rule: dict, fields: dict) -> tuple:
+    """QA-PAR-02: "If the child doesn't live with their parents, the
+    Parent/Caregiver Involvement summary should say who will actually
+    receive the training." Fix Round (Matthielly Cruz 9-2026-U1), Item
+    25: Ms. Yachnes's explicit correction -- real evidence ("Matthielly's
+    5 years old, lives with mother, father, and one sibling in a stable
+    home environment") is a clear, unambiguous case where this rule's own
+    precondition (child does NOT live with parents) isn't met at all --
+    it should resolve not_applicable, not Uncertain. This rule was on
+    STABILIZED_UNCERTAIN_RULE_IDS (unpinned this round, see
+    pipeline/__init__.py) with only a raw-text preview
+    (_par02_context_preview), never a real gate. Same pattern as
+    QA-SCH-03's not-in-school gate / QA-BIO-06's no-medication gate:
+    a clearly-stated "lives with parent(s)" phrase -> not_applicable,
+    confidently, zero model cost; anything else -> escalate for the real
+    "who will receive training" judgment this rule still needs.
+    """
+    text = fields["full_text"]
+    m = _LIVES_WITH_PARENTS_RE.search(text)
+    if m:
+        page = _page_for_offset(fields, m.start())
+        return (
+            "not_applicable",
+            f"Document states the child lives with their parent(s): \"{m.group(0).strip()}\" -- this rule "
+            f"only applies when the child does NOT live with their parents.",
+            page, 0.85,
+        )
+    return (
+        "not_checkable",
+        "Could not confirm from the document's own text that the child lives with their parents; "
+        "escalating so the real living-situation/training-recipient question can be evaluated.",
+        None, 0.0,
+    )
+
+
+# Fix Round (Matthielly Cruz 9-2026-U1), Item 12: REAL BUG FOUND AND
+# FIXED -- the old check required the exact contiguous substring "parent
+# training", which fails on real, common label variants like "Parent/
+# Caregiver Training" (the "/caregiver " breaks the substring) or
+# "Caregiver Training" alone (no "parent" at all). Also had no
+# re.IGNORECASE on the "Skill Domain:" label match itself. Shared by
+# QA-MAST-04's own checker and HF-05's context-preview extractor (Item 2)
+# so both use the same, once-fixed definition of "this is a Parent/
+# Caregiver Training goal."
+_PARENT_TRAINING_DOMAIN_RE = re.compile(
+    r"parent[\s/]*(?:(?:and|&)[\s/]*)?caregiver\s+training|caregiver[\s/]*(?:(?:and|&)[\s/]*)?parent\s+training|"
+    r"\bparent\s+training\b|\bcaregiver\s+training\b|\bPRT\b|"
+    # Fix Round (Full Rule-by-Rule Fix List), Item 6: REAL BUG FOUND --
+    # zaith_new.pdf's real "Skill Domain:" value is "Parent/Caregiver
+    # Goals" (page 45), which has no "training" word at all -- the
+    # pattern above never matched it, so a real, populated domain (4
+    # real in-progress goals, pages 46-49) was misread as "no Parent
+    # Training goals found." Purely additive: a document already using
+    # "...training" wording matches identically; only this "...Goals"
+    # label variant newly matches.
+    r"parent[\s/]*(?:(?:and|&)[\s/]*)?caregiver\s+goals|caregiver[\s/]*(?:(?:and|&)[\s/]*)?parent\s+goals",
+    re.IGNORECASE,
+)
+
+
+_MAST04_SECTION_STOP_LABELS = tuple(
+    s for s in DEFAULT_SECTION_STOP_LABELS if s not in ("Target Goal:", "Target Name:")
+) + ("Mastered Goals:", "Parent/Caregiver Involvement:", "Parent/Caregiver Goals:")
+
+
+def _goal_blocks_under_header(text: str, label: str) -> list[tuple[int, str]]:
+    """Round 6 real regression fix (Zaith 9-2026-U1): collects every
+    'Target Goal:'/'Target Name:' goal block that falls strictly after a
+    real occurrence of `label` (e.g. 'Parent/Caregiver Goals:') and before
+    whichever comes first: the next non-goal section boundary, or the end
+    of the document.
+
+    find_labeled_sections can't be reused for this directly -- its own
+    DEFAULT_SECTION_STOP_LABELS includes 'Target Goal:'/'Target Name:' (to
+    keep OTHER section types from bleeding into goal content elsewhere),
+    which truncates a "header governs a whole group of goals that follow
+    it" section to nothing before any goal content is ever captured, since
+    a goal marker is the very next thing after the header. That's exactly
+    the real bug: a document with a 'Parent/Caregiver Goals:' header on
+    one page followed by several goal blocks with no per-goal 'Skill
+    Domain:' line at all -- the per-block Skill-Domain scan below can't
+    see them, and find_labeled_sections's own stop labels made the
+    obvious-looking fallback (grab the section's text, look for
+    'Target Goal:' inside it) return an empty section every time.
+    """
+    label_re = re.compile(_label_pattern(label) + r"\s*:", re.IGNORECASE)
+    boundary_re = re.compile(
+        "|".join(_label_pattern(s.rstrip(":")) + r"\s*:" for s in _MAST04_SECTION_STOP_LABELS),
+        re.IGNORECASE,
+    )
+    blocks = []
+    for header_m in label_re.finditer(text):
+        start = header_m.end()
+        boundary_m = boundary_re.search(text, start)
+        end = boundary_m.start() if boundary_m else len(text)
+        section_text = text[start:end]
+        goal_starts = _goal_block_starts(section_text)
+        if not goal_starts:
+            continue
+        goal_starts = goal_starts + [len(section_text)]
+        for i in range(len(goal_starts) - 1):
+            blocks.append((start + goal_starts[i], section_text[goal_starts[i]:goal_starts[i + 1]]))
+    return blocks
+
+
+def _find_parent_training_goal_blocks(text: str) -> list[tuple[int, str]]:
+    """Round 7 real fix (mc_current.pdf, HF-05): shared (offset, block_text)
+    collector for every real Parent/Caregiver Training goal block, used by
+    BOTH _check_MAST04 (already had this exact two-tier logic inline) and
+    _goal_context_preview's parent_training_only branch (which did NOT --
+    that's the real bug this round found: HF-05's own preview used only
+    the narrower, older per-block-only scan, so on a document whose real
+    PRT goals live under a header-governing-a-group (or a
+    'Parent/Caregiver Involvement:' section, mc_current.pdf's actual
+    shape) it found nothing and fell through to the generic "no context"
+    message even though QA-MAST-04's checker -- running the FULL two-tier
+    logic -- found the same real goals fine on the same document).
+
+    Tier 1: per-block 'Skill Domain:' match (works when the domain label
+    is its own field inside the goal's block, i.e. appears AFTER 'Target
+    Goal:'/'Target Name:'). Tier 2: _goal_blocks_under_header, for the
+    header-governs-a-whole-group shape (no per-goal 'Skill Domain:' line
+    at all) under either 'Parent/Caregiver Goals:' or 'Parent/Caregiver
+    Involvement:'. Same two tiers _check_MAST04 already used inline --
+    extracted here so both callers stay in sync by construction instead
+    of by remembering to update both next time.
+    """
+    starts = _goal_block_starts(text)
+    blocks: list[tuple[int, str]] = []
+    if starts:
+        bounds = starts + [len(text)]
+        for i in range(len(bounds) - 1):
+            block = text[bounds[i]:bounds[i + 1]]
+            sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block, re.IGNORECASE)
+            if sd_m and _PARENT_TRAINING_DOMAIN_RE.search(sd_m.group(1)):
+                blocks.append((bounds[i], block))
+    if not blocks:
+        blocks = _goal_blocks_under_header(text, "Parent/Caregiver Goals") + _goal_blocks_under_header(
+            text, "Parent/Caregiver Involvement",
+        )
+    return blocks
+
+
+def _has_any_parent_training_goal(fields: dict) -> bool:
+    """Fix Round (real re-verification, MC 9-2026-U1), Item 5: standalone
+    helper, NOT a refactor of _check_MAST04 (which is left completely
+    untouched) -- duplicates its exact goal-scanning logic (same
+    _goal_block_starts scan, same _PARENT_TRAINING_DOMAIN_RE domain
+    check) so HF-05's new gate below can reuse a mechanism already
+    CONFIRMED working on this exact real document: QA-MAST-04's own
+    checker correctly reported "No Parent Training goals found in this
+    document" on it last round. Reusing the identical detection here
+    means this gate is not a fresh guess -- it's proven on the real
+    document that surfaced this bug.
+    """
+    text = fields["full_text"]
+    starts = _goal_block_starts(text)
+    if starts:
+        blocks = starts + [len(text)]
+        for i in range(len(blocks) - 1):
+            block = text[blocks[i]:blocks[i + 1]]
+            sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block, re.IGNORECASE)
+            if sd_m and _PARENT_TRAINING_DOMAIN_RE.search(sd_m.group(1)):
+                return True
+    # Fix Round (Full Rule-by-Rule Fix List), Item 2 -- REAL BUG FOUND:
+    # confirmed on mc_current.pdf specifically, this document's real
+    # Parent/Caregiver goals ("Program Goal: eye contact" / "Target
+    # Goal: Parent will make eye contact...") live entirely inside a
+    # separate "Parent/Caregiver Involvement:" section, with NO "Skill
+    # Domain:" label anywhere near them at all -- the scan above can
+    # never see them, so this rule's gate was resolving not_applicable
+    # on a document that plainly has real, in-progress parent goals.
+    # Fallback: a "Parent/Caregiver Goals:" (or "...Involvement:")
+    # section with at least one real "Target Goal:"/"Program Goal:"
+    # entry counts as having a real parent-training goal too.
+    for section in find_labeled_sections(text, "Parent/Caregiver Goals") + find_labeled_sections(
+        text, "Parent/Caregiver Involvement",
+    ):
+        if re.search(r"Target Goal:|Program Goal:", section["text"], re.IGNORECASE):
+            return True
+    # Round 6 real regression fix (Zaith 9-2026-U1) -- a THIRD real shape,
+    # distinct from both of the above: a "Parent/Caregiver Goals:" header
+    # with no "Skill Domain:" line anywhere near it AND no "Program Goal:"/
+    # "Target Goal:" text before find_labeled_sections's own stop labels
+    # kick in (its own stop-label list includes "Target Goal:"/"Target
+    # Name:", so the section above comes back confirmed-empty when the
+    # header's ENTIRE content is goal blocks). _goal_blocks_under_header
+    # doesn't stop there -- it exists specifically for this shape.
+    if _goal_blocks_under_header(text, "Parent/Caregiver Goals") or _goal_blocks_under_header(
+        text, "Parent/Caregiver Involvement",
+    ):
+        return True
+    return False
 
 
 def _check_MAST04(rule: dict, fields: dict) -> tuple:
@@ -6658,14 +7824,46 @@ def _check_MAST04(rule: dict, fields: dict) -> tuple:
     parent_goals = []
     for i in range(len(starts) - 1):
         block = text[starts[i]:starts[i + 1]]
-        sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block)
-        if not sd_m or "parent training" not in sd_m.group(1).lower():
+        sd_m = re.search(r"Skill Domain:[ \t]*([^\n]*)", block, re.IGNORECASE)
+        if not sd_m or not _PARENT_TRAINING_DOMAIN_RE.search(sd_m.group(1)):
             continue
         status_m = re.search(r"(?:Goal Status|Status):[ \t]*([^\n]+)", block)
         marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
         goal_name = block[marker_len:].split("\n", 1)[0].strip()[:60]
         status = status_m.group(1).strip() if status_m else ""
         parent_goals.append((starts[i], goal_name, status))
+
+    if not parent_goals:
+        # Round 6 real regression fix (Zaith 9-2026-U1): the per-block scan
+        # above only finds a goal's domain when "Skill Domain:" appears
+        # AFTER that goal's own "Target Goal:"/"Target Name:" marker,
+        # because _goal_block_starts splits the document AT that marker --
+        # anything before it belongs to the PREVIOUS block. Some real
+        # documents instead put "Parent/Caregiver Goals:" as a section
+        # HEADER once, governing a whole group of goals that follow it
+        # (confirmed real structure: header on one page, 4 goal blocks
+        # with no per-goal "Skill Domain:" line at all on the pages after
+        # it) -- the scan above can never see those goals since there is
+        # no "Skill Domain:" line inside any of their blocks to find.
+        # Uses _goal_blocks_under_header, NOT find_labeled_sections directly
+        # -- find_labeled_sections's own DEFAULT_SECTION_STOP_LABELS
+        # includes "Target Goal:"/"Target Name:" (needed elsewhere, to
+        # keep other section types from bleeding into goal content), which
+        # means a header-governs-a-goal-group section comes back
+        # confirmed-empty here: the very first thing after the header IS a
+        # goal marker, so the section's own "text" is truncated to nothing
+        # before capturing any of it. Also reads each goal's real status
+        # so this rule's "at least 3 in progress" count can include these
+        # goals too (mirrors _has_any_parent_training_goal's own use of
+        # the same helper, which only needs presence, not status).
+        for offset, block in _goal_blocks_under_header(text, "Parent/Caregiver Goals") + _goal_blocks_under_header(
+            text, "Parent/Caregiver Involvement",
+        ):
+            status_m = re.search(r"(?:Goal Status|Status):[ \t]*([^\n]+)", block)
+            marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
+            goal_name = block[marker_len:].split("\n", 1)[0].strip()[:60]
+            status = status_m.group(1).strip() if status_m else ""
+            parent_goals.append((offset, goal_name, status))
 
     if not parent_goals:
         return (
@@ -6692,35 +7890,92 @@ def _check_MAST04(rule: dict, fields: dict) -> tuple:
     )
 
 
+def _check_HF10(rule: dict, fields: dict) -> tuple:
+    """HF-10: "Community hours indicated consistently" -- NEW Healthfirst-
+    specific rule (Fix Round, Matthielly Cruz 9-2026-U1). Her spec: flag
+    if "community" is indicated under Hours Requested but not reflected
+    in the schedule grid or goals, and vice versa (indicated in the
+    schedule grid/goals but not in Hours Requesting). Checks for the
+    presence of the word "community" (case-insensitive) across three
+    real, independently-extractable locations in the same document:
+    the Hours Requesting block, the schedule grid's own POS field
+    (reusing QA-SCH-09's exact regex), and every goal block's own text.
+    A mismatch between "Hours Requesting says community" and "the
+    schedule grid or goals also say community" in EITHER direction is a
+    real, flaggable inconsistency -- both sides agreeing (both mention
+    it, or neither does) is a pass.
+    """
+    if fields.get("payor") != "Healthfirst":
+        return "not_applicable", f"Payor detected as '{fields.get('payor')}', not Healthfirst.", None, 0.9
+
+    text = fields["full_text"]
+    hr_m = re.search(r"Hours Requesting:([\s\S]{0,4000}?)Hours Approved Previous Authorization:", text, re.IGNORECASE)
+    if not hr_m:
+        return "not_checkable", "Could not find the 'Hours Requesting:' section to check.", None, 0.0
+    hours_text = hr_m.group(1)
+    hours_has_community = bool(re.search(r"\bcommunity\b", hours_text, re.IGNORECASE))
+    hours_page = _page_for_offset(fields, hr_m.start())
+
+    pos_m = re.search(r"POS[^\n:]{0,10}:[ \t]*([^\n]+)", text, re.IGNORECASE)
+    grid_has_community = bool(pos_m and "community" in pos_m.group(1).lower())
+    grid_page = _page_for_offset(fields, pos_m.start()) if pos_m else None
+
+    goal_starts = _goal_block_starts(text) + [len(text)]
+    goal_community_page = None
+    for i in range(len(goal_starts) - 1):
+        block = text[goal_starts[i]:goal_starts[i + 1]]
+        if "community" in block.lower():
+            goal_community_page = _page_for_offset(fields, goal_starts[i])
+            break
+    goals_has_community = goal_community_page is not None
+
+    other_has_community = grid_has_community or goals_has_community
+    if hours_has_community == other_has_community:
+        if hours_has_community:
+            detail = "'Community' mention is consistent: Hours Requesting mentions it, and the schedule grid/goals mention it too."
+        else:
+            detail = "'Community' mention is consistent: Hours Requesting doesn't mention it, and neither does the schedule grid/goals."
+        return (
+            "pass",
+            detail,
+            hours_page, 0.8,
+        )
+    if hours_has_community and not other_has_community:
+        return (
+            "fail",
+            "Hours Requesting indicates 'community' but this is not reflected in the schedule grid's "
+            "POS field or in any goal block.",
+            hours_page, 0.8,
+        )
+    return (
+        "fail",
+        f"'Community' is indicated in the {'schedule grid' if grid_has_community else 'goals'} but not "
+        f"in Hours Requesting.",
+        grid_page if grid_has_community else goal_community_page, 0.8,
+    )
+
+
 def _check_HF06(rule: dict, fields: dict) -> tuple:
-    """HF-06: "Healthfirst client's testing tool/assessment has not been
-    updated within 3 months" -- read as the real failure condition this
-    checklist item is naming: for a Healthfirst patient, the testing
-    tool's own stated Assessment Date being more than 3 months before
-    this TP's current report date is a fail (a stale assessment); within
-    3 months is a pass. Fix Round (2026-09-11 night) -- REAL FIX: this
-    rule had no deterministic checker at all (pure judgment, Round-90
-    generic notes, never customized) despite being exactly the same
-    payor-gated date-math shape already proven for HF-01/QA-ACF-12/
-    QA-SM-01 -- reuses extract_acf_fields' own assessment_date extraction
-    (already built for QA-ACF-12) and the same 'Date of Current Report'
-    range every date-math checker in this file already reads.
+    """HF-06: Fix Round (Full Rule-by-Rule Fix List), Item 1 -- her exact
+    new spec: "Assessment/Testing tool has been updated within 3 months
+    for HF clients and 6 months for any other insurance." REAL SCOPE BUG
+    FOUND AND FIXED -- this rule used to self-exclude (not_applicable)
+    for every non-Healthfirst payor, when the real, current spec makes
+    this a universal check with a payor-aware window (3 months for
+    Healthfirst, 6 months for everyone else), not a Healthfirst-only
+    rule. Same date-math shape as before (extract_acf_fields' own
+    assessment_date + 'Date of Current Report'), just no longer gated on
+    payor at all -- only the WINDOW LENGTH is payor-aware now.
     """
     detected_payor = fields.get("payor")
-    if detected_payor != "Healthfirst":
-        return (
-            "not_applicable",
-            f"Detected payor is {detected_payor!r}, not Healthfirst -- this rule only applies to "
-            f"Healthfirst patients.",
-            None, 0.9,
-        )
+    window_months = 3 if detected_payor == "Healthfirst" else 6
     assessment_date_str = extract_acf_fields(fields).get("assessment_date")
     found_range = _find_labeled_date_range_with_offset(fields["full_text"], "Date of Current Report")
     if not assessment_date_str or not found_range:
         return (
             "not_checkable",
             "Could not find both the testing tool's own Assessment Date and this TP's 'Date of Current "
-            "Report' to compute the 3-month window.",
+            "Report' to compute the assessment-recency window.",
             None, 0.0,
         )
     report_range = (found_range[0], found_range[1])
@@ -6728,17 +7983,19 @@ def _check_HF06(rule: dict, fields: dict) -> tuple:
     assessment_date = datetime.strptime(assessment_date_str, "%m/%d/%Y")
     report_end = datetime.strptime(report_range[1], "%m/%d/%Y")
     months_since = (report_end - assessment_date).days / 30.44
-    if months_since <= 3:
+    if months_since <= window_months:
         return (
             "pass",
             f"Testing tool Assessment Date {assessment_date_str} is {months_since:.1f} months before the "
-            f"current report's end date {report_range[1]} -- within the 3-month window.",
+            f"current report's end date {report_range[1]} -- within the {window_months}-month window for "
+            f"payor {detected_payor!r}.",
             page, 0.8,
         )
     return (
         "fail",
         f"Testing tool Assessment Date {assessment_date_str} is {months_since:.1f} months before the "
-        f"current report's end date {report_range[1]} -- exceeds the 3-month window.",
+        f"current report's end date {report_range[1]} -- exceeds the {window_months}-month window for "
+        f"payor {detected_payor!r}.",
         page, 0.8,
     )
 
@@ -6802,6 +8059,9 @@ def _check_SCH05(rule: dict, fields: dict) -> tuple:
 DET_CHECKS = {
     "QA-TEMP-05": _check_TEMP05,
     "QA-RPT-01": _check_RPT01,
+    # Fix Round (Matthielly Cruz 9-2026-U1), Item 3: real, multi-page
+    # blank-field checker -- see _check_TEMP06's own docstring.
+    "QA-TEMP-06": _check_TEMP06,
     "QA-GIP-04": _check_GIP04,
     "HF-02": _check_HF02,
     # Round 92: precondition-only checker -- see _check_HRS05's own docstring.
@@ -6835,6 +8095,9 @@ DET_CHECKS = {
     # Fix Round (Jacob Freund 10-2026-U1), Item 5: not-in-school N/A gate
     # only -- real overlap logic still escalates to judgment.
     "QA-SCH-03": _check_SCH03,
+    # Fix Round (Matthielly Cruz 9-2026-U1), new rule build: real POS
+    # community-specificity checker -- see _check_SCH09's own docstring.
+    "QA-SCH-09": _check_SCH09,
     "QA-SCH-07": _check_SCH07,
     # Round 63, item 5: deterministic pre-check only, for the confirmed
     # objective violation (embedded reviewer comment counted as evidence)
@@ -6885,6 +8148,9 @@ DET_CHECKS = {
     "QA-HRS-12": _check_HRS12,
     "QA-GIP-30": _check_GIP30,
     "QA-GIP-31": _check_GIP31,
+    # Fix Round (Full Rule-by-Rule Fix List), Item 14: real hybrid
+    # DET precondition -- see _check_GIP17's own docstring.
+    "QA-GIP-17": _check_GIP17,
     "QA-GIP-33": _check_GIP33,
     "QA-COC-08": _check_COC08,
     # Fix Round, Section 1 (2026-08-27): 7 real deterministic checkers --
@@ -6923,6 +8189,13 @@ DET_CHECKS = {
     # checker -- reuses this rule's own pre-existing evidence extractor's
     # exact logic (see fields.py::_mast04_context_preview).
     "QA-MAST-04": _check_MAST04,
+    # Fix Round (Matthielly Cruz 9-2026-U1), Item 25: lives-with-parents
+    # N/A gate only -- the real training-recipient review still escalates.
+    "QA-PAR-02": _check_PAR02,
+    # Fix Round (Matthielly Cruz 9-2026-U1), new Healthfirst rule build:
+    # community-mention consistency across Hours Requesting/schedule
+    # grid POS/goals -- see _check_HF10's own docstring.
+    "HF-10": _check_HF10,
     "HF-06": _check_HF06,
     "QA-SCH-05": _check_SCH05,
     "QA-GIP-22": _check_GIP22,
@@ -6972,7 +8245,13 @@ DET_CHECKS = {
     # Fix Round, item 4 (2026-08-12): converted from judgment to
     # deterministic -- see _check_BIP04's own docstring.
     "QA-BIP-04": _check_BIP04,
-    "QA-BIP-01": _check_severity_rating_not_all_mild,
+    # Fix Round (Matthielly Cruz 9-2026-U1), Item 10: dedicated function,
+    # no longer shared with QA-GIP-03 -- see _check_BIP01's own docstring.
+    "QA-BIP-01": _check_BIP01,
+    # Fix Round (real re-verification, MC 9-2026-U1), Item 4: real
+    # keyword-based deterministic checker, disclosed limitation -- see
+    # _check_BIP08's own docstring.
+    "QA-BIP-08": _check_BIP08,
     "QA-GIP-03": _check_severity_rating_not_all_mild,
     # Item 2 (2026-07-28 round 3): the presence half of "increase in hours
     # -> rationale in place", fully deterministic -- see _check_HRS06's
@@ -7053,7 +8332,9 @@ def run_deterministic_checks(rules: list[dict], fields: dict) -> dict[str, dict]
 # finding) turns that into an honest "no relevant data was found" phrase,
 # never a fabricated non-finding dressed up as content.
 
-def _goal_context_preview(fields: dict, *, block_prefix: str | None = None, max_goals: int = 5) -> str:
+def _goal_context_preview(
+    fields: dict, *, block_prefix: str | None = None, max_goals: int = 5, parent_training_only: bool = False,
+) -> str:
     """Real, zero-cost preview of each goal/behavior-target block's own
     key fields (Baseline, Current Data/Level, Mastery Criteria,
     Anticipated Mastery Date, Status), with page citations -- used by
@@ -7063,19 +8344,46 @@ def _goal_context_preview(fields: dict, *, block_prefix: str | None = None, max_
     acquisition) or "Target Name:" (Behavior Reduction) blocks only, when
     the rule is specific to one; None covers both. Caps at `max_goals` so
     a document with dozens of goals doesn't produce a wall of text.
+
+    Fix Round (Matthielly Cruz 9-2026-U1), Item 2: `parent_training_only`
+    added -- HF-05 is about Parent/Caregiver Training goals specifically,
+    but its own preview used to scope by `block_prefix="Target Name:"`
+    (Behavior Reduction, with no domain filter at all), which is why the
+    evidence it showed was elopement/preferred-item goals instead of
+    Parent Training ones. When set, filters to blocks whose own 'Skill
+    Domain:' matches `_PARENT_TRAINING_DOMAIN_RE` (same broadened,
+    case-insensitive pattern QA-MAST-04's checker uses, Item 12) --
+    additive-only, every other caller of this function (None default)
+    is unaffected.
+
+    Fix Round 7 (real fix, mc_current.pdf): `parent_training_only`'s scan
+    used to be per-block-'Skill Domain:'-only, which real evidence showed
+    finds nothing on a document whose real PRT goals live under a header
+    that governs a whole group of goals (mc_current.pdf's own real
+    'Parent/Caregiver Involvement:' shape, or Zaith's 'Parent/Caregiver
+    Goals:' shape) -- exactly why HF-05's own Uncertain evidence was
+    falling through to the generic "no automated context" message even
+    though QA-MAST-04's checker (which already had both tiers) found the
+    same real goals fine on the same document. Now reuses
+    _find_parent_training_goal_blocks, the same two-tier collector
+    _check_MAST04 already relies on, so this preview and that checker's
+    own real Pass/Fail agree on which blocks are real PRT goals.
     """
     text = fields["full_text"]
-    starts = _goal_block_starts(text) + [len(text)]
+    if parent_training_only:
+        candidates = _find_parent_training_goal_blocks(text)
+    else:
+        starts = _goal_block_starts(text) + [len(text)]
+        candidates = [(starts[i], text[starts[i]:starts[i + 1]]) for i in range(len(starts) - 1)]
     previews = []
-    for i in range(len(starts) - 1):
-        block = text[starts[i]:starts[i + 1]]
+    for offset, block in candidates:
         if block_prefix and not block.startswith(block_prefix):
             continue
         marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
         goal_name = block[marker_len:].split("\n", 1)[0].strip()[:80]
         if not goal_name:
             continue
-        page = _page_for_offset(fields, starts[i])
+        page = _page_for_offset(fields, offset)
         found = []
         for label in ("Baseline", "Current Data", "Current Level", "Mastery Criteria", "Anticipated Mastery Date", "Goal Status", "Status"):
             m = re.search(rf"{re.escape(label)}:[ \t]*([^\n]+)", block)
@@ -7087,7 +8395,13 @@ def _goal_context_preview(fields: dict, *, block_prefix: str | None = None, max_
         return ""
     shown = previews[:max_goals]
     suffix = f" (+{len(previews) - max_goals} more goal(s) not shown)" if len(previews) > max_goals else ""
-    return "Goal data found: " + " | ".join(shown) + suffix
+    prefix = (
+        "Real question for HF-05: does any Parent/Caregiver Training goal below have fewer than 3 real "
+        "data points on its own graph, and if so, does its rationale state a plan for improvement? The "
+        "data-point count itself can only be read from each goal's embedded graph image, not from the text "
+        "fields below -- that visual read is why this rule stays on human review. "
+    ) if parent_training_only else ""
+    return prefix + "Goal data found: " + " | ".join(shown) + suffix
 
 
 def _acf_context_preview(fields: dict) -> str:
@@ -7227,7 +8541,13 @@ def _ai03_context_preview(fields: dict) -> str:
 # fallback (pipeline/__init__.py) rather than a silently-empty or
 # fabricated one -- real, disclosed scope, not a claim of completeness.
 STABILIZED_RULE_CONTEXT: dict[str, "Callable[[dict], str]"] = {
-    "HF-05": lambda f: _goal_context_preview(f, block_prefix="Target Name:"),
+    # Fix Round (Matthielly Cruz 9-2026-U1), Item 2: was block_prefix=
+    # "Target Name:" (Behavior Reduction, no domain filter) -- HF-05 is
+    # about Parent/Caregiver Training goals specifically, so this showed
+    # elopement/preferred-item goals instead. Now filters to the actual
+    # domain (both "Target Goal:"/"Target Name:" blocks, whichever the
+    # real Parent Training entries use) via parent_training_only.
+    "HF-05": lambda f: _goal_context_preview(f, parent_training_only=True),
     "QA-GIP-02": _goal_context_preview,
     "QA-GIP-11": lambda f: _goal_context_preview(f, block_prefix="Target Goal:"),
     "QA-GIP-14": _goal_context_preview,

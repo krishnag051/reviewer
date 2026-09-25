@@ -25,7 +25,7 @@ import {
   createPatient, createRule, createSimulatedUpload, createUpload, createVersion, deactivatePatient, finalizeUpload, getAppConfig,
   getLatestIntakeAnswers, getRecentActivity, getReportsOverview, getReportsTrends, getSessionNoteExtraction, getUpload, getVersion,
   listPatientVersions, listPatients, listRules, listSessionNotes, overrideRuleResult, reactivatePatient, setRuleActive,
-  setNotificationSettings, setSupportingDocMode, updateRule,
+  setNotificationSettings, setSupportingDocMode, updateRule, updateVersion,
   type IntakeAnswers, type NotificationSettingsUpdate, type PatientStatusFilter, type RulePayor, type RuleType, type SupportingDocMode,
 } from "./api-client";
 
@@ -116,6 +116,22 @@ export function useCreateVersion() {
   return useMutation({
     mutationFn: (args: { patientId: string; payor?: string | null }) =>
       createVersion(args.patientId, { payor: args.payor }),
+    onSuccess: (_data, args) => {
+      queryClient.invalidateQueries({ queryKey: ["patients"] });
+      queryClient.invalidateQueries({ queryKey: ["patient-versions", args.patientId] });
+    },
+  });
+}
+
+// Fix Round (Full Rule-by-Rule Fix List), Item 17: real production
+// incident -- payor was previously fixed forever once a version existed.
+// Blocked (409) once the version is finalized, same discipline every
+// other post-finalize edit in this codebase already follows.
+export function useUpdateVersion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { versionId: string; patientId: string; payor?: string | null }) =>
+      updateVersion(args.versionId, { payor: args.payor }),
     onSuccess: (_data, args) => {
       queryClient.invalidateQueries({ queryKey: ["patients"] });
       queryClient.invalidateQueries({ queryKey: ["patient-versions", args.patientId] });

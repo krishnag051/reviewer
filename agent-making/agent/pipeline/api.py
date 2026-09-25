@@ -67,6 +67,39 @@ SCHEMA_VERSION = "1.0"
 
 RULES_PATH = Path(__file__).resolve().parent.parent / "rules" / "rules.json"
 
+# Round 7 real fix (QA-BAR-01 "regression"): the pipeline's own CODE was
+# never part of the cache key below -- only the PDF, supporting doc,
+# rules.json bytes, and params. Confirmed real root cause of the reported
+# QA-BAR-01 regression: two stale .cache/tp_reviews/ entries (from before
+# QA-BAR-01 was converted to its current real deterministic barriers-
+# consistency checker) still contain the OLD, deleted "25-hour threshold"
+# judgment-call wording verbatim. QA-BAR-01's own checker code was never
+# actually reverted -- re-submitting a document whose bytes/rules.json/
+# params happen to match one of those old hashes just replayed the
+# pre-fix cached result untouched, with zero re-computation, exactly the
+# same class of staleness `rules_bytes` was added to this hash to prevent
+# (see that comment above) -- code changed, but nothing about the cache
+# KEY reflected that a code change had happened at all.
+_PIPELINE_PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _pipeline_code_hash() -> bytes:
+    """Sha256 over every .py file in this package, sorted by name, so ANY
+    change to the pipeline's own logic (a checker fix, a prompt change, a
+    gate added to run_full_pipeline) changes the cache key -- the same
+    "must invalidate on a real change" guarantee `rules_bytes` already
+    gives for rules.json, extended to cover the code that acts on it.
+    Recomputed fresh each call (a few hundred KB of source, negligible
+    cost next to the pipeline run itself) rather than cached at import
+    time, so a hot-reloaded/edited-in-place module during development is
+    never silently stale either.
+    """
+    hasher = hashlib.sha256()
+    for path in sorted(_PIPELINE_PACKAGE_DIR.glob("*.py")):
+        hasher.update(path.name.encode("utf-8"))
+        hasher.update(path.read_bytes())
+    return hasher.digest()
+
 # The 5 result values agent-making's pipeline actually produces
 # (merge.py/judge.py) — kept here as the wrapper's own explicit contract
 # with itself, not inferred from whatever happens to show up in one run.
@@ -131,6 +164,11 @@ def _review_content_hash(
     to prevent everywhere else. Raw file bytes, not a parsed/re-serialized
     form -- cheapest correct thing that changes if and only if the rules
     file's own real content changes.
+
+    Round 7: `_pipeline_code_hash()` closes the exact same gap for the
+    pipeline's own CODE (see that function's own docstring) -- confirmed
+    root cause of a real QA-BAR-01 "regression" that was never actually a
+    code regression at all.
     """
     hasher = hashlib.sha256()
     hasher.update(pdf_bytes)
@@ -138,6 +176,8 @@ def _review_content_hash(
     hasher.update(supporting_doc_bytes or b"")
     hasher.update(b"\x00rules\x00")
     hasher.update(rules_bytes)
+    hasher.update(b"\x00code\x00")
+    hasher.update(_pipeline_code_hash())
     # A stable, deterministic serialization of every other real input --
     # sort_keys so dict ordering can never produce two different hashes for
     # the same logical content.

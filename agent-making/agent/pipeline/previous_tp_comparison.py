@@ -48,10 +48,12 @@ its OWN half of each compound rule's answer, never touches phase1 itself.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
-from .fields import _extract_evidenced_by_blocks, _normalize_goal_text
+from .fields import _extract_evidenced_by_blocks, _extract_problem_areas, _normalize_goal_text
+from .fields import find_labeled_sections
 from .fields import _page_for_offset as _raw_page_for_offset
 
 
@@ -226,13 +228,46 @@ def _compare_mast02(current_fields: dict, previous_fields: dict) -> dict[str, An
     DOCUMENTS' Mastered Goals lists instead of one document's Mastered vs.
     active-goal sections. Ms. Yachnes's own stated rule (this round's
     brief): "If it appears in one TP, it should NOT appear in the other."
+
+    Fix Round (QA-MAST-02 Didn't Actually Inherit the MAST-01 Extractor
+    Fix) -- REAL BUG FOUND AND FIXED, confirmed against the real MC
+    9-2026-U3 document pair: this function DOES already read the same
+    fixed `current_fields["mastered_goals"]`/`previous_fields
+    ["mastered_goals"]` MAST-01 reads (both built by the same
+    fields.py::_extract_mastered_goals_with_dates, via
+    previous_tp_extraction.py -- there was never a second, separate
+    extractor to fix here). The real bug is this function's own guard:
+    it required BOTH sides' extracted NAME list to be non-empty, and
+    returned not_checkable otherwise -- but old.pdf's real "Mastered
+    Goals:" section is a genuine, CONFIRMED-empty one ("No goals were
+    mastered during this reporting period...", correctly parsed to
+    `[]`, not a missed/unparsed section). A confirmed-empty previous-TP
+    list can never contain a duplicate of anything -- the real, correct
+    answer there is a confident PASS ("nothing to duplicate"), not "can't
+    check." Only when the "Mastered Goals:" LABEL itself can't be found
+    on a document at all (a genuinely different, unknown state -- no
+    section to read, not a real empty one) does this rule have nothing
+    to work with. Distinguishing those two states needs more than the
+    extracted name list alone (which is `[]` in both cases), so this
+    checks for the section label directly on each document's own
+    `full_text` (already available on both fields dicts, same convention
+    _compare_prob04 above already uses) -- not_checkable only when the
+    label itself is missing on either side; the duplicate-detection logic
+    below now runs unconditionally otherwise, and naturally resolves to
+    pass when one or both real lists are empty.
     """
     current_goals = current_fields.get("mastered_goals") or []
     previous_goals = previous_fields.get("mastered_goals") or []
-    if not current_goals or not previous_goals:
+    # Fix Round (Full Rule-by-Rule Fix List, Part A): migrated off a raw,
+    # non-whitespace-tolerant re.search onto the shared
+    # find_labeled_sections primitive -- "found" is now determined the
+    # same way MAST-01/MAST-03 determine it (label exists at all, even
+    # split across a line break), not a second, narrower check.
+    current_has_section = bool(find_labeled_sections(current_fields.get("full_text", ""), "Mastered Goals"))
+    previous_has_section = bool(find_labeled_sections(previous_fields.get("full_text", ""), "Mastered Goals"))
+    if not current_has_section or not previous_has_section:
         return _not_checkable(
-            "Could not find a 'Mastered Goals:' list with named entries on both the current and "
-            "previous TP to compare."
+            "Could not find a 'Mastered Goals:' section on both the current and previous TP to compare."
         )
 
     previous_by_norm: dict[str, str] = {}
@@ -267,6 +302,18 @@ def _compare_mast02(current_fields: dict, previous_fields: dict) -> dict[str, An
             (
                 f"{len(duplicates)} mastered goal(s) appear on BOTH the current and previous TP's "
                 f"Mastered Goals list: {detail}."
+            ),
+            0.75,
+            page,
+        )
+    if not current_goals or not previous_goals:
+        empty_side = "current TP" if not current_goals else "previous TP"
+        return _finding(
+            "pass",
+            (
+                f"No mastered goal name (formatting-normalized) appears on both the current and previous "
+                f"TP's Mastered Goals list -- the {empty_side} has no named mastered goals at all, so no "
+                f"duplicate is possible."
             ),
             0.75,
             page,
@@ -642,6 +689,42 @@ _PROB04_SEMANTIC_SCHEMA = {
 }
 
 
+def _prob04_comparison_blocks(full_text: str) -> list[dict]:
+    """Fix Round (real root-cause, mc_current.pdf/old.pdf), Item 4:
+    confirmed real document shape -- "As evidenced by:" is not one per
+    Problem Area entry, it's zero or one per whole TABLE. PDF text
+    extraction reads a two-column table column-by-column, so a table with
+    an "As evidenced by:" row renders ONE such label followed by every
+    entry's evidence text run together (Behavior Problem Areas, this
+    document: one label, four entries' worth of findings concatenated
+    after it); a table with no such row at all (Social/Communication
+    Problem Areas, this same document) has ZERO "As evidenced by:"
+    occurrences -- its real, patient-specific findings text ("Update:
+    08/2026: Matthielly continues to demonstrate...") is still present,
+    just bled into that table's own "Problem Area:" block instead (with
+    no separate label to stop the capture early, _extract_problem_areas's
+    boundary regex already runs all the way to the next table's own
+    label, so it captures that real content along with the fixed rubric
+    text).
+
+    Relying on _extract_evidenced_by_blocks alone silently drops every
+    table that has no "As evidenced by:" label of its own, even though its
+    real content is sitting right there. Adds in _extract_problem_areas's
+    own blocks too whenever there are fewer "As evidenced by:" blocks than
+    "Problem Area:" blocks -- a real signal that at least one table has no
+    label of its own -- so nothing is silently excluded from the
+    comparison. A document where every table already has its own "As
+    evidenced by:" label (evidenced count == problem-area count) is
+    unaffected -- exactly the shape this function's original,
+    evidenced-only behavior already handled correctly.
+    """
+    evidenced = _extract_evidenced_by_blocks(full_text)
+    problem_areas = _extract_problem_areas(full_text)
+    if len(evidenced) < len(problem_areas):
+        return evidenced + problem_areas
+    return evidenced
+
+
 def _compare_prob04(
     current_fields: dict, previous_fields: dict, *, tracker: CallTracker, model_override: str | None,
 ) -> dict[str, Any]:
@@ -700,8 +783,8 @@ def _compare_prob04(
     empty -- the model can no longer contradict itself, because there is
     no longer a second, independent field to contradict.
     """
-    current_blocks = _extract_evidenced_by_blocks(current_fields.get("full_text", ""))
-    previous_blocks = _extract_evidenced_by_blocks(previous_fields.get("full_text", ""))
+    current_blocks = _prob04_comparison_blocks(current_fields.get("full_text", ""))
+    previous_blocks = _prob04_comparison_blocks(previous_fields.get("full_text", ""))
     if not current_blocks or not previous_blocks:
         return _not_checkable(
             "Could not find an 'As evidenced by:' block with content on both the current and previous TP."
@@ -749,13 +832,19 @@ def _compare_prob04(
     # function's own docstring. Said plainly in every evidence string below
     # so this never reads as a fully-verified answer.
     unconfirmed = "[Corrected extraction (As evidenced by findings, not template text) -- still awaiting Ms. Yachnes's confirmed real answer for this rule.]"
+    # Fix Round (Full Rule-by-Rule Fix List), Item 3: state plainly, every
+    # time, that a real comparison against the previous TP's own Problem
+    # Areas content actually happened -- never ambiguous whether this
+    # result came from a real cross-document comparison versus something
+    # else.
+    compared_against = "Compared against the previous TP's Problem Areas/As-evidenced-by content."
 
     if not identical:
         return _finding(
             "pass",
             (
-                f"{unconfirmed} 'As evidenced by' findings are NOT identical to the previous TP -- new/changed "
-                f"content found: {new_content} {reasoning}"
+                f"{compared_against} {unconfirmed} 'As evidenced by' findings are NOT identical to the "
+                f"previous TP -- new/changed content found: {new_content} {reasoning}"
             ).strip(),
             0.6,
             page,
@@ -764,9 +853,9 @@ def _compare_prob04(
         return _finding(
             "pass",
             (
-                f"{unconfirmed} 'As evidenced by' findings are substantively identical to the previous TP, "
-                f"but the current TP explains this is due to very limited/no additional services provided. "
-                f"{reasoning}"
+                f"{compared_against} {unconfirmed} 'As evidenced by' findings are substantively identical "
+                f"to the previous TP, but the current TP explains this is due to very limited/no additional "
+                f"services provided. {reasoning}"
             ).strip(),
             0.6,
             page,
@@ -774,8 +863,9 @@ def _compare_prob04(
     return _finding(
         "fail",
         (
-            f"{unconfirmed} 'As evidenced by' findings are substantively identical to the previous TP, and "
-            f"the current TP does NOT explain this as due to limited/no additional services. {reasoning}"
+            f"{compared_against} {unconfirmed} 'As evidenced by' findings are substantively identical to "
+            f"the previous TP, and the current TP does NOT explain this as due to limited/no additional "
+            f"services. {reasoning}"
         ).strip(),
         0.6,
         page,

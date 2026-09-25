@@ -43,11 +43,29 @@ def test_hrs12_passes_when_treatment_planning_hours_are_present():
     assert result == "pass"
 
 
-def test_hrs12_not_applicable_for_non_required_payors():
+# SUPERSEDED (Fix Round, Matthielly Cruz 9-2026-U1, Item 6): the "other
+# payor" branch is no longer a blanket not_applicable -- it now really
+# checks whether TP hours were requested. N/A/zero/absent -> a real,
+# confirmed pass (not an assumption); actually requested -> fail.
+def test_hrs12_passes_for_non_required_payors_when_hours_not_actually_requested():
     text = "N/A hours per\nweek.\n97151-Treatment\nPlanning\nBCBA/LBA\n"
     for payor in ("Healthfirst", "Aetna"):
         result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor=payor))
-        assert result == "not_applicable", payor
+        assert result == "pass", payor
+
+
+def test_hrs12_fails_for_non_required_payors_when_hours_actually_requested():
+    text = "2 hours per\nweek.\n97151-Treatment\nPlanning\nBCBA/LBA\n"
+    for payor in ("Healthfirst", "Aetna"):
+        result, evidence, page, confidence = fields._check_HRS12(_rule(), _fields(text, payor=payor))
+        assert result == "fail", payor
+
+
+def test_hrs12_passes_for_non_required_payor_when_row_entirely_absent():
+    result, evidence, page, confidence = fields._check_HRS12(
+        _rule(), _fields("Nothing relevant here.", payor="Healthfirst"),
+    )
+    assert result == "pass"
 
 
 def test_hrs12_not_checkable_when_row_missing_entirely():

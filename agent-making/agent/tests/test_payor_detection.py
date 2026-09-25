@@ -40,7 +40,13 @@ N_UNIVERSAL = sum(1 for r in ACTIVE_RULES if r["applies_to_payor"] == "ALL")
 # as genuinely redundant with (and in real, confirmed contradiction
 # against) HF-01's own age-conditional split. Same reasoning as HF-04's
 # own removal from this set a round ago.
-HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-05", "HF-06", "HF-07"}
+# HF-10 added (Fix Round, Matthielly Cruz 9-2026-U1) -- new Healthfirst-
+# specific rule, "Community hours indicated consistently."
+# HF-06 REMOVED (Fix Round, Full Rule-by-Rule Fix List, Item 1) -- her
+# explicit new spec makes this a universal rule (3-month window for
+# Healthfirst, 6-month window for every other payor), applies_to_payor
+# changed Healthfirst -> ALL, so it's no longer payor-specific at all.
+HEALTHFIRST_ONLY_IDS = {"HF-01", "HF-02", "HF-03", "HF-05", "HF-07", "HF-10"}
 STRAIGHT_MEDICAID_ONLY_IDS = {"SM-01", "SM-02"}
 AETNA_ONLY_IDS = {"AET-01"}
 EMBLEM_ONLY_IDS = {"EMB-01", "EMB-02"}

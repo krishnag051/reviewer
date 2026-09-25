@@ -116,16 +116,16 @@ def test_mast01_ignores_a_goal_with_no_parseable_date_rather_than_crashing():
 
 
 def test_mast02_fails_on_a_real_exact_duplicate_after_normalization():
-    current = {"mastered_goals": [_goal("  Client will mand for a preferred item.  ", "06/01/2026")]}
-    previous = {"mastered_goals": [_goal("Client will mand for a preferred item.", "04/01/2026")]}
+    current = {"full_text": "Mastered Goals:", "mastered_goals": [_goal("  Client will mand for a preferred item.  ", "06/01/2026")]}
+    previous = {"full_text": "Mastered Goals:", "mastered_goals": [_goal("Client will mand for a preferred item.", "04/01/2026")]}
     result = _compare_mast02(current, previous)
     assert result["result"] == "fail"
     assert "mand for a preferred item" in result["evidence"]
 
 
 def test_mast02_passes_with_no_overlap():
-    current = {"mastered_goals": [_goal("Goal X", "06/01/2026")]}
-    previous = {"mastered_goals": [_goal("Goal Y", "04/01/2026")]}
+    current = {"full_text": "Mastered Goals:", "mastered_goals": [_goal("Goal X", "06/01/2026")]}
+    previous = {"full_text": "Mastered Goals:", "mastered_goals": [_goal("Goal Y", "04/01/2026")]}
     assert _compare_mast02(current, previous)["result"] == "pass"
 
 
@@ -134,14 +134,39 @@ def test_mast02_is_not_fuzzy_only_formatting_normalized():
     only -- genuinely different wording of the same underlying goal must
     NOT be flagged (that's judgment-layer territory, not this deterministic
     check's job, same discipline QA-GIP-05 already established)."""
-    current = {"mastered_goals": [_goal("Client will point to a requested item", "06/01/2026")]}
-    previous = {"mastered_goals": [_goal("Client requests items by pointing", "04/01/2026")]}
+    current = {"full_text": "Mastered Goals:", "mastered_goals": [_goal("Client will point to a requested item", "06/01/2026")]}
+    previous = {"full_text": "Mastered Goals:", "mastered_goals": [_goal("Client requests items by pointing", "04/01/2026")]}
     assert _compare_mast02(current, previous)["result"] == "pass"
 
 
-def test_mast02_not_checkable_with_no_previous_mastered_goals():
-    current = {"mastered_goals": [_goal("Goal X", "06/01/2026")]}
-    assert _compare_mast02(current, {"mastered_goals": []})["result"] == "not_checkable"
+def test_mast02_not_checkable_with_no_mastered_goals_section_on_either_document():
+    """Fix Round (QA-MAST-02 Didn't Actually Inherit the MAST-01 Extractor
+    Fix): not_checkable is now reserved for genuinely never finding a
+    'Mastered Goals:' section at all -- not merely an empty extracted
+    name list (a confirmed-empty section is a real, comparable fact; see
+    test_mast02_passes_when_one_side_has_a_confirmed_empty_section
+    below)."""
+    current = {"full_text": "No mastered goals section anywhere in this text.", "mastered_goals": [_goal("Goal X", "06/01/2026")]}
+    assert _compare_mast02(current, {"full_text": "Also nothing here.", "mastered_goals": []})["result"] == "not_checkable"
+
+
+def test_mast02_passes_when_one_side_has_a_confirmed_empty_section():
+    """Fix Round (QA-MAST-02 Didn't Actually Inherit the MAST-01 Extractor
+    Fix) -- REAL BUG FOUND AND FIXED, confirmed against old.pdf's real
+    content ('Mastered Goals:\\nAdditonal Notes: No goals were mastered
+    during this reporting period...'): a document whose own 'Mastered
+    Goals:' section is confirmed empty has nothing that could possibly
+    duplicate the other side's real mastered goal -- the correct real
+    answer is a confident pass, not not_checkable. Previously this
+    resolved to not_checkable because the guard only checked whether the
+    extracted NAME list was non-empty, which is indistinguishable from
+    'section never found at all' -- exactly the real bug this round
+    fixes."""
+    current = {"full_text": "Mastered Goals:\nClient will mand for preferred item in sight.", "mastered_goals": [_goal("Client will mand for preferred item in sight.", "06/01/2026")]}
+    previous = {"full_text": "Mastered Goals:\nNo goals were mastered during this reporting period.", "mastered_goals": []}
+    result = _compare_mast02(current, previous)
+    assert result["result"] == "pass"
+    assert "no named mastered goals" in result["evidence"]
 
 
 # --- QA-RPT-05 (previous-auth-end half) --------------------------------------

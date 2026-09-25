@@ -266,6 +266,68 @@ def test_patch_version_reviewer_and_assessment_date(client, db_session, seeded_b
     assert audit_row.details["assessment_date"]["to"] == "2026-01-15"
 
 
+def test_patch_version_payor_real_edit_with_audit(client, db_session, seeded_baseline):
+    """Fix Round (Full Rule-by-Rule Fix List), Item 17: the real
+    production incident this closes -- a version's payor set wrong at
+    creation had no way to be corrected short of archiving the whole
+    upload. Confirmed inert to rule-checking (see VersionUpdate.payor's
+    own comment) -- a real, auditable edit, same diff/record() pattern
+    every other PATCH here already uses.
+    """
+    headers = login_headers(client, "m.chen@brightpath-aba.com")
+    patient = _create_patient(client, headers)
+    version = _create_version(client, headers, patient["id"])
+
+    resp = client.patch(
+        f"/api/versions/{version['id']}",
+        json={"payor": "New York Medicaid"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["payor"] == "New York Medicaid"
+
+    audit_row = db_session.execute(
+        select(AuditLog).where(AuditLog.target_type == "version", AuditLog.target_id == uuid.UUID(version["id"]))
+        .order_by(AuditLog.created_at.desc())
+    ).scalars().first()
+    assert audit_row is not None
+    assert audit_row.details["payor"] == {"from": None, "to": "New York Medicaid"}
+
+
+def test_patch_version_payor_blocked_once_finalized(client, db_session, seeded_baseline):
+    """A finalized version's payor, like its score, is frozen forever --
+    same override-blocked-when-final discipline this codebase already
+    applies everywhere else. Directly sets status="finalized" on the
+    version row (bypassing the full upload/resolve/finalize flow) purely
+    to isolate this one guard condition.
+    """
+    headers = login_headers(client, "m.chen@brightpath-aba.com")
+    patient = _create_patient(client, headers)
+    version = _create_version(client, headers, patient["id"])
+
+    db_version = db_session.get(Version, uuid.UUID(version["id"]))
+    db_version.status = "finalized"
+    db_session.commit()
+
+    resp = client.patch(
+        f"/api/versions/{version['id']}",
+        json={"payor": "New York Medicaid"},
+        headers=headers,
+    )
+    assert resp.status_code == 409, resp.text
+
+    # reviewer_id/assessment_date's own existing (pre-existing, unrelated
+    # to this round) behavior on a finalized version is untouched --
+    # confirms the new guard is scoped to payor only, not a blanket
+    # lockout of this endpoint.
+    resp2 = client.patch(
+        f"/api/versions/{version['id']}",
+        json={"assessment_date": "2026-01-15"},
+        headers=headers,
+    )
+    assert resp2.status_code == 200, resp2.text
+
+
 # ----------------------------------------------------------------- uploads
 
 def test_create_upload_sequential_numbering(client, db_session, seeded_baseline):

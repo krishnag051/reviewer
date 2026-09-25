@@ -284,6 +284,22 @@ export async function createVersion(
   });
 }
 
+// Fix Round (Full Rule-by-Rule Fix List), Item 17: real production
+// incident -- a version's payor set wrong at creation had no way to be
+// corrected short of archiving the whole upload. Blocked with a 409 by
+// the backend once the version is finalized (see
+// backend/app/routers/versions.py::update_version).
+export async function updateVersion(
+  versionId: string,
+  body: { reviewer_id?: string | null; assessment_date?: string | null; payor?: string | null },
+): Promise<VersionOut> {
+  return request(`/versions/${versionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // --- Uploads / rule_results ----------------------------------------------
 
 export type RuleResultOut = {

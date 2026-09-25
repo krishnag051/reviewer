@@ -30,6 +30,16 @@ class VersionCreate(BaseModel):
 class VersionUpdate(BaseModel):
     reviewer_id: uuid.UUID | None = None
     assessment_date: date | None = None
+    # Fix Round (Full Rule-by-Rule Fix List), Item 17: real production
+    # incident -- a version's payor was mistakenly set to Healthfirst
+    # instead of New York Medicaid at upload time, and the only fix was
+    # to archive the whole upload and start over, since nothing could
+    # change it afterward. Confirmed via direct investigation that payor
+    # is provably inert to rule-checking (app/rule_engine/client.py never
+    # forwards it to the agent; the only consumers are GET /uploads/:id's
+    # own display sort order and the override-analytics view) -- a real
+    # edit here is a pure relabel, never a recompute/re-run trigger.
+    payor: str | None = None
 
 
 class UploadOut(BaseModel):
@@ -164,6 +174,19 @@ def update_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="version not found")
 
     requested = body.model_dump(exclude_unset=True)
+
+    # Fix Round (Full Rule-by-Rule Fix List), Item 17: a finalized
+    # version's payor, like its score, is frozen forever -- same
+    # override-blocked-when-final discipline every other post-finalize
+    # edit in this codebase already follows. Scoped to payor only
+    # (reviewer_id/assessment_date's existing, pre-existing behavior on a
+    # finalized version is left exactly as it was -- not this round's
+    # question to revisit).
+    if "payor" in requested and version.status == "finalized":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="cannot change payor on a finalized version",
+        )
 
     if "reviewer_id" in requested and requested["reviewer_id"] is not None:
         reviewer = db.get(User, requested["reviewer_id"])

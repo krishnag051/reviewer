@@ -267,7 +267,10 @@ def test_gip21_fails_with_a_bare_number_current_data_and_no_notes():
     assert result == "fail"
 
 
-# --- Bucket D, item 10: QA-SCH-09 -- confirmed not a fixed-list rule -------
+# --- Bucket D, item 10: QA-SCH-09 -- SUPERSEDED (Fix Round, Matthielly
+# Cruz 9-2026-U1, new rule build): confirmed NOT a fixed-list/enum rule
+# was still true, but ma'am has since given the concrete POS/schedule-
+# grid spec needed to build a real checker -- see fields.py::_check_SCH09.
 
-def test_sch09_has_no_checker_registered_confirmed_not_a_fixed_list():
-    assert "QA-SCH-09" not in fields.DET_CHECKS
+def test_sch09_now_has_a_real_checker_registered():
+    assert "QA-SCH-09" in fields.DET_CHECKS

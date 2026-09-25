@@ -201,15 +201,51 @@ from .render import render_flagged_pages
 # has offered to help define what real signal this rule can be checked
 # against, and nothing was built without that input; see this round's
 # report for the specific question back to her.
+#
+# UN-PINNED (Fix Round, Matthielly Cruz 9-2026-U1): QA-PAR-02 (Item 25,
+# real lives-with-parents N/A gate built -- see fields.py::_check_PAR02),
+# QA-TEMP-06 (Item 3, real multi-page blank-field checker built -- see
+# fields.py::_check_TEMP06), QA-SCH-09 (new rule build -- she finally gave
+# the concrete POS/schedule-grid spec needed; see fields.py::_check_SCH09).
+# HF-05 STAYS pinned but its own context-preview extractor was fixed
+# (Item 2, wrong-domain evidence) -- still genuinely image-dependent, not
+# unpinned.
+#
+# UN-PINNED (Fix Round, Full Rule-by-Rule Fix List): QA-GIP-17 (Item 14,
+# real hybrid DET precondition built -- see fields.py::_check_GIP17) and
+# QA-GIP-29 (Item 11, registered for real vision access -- see
+# VISION_ELIGIBLE_RULE_SECTIONS). QA-AI-05 (Item 15) is ALSO un-pinned
+# this round -- spelling/grammar checking is a well-established,
+# tractable judgment task (per her own explicit instruction), unlike a
+# clinical judgment call; there is no keyword-shaped structural half to
+# build deterministically the way QA-GIP-17 has one, so the real attempt
+# here is letting it actually reach a real judgment call for the first
+# time, instead of hand-building a dictionary-based spell-checker out of
+# proportion to this fix. DISCLOSED, NOT YET VERIFIED: this rule was
+# never confirmed working before being pinned in the first place, and
+# unpinning without a real 2-run stability check (real, billed API
+# calls) genuinely could reintroduce the exact coin-flip problem this
+# list exists to prevent -- flagged plainly rather than run that
+# verification without explicit per-instance approval.
 STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
     "QA-GIP-14",  # original 2 minus QA-MAST-04, unpinned this round (see above)
-    "QA-AI-03", "QA-AI-05", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
-    "QA-COC-07", "QA-GIP-02", "QA-GIP-17", "QA-GIP-20", "QA-GIP-23",
-    "QA-GIP-25", "QA-GIP-27", "QA-GIP-29", "QA-GIP-34", "QA-GIP-35",
-    "QA-PAR-02", "QA-SCH-09", "QA-TEMP-06",
+    "QA-AI-03", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
+    "QA-COC-07", "QA-GIP-02", "QA-GIP-20", "QA-GIP-23",
+    "QA-GIP-25", "QA-GIP-27", "QA-GIP-34", "QA-GIP-35",
     "HF-05", "QA-ACF-03", "QA-PPI-05",
     "QA-GIP-11",
 })
+# QA-GIP-29 UN-PINNED (Fix Round, Full Rule-by-Rule Fix List, Item 11):
+# was riding the generic stabilized-uncertain template (a raw
+# Baseline/Current-Data/Mastery-Criteria goal-context DUMP, never
+# actually answering "is a graph present, and if not, is a rationale
+# given") -- registered under VISION_ELIGIBLE_RULE_SECTIONS's own
+# "gip_graph" section (same real per-goal image QA-GIP-28/32/34/35
+# already read) so it now gets a real judgment call WITH the actual
+# rendered graph image, instead of never attempting a real answer at
+# all. NOT YET VERIFIED against a real document run (that needs a real,
+# billed judgment call -- flagged plainly rather than run without
+# explicit per-instance approval).
 
 # Fix Round (2026-09-15), "Language Regression": REAL FIX -- this text
 # used internal engineering language ("repeated sampling", "near-random
@@ -251,6 +287,26 @@ def _stabilized_uncertain_finding(rule_id: str | None = None, fields: dict | Non
     """
     if rule_id is None or fields is None:
         return {"result": "uncertain", "evidence": _STABILIZED_UNCERTAIN_FRAMING, "page": None, "confidence": 0.0}
+    # Fix Round (real re-verification, MC 9-2026-U1), Item 5: HF-05 is
+    # about Parent/Caregiver Training goals specifically -- if there are
+    # ZERO such goals in the document at all, this rule's own precondition
+    # doesn't apply, and it must resolve not_applicable directly rather
+    # than escalate into the generic "no automated context available"
+    # Uncertain template. Confirmed on the real document that surfaced
+    # this bug: QA-MAST-04's own checker already correctly detects zero
+    # Parent Training goals here -- fields_module._has_any_parent_training_goal
+    # reuses that exact, already-proven-working detection. Scoped to
+    # HF-05 only; every other stabilized rule_id is completely unaffected.
+    if rule_id == "HF-05" and not fields_module._has_any_parent_training_goal(fields):
+        return (
+            {
+                "result": "not_applicable",
+                "evidence": "No Parent/Caregiver Training goals found in this document -- this rule's "
+                             "precondition doesn't apply.",
+                "page": None,
+                "confidence": 0.85,
+            }
+        )
     context = fields_module.get_stabilized_rule_context(rule_id, fields)
     tail = context if context else _STABILIZED_UNCERTAIN_NO_CONTEXT
     return {
@@ -259,6 +315,63 @@ def _stabilized_uncertain_finding(rule_id: str | None = None, fields: dict | Non
         "page": None,
         "confidence": 0.0,
     }
+
+
+def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple]) -> dict:
+    """Round 7 real fix (QA-GIP-12 regression) -- see the call site's own
+    comment above for why this exists. Only handles the two documented
+    multi-page shapes (`page` as list[int]; `evidence` as the
+    `[{page, detail}, ...]` list form -- see merge.py's own docstrings for
+    both) since those are the only shapes a "pages this finding covers"
+    union is well-defined for; a single-page `page`/plain-string
+    `evidence` finding is left completely untouched; adding candidate
+    pages to a genuinely single-citation finding would be inventing a
+    shape the rest of the pipeline (merge.py, humanize.py, the CSV
+    export) was never built to expect from this rule, not a safe
+    "floor" — case 3 in this fix's own report, an acceptable limitation
+    on THIS round's scope, not silently dropped.
+    """
+    candidate_pages = {page for page, _name, _term in candidates if page is not None}
+    if not candidate_pages:
+        return result
+    candidates_by_page = {}
+    for page, name, term in candidates:
+        if page is not None and page not in candidates_by_page:
+            candidates_by_page[page] = (name, term)
+
+    if isinstance(result.get("evidence"), list):
+        covered = {item["page"] for item in result["evidence"] if item.get("page") is not None}
+        missing = sorted(candidate_pages - covered)
+        if not missing:
+            return result
+        added = [
+            {
+                "page": page,
+                "detail": f"Deterministic keyword scan (real, not model-generated): goal "
+                          f"'{candidates_by_page[page][0]}' contains the literal verbal-operant term "
+                          f"'{candidates_by_page[page][1]}'.",
+            }
+            for page in missing
+        ]
+        return {**result, "evidence": result["evidence"] + added}
+
+    if isinstance(result.get("page"), list):
+        covered = set(result["page"])
+        missing = sorted(candidate_pages - covered)
+        if not missing:
+            return result
+        missing_desc = "; ".join(
+            f"page {page}: goal '{candidates_by_page[page][0]}' contains the literal term "
+            f"'{candidates_by_page[page][1]}'" for page in missing
+        )
+        evidence = result.get("evidence")
+        extended_evidence = (
+            f"{evidence} Deterministic keyword scan also confirmed these additional real pages: {missing_desc}."
+            if isinstance(evidence, str) else evidence
+        )
+        return {**result, "page": sorted(covered | candidate_pages), "evidence": extended_evidence}
+
+    return result
 
 
 def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
@@ -305,6 +418,49 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
 
     rules_by_id = {r["rule_id"]: r for r in rules}
 
+    # QA-GIP-12 real fix (Round 6, Zaith 9-2026-U1): two-pass hybrid, Pass
+    # 2 -- feed Pass 1's deterministic literal-verbal-operant-term page
+    # scan (fields_module.gip12_verbal_operant_candidate_pages) into the
+    # judgment call as forced additional context, using the SAME
+    # extra_context convention pipeline/api.py's own extra_rule_context
+    # param already established (judge.py::_build_prompt reads it as
+    # "additional_real_data"). A staging run confirmed judgment alone
+    # missed several real literal occurrences on the real Zaith document
+    # (7 of ~12 real pages found); this gives the judge an explicit,
+    # page-numbered floor to confirm and build on, closing that specific
+    # miss without pretending the whole rule is deterministic -- a goal
+    # that's operant-SHAPED without using one of these 4 literal words
+    # (see this function's own docstring) still needs real judgment, and
+    # still gets it, same as before.
+    gip12_candidates = fields_module.gip12_verbal_operant_candidate_pages(extracted_fields)
+    if gip12_candidates and "QA-GIP-12" in rules_by_id:
+        candidate_lines = "; ".join(
+            f"page {page if page is not None else '?'}: goal '{name}' contains the literal term '{term}'"
+            for page, name, term in gip12_candidates
+        )
+        # Round 7 real fix: reworded after a confirmed regression -- the
+        # previous wording ("treat this as a floor... must be included")
+        # is consistent with the model anchoring on this list and citing
+        # FEWER pages than it found unaided before this context existed
+        # (real evidence: 5 pages after vs. 7 before, all 5 a subset of
+        # the 7). This is now explicitly framed as a starting point to
+        # read PAST, not a list to reconcile down to, and the actual
+        # completeness guarantee is enforced in code afterward
+        # (_merge_gip12_candidate_pages below), not left to the model to
+        # honor on its own.
+        gip12_context = (
+            "As a starting point (not a complete list -- read the full document yourself for more), a "
+            f"deterministic keyword scan already found a literal verbal-operant term on these pages: "
+            f"{candidate_lines}. Your own citation list should be AT LEAST this long, most likely longer: "
+            "read the whole document for every goal naming an operant (mand/tact/intraverbal/echoic) "
+            "explicitly OR phrased that way without the literal word (e.g. 'will request...' counts as "
+            "mand-shaped)."
+        )
+        rules_by_id["QA-GIP-12"] = {**rules_by_id["QA-GIP-12"], "extra_context": gip12_context}
+        applicable_rules = [
+            rules_by_id["QA-GIP-12"] if r["rule_id"] == "QA-GIP-12" else r for r in applicable_rules
+        ]
+
     # Any deterministic finding that came back not_checkable/uncertain, or
     # with confidence below the escalation threshold, gets a second look from
     # the judgment layer in the same call — it has the rendered images and
@@ -342,6 +498,29 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     )
     for rule_id in stabilized_rule_ids:
         judgment_results[rule_id] = _stabilized_uncertain_finding(rule_id, extracted_fields)
+
+    # Round 7 real fix (QA-GIP-12 regression): real evidence showed the
+    # two-pass design (built last round) making things WORSE, not better
+    # -- page coverage went from 7 pages to 5, all 5 a SUBSET of the
+    # original 7. Root cause: Pass 1's candidate list was only ever
+    # HANDED to the judge as a prompt instruction ("treat this as a
+    # floor") and trusted to be honored -- nothing in code actually
+    # enforced it. A model given a specific, confidently-worded candidate
+    # list can anchor on it and stop looking further instead of treating
+    # it as a floor, which is exactly consistent with the real symptom
+    # (the final page list shrank toward Pass 1's own candidates instead
+    # of growing to their union with judgment's own independent read).
+    # Fixed by making the floor a real, code-enforced guarantee instead
+    # of a prompt request: after judgment returns, union any Pass-1
+    # candidate page judgment didn't already cite back into the result.
+    # This can only ADD real, deterministically-sourced pages -- it can
+    # never remove one judgment found on its own, so this is strictly a
+    # floor, not a ceiling, by construction rather than by asking the
+    # model nicely.
+    if "QA-GIP-12" in judgment_results and gip12_candidates:
+        judgment_results["QA-GIP-12"] = _merge_gip12_candidate_pages(
+            judgment_results["QA-GIP-12"], gip12_candidates,
+        )
 
     # For escalated rules, the judgment result wins (more context to work
     # with) — but the original deterministic attempt is kept as a secondary

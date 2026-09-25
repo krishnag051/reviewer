@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  usePatients, usePatientVersions, useCreatePatient, useCreateVersion, useCreateUpload, useCreateSimulatedUpload,
+  usePatients, usePatientVersions, useCreatePatient, useCreateVersion, useUpdateVersion, useCreateUpload, useCreateSimulatedUpload,
   useAppConfig, useLatestIntakeAnswers,
 } from "@/lib/real-data";
 import { ApiError, type IntakeAnswers } from "@/lib/api-client";
@@ -288,10 +288,20 @@ function UploadPage() {
   const [existingSessionNotes, setExistingSessionNotes] = useState<File[]>([]);
   const [existingSupportingDocument, setExistingSupportingDocument] = useState<File | null>(null);
   const [existingPreviousTp, setExistingPreviousTp] = useState<File | null>(null);
+  // Fix Round (Full Rule-by-Rule Fix List), Item 17: real production
+  // incident -- payor used to be read-only forever once a patient
+  // existed (see IntakeQAFields' own payorDisabled, now removed for this
+  // flow). Prefilled from the patient's current payor, editable from
+  // there, same "prefilled but editable" convention existingQaAnswers
+  // already uses below.
+  const [existingPayor, setExistingPayor] = useState<Payor>(PAYORS[0]);
   const latestAnswersQuery = useLatestIntakeAnswers(selectedExisting?.id);
   useEffect(() => {
     if (latestAnswersQuery.data) setExistingQaAnswers(latestAnswersQuery.data);
   }, [latestAnswersQuery.data]);
+  useEffect(() => {
+    if (selectedExisting?.payor) setExistingPayor(selectedExisting.payor as Payor);
+  }, [selectedExisting?.payor]);
 
   const filtered = search
     ? patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.reference_id.toLowerCase().includes(search.toLowerCase())).slice(0, 5)
@@ -299,6 +309,7 @@ function UploadPage() {
 
   const createPatientMutation = useCreatePatient();
   const createVersionMutation = useCreateVersion();
+  const updateVersionMutation = useUpdateVersion();
   const createUploadMutation = useCreateUpload();
   const createSimulatedUploadMutation = useCreateSimulatedUpload();
 
@@ -393,11 +404,29 @@ function UploadPage() {
     }
     setSubmitting(true);
     try {
-      const versionId = existingLatestIsDraft
-        ? existingLatestVersion!.id
-        : (await createVersionMutation.mutateAsync({ patientId: selectedExisting.id })).id;
+      // Fix Round (Full Rule-by-Rule Fix List), Item 17: existingPayor is
+      // now a real, editable field (prefilled from the patient's current
+      // payor, not read-only) -- a brand-new version can take its own
+      // payor at creation time (VersionCreate.payor already supported
+      // this); attaching to an EXISTING draft version needs a real PATCH
+      // instead, since that version already exists. Only PATCHes when
+      // the value actually changed, so an unedited flow makes no extra
+      // call.
+      let versionId: string;
+      if (existingLatestIsDraft) {
+        versionId = existingLatestVersion!.id;
+        if (existingPayor !== existingLatestVersion!.payor) {
+          await updateVersionMutation.mutateAsync({
+            versionId, patientId: selectedExisting.id, payor: existingPayor,
+          });
+        }
+      } else {
+        versionId = (await createVersionMutation.mutateAsync({
+          patientId: selectedExisting.id, payor: existingPayor,
+        })).id;
+      }
       await submitUpload(
-        versionId, file, existingSupportingDocument, existingQaAnswers, existingSessionNotes, selectedExisting.payor,
+        versionId, file, existingSupportingDocument, existingQaAnswers, existingSessionNotes, existingPayor,
         existingPreviousTp,
       );
       toast.success(
@@ -587,7 +616,7 @@ function UploadPage() {
                       {requiresSupportingInfo && (
                         <IntakeQAFields
                           mode={supportingDocMode} qaAnswers={existingQaAnswers} setQaAnswers={setExistingQaAnswers}
-                          payor={(selectedExisting?.payor as Payor) ?? PAYORS[0]} setPayor={() => {}} payorDisabled
+                          payor={existingPayor} setPayor={setExistingPayor}
                         />
                       )}
                     </div>

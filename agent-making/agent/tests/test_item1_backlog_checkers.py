@@ -276,9 +276,14 @@ def test_severity_not_checkable_with_no_ratings():
     assert result == "not_checkable"
 
 
-def test_bip01_and_gip03_share_the_same_checker_function():
-    assert fields.DET_CHECKS["QA-BIP-01"] is fields.DET_CHECKS["QA-GIP-03"]
-    assert fields.DET_CHECKS["QA-BIP-01"] is fields._check_severity_rating_not_all_mild
+# SUPERSEDED (Fix Round, Matthielly Cruz 9-2026-U1, Item 10): QA-BIP-01
+# split into its own dedicated function (fields.py::_check_BIP01) so it
+# could also cite the skill acquisition summary/rationale location --
+# QA-GIP-03 keeps the original, unmodified shared function.
+def test_bip01_now_has_its_own_dedicated_checker_gip03_unchanged():
+    assert fields.DET_CHECKS["QA-BIP-01"] is fields._check_BIP01
+    assert fields.DET_CHECKS["QA-BIP-01"] is not fields.DET_CHECKS["QA-GIP-03"]
+    assert fields.DET_CHECKS["QA-GIP-03"] is fields._check_severity_rating_not_all_mild
 
 
 # --- QA-HRS-06: hours-increase-needs-rationale (presence half only) ---

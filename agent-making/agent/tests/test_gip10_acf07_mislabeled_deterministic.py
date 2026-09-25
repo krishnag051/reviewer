@@ -196,8 +196,16 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_eighty_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...seventy_one..." (Fix Round, 2026-09-11 night,
+def test_exactly_eighty_six_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...eighty_five..." (Fix Round, Full Rule-by-Rule Fix
+    List) -- 1 more joined: QA-GIP-17 (see the matched-set literal's own
+    trailing comment).
+
+    Renamed from "...eighty_four..." (Fix Round, real re-verification,
+    MC 9-2026-U1) -- 1 more joined: QA-BIP-08 (see the matched-set
+    literal's own trailing comment).
+
+    Renamed from "...seventy_one..." (Fix Round, 2026-09-11 night,
     same round) -- 2 more joined: QA-SCH-05, QA-GIP-22.
 
     Renamed from "...sixty_eight..." (Fix Round, 2026-09-11 night,
@@ -461,6 +469,29 @@ def test_exactly_eighty_deterministic_labeled_rules_have_real_checkers():
         # each checker's own docstring in pipeline/fields.py.
         "QA-SCH-03", "QA-HRS-07", "QA-BIO-06", "QA-ACF-09", "QA-ACF-11",
         "QA-MAST-04", "QA-PROB-04",
+        # Fix Round (Matthielly Cruz 9-2026-U1): 4 more joined -- QA-PAR-02
+        # (real lives-with-parents N/A gate, Item 25; relabeled from
+        # judgment), QA-TEMP-06 (real multi-page blank-field checker,
+        # Item 3; relabeled from judgment), QA-SCH-09 (real POS
+        # community-specificity checker, new rule build; relabeled from
+        # judgment), HF-10 (real community-consistency checker, brand
+        # new rule) -- see each checker's own docstring in
+        # pipeline/fields.py.
+        "QA-PAR-02", "QA-TEMP-06", "QA-SCH-09", "HF-10",
+        # Fix Round (real re-verification, MC 9-2026-U1), Item 4: QA-BIP-08
+        # converted from judgment to a real deterministic checker
+        # (keyword-based Problem-Areas/Reason-for-Referral behavior list
+        # cross-referenced against Target Name: BIP goal blocks, missing
+        # behaviors named on fail) -- see fields._check_BIP08's own
+        # docstring. Disclosed limitation: fixed keyword list, not yet
+        # verified against the real document.
+        "QA-BIP-08",
+        # Fix Round (Full Rule-by-Rule Fix List), Item 14: QA-GIP-17
+        # converted from judgment to a real hybrid DET precondition
+        # checker (structural SD/measurable check, escalates the
+        # genuinely semantic deficit-statement question) -- see
+        # fields._check_GIP17's own docstring.
+        "QA-GIP-17",
     }
 
 

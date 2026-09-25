@@ -49,8 +49,21 @@ def test_all_stabilized_rules_return_the_fixed_finding_with_zero_model_calls(mon
     # extractor correctly finds nothing -- the honest "no context" tail,
     # not a fabricated finding. See test_stabilized_evidence_includes_real_
     # extracted_context below for the real-content case.
+    #
+    # Fix Round (real re-verification, MC 9-2026-U1), Item 5: HF-05 is
+    # excluded from this generic "always uncertain" assertion. On a blank
+    # document there are zero Parent/Caregiver Training goals, so HF-05's
+    # own precondition doesn't apply and it now correctly resolves
+    # not_applicable directly (still with zero model calls) instead of
+    # falling into the generic Uncertain template -- see
+    # test_a_broken_context_extractor_never_crashes_the_whole_review below
+    # for the has-PRT-goal case, where the generic Uncertain fallback path
+    # is still exercised.
     for rid in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS:
         assert rid not in seen_rule_ids, f"{rid} must never reach the real judgment call"
+        if rid == "HF-05":
+            assert result["findings"][rid]["result"] == "not_applicable"
+            continue
         assert result["findings"][rid]["result"] == "uncertain"
         assert pipeline_module._STABILIZED_UNCERTAIN_FRAMING in result["findings"][rid]["evidence"]
         assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT in result["findings"][rid]["evidence"]
@@ -106,7 +119,31 @@ def test_stabilized_rule_ids_include_every_rule_confirmed_unstable_by_the_real_p
     # Fix Round (Jacob Freund 10-2026-U1), Item 3: QA-HRS-07 is a THIRD
     # deliberate exception -- a real deterministic no-increase gate was
     # built (fields.py::_check_HRS07), un-pinned this round.
-    still_applicable = confirmed_unstable - {"QA-BIP-03", "QA-GIP-22", "QA-HRS-07"}
+    #
+    # Fix Round (Matthielly Cruz 9-2026-U1), Items 25/3/new-rule-build:
+    # QA-PAR-02 (real lives-with-parents N/A gate), QA-TEMP-06 (real
+    # multi-page blank-field checker), and QA-SCH-09 (real POS checker,
+    # she finally gave the concrete spec) are FOURTH/FIFTH/SIXTH
+    # deliberate exceptions -- all three un-pinned this round.
+    #
+    # Fix Round (Full Rule-by-Rule Fix List), Item 11: QA-GIP-29 is a
+    # SEVENTH deliberate exception -- un-pinned this round and registered
+    # for real vision access (see pipeline/fields.py's own
+    # VISION_ELIGIBLE_RULE_SECTIONS comment), instead of a real
+    # deterministic gate like the others above, but the same real
+    # attempt discipline this list already tracks.
+    #
+    # Fix Round (Full Rule-by-Rule Fix List), Item 14: QA-GIP-17 is an
+    # EIGHTH deliberate exception -- a real hybrid DET precondition
+    # checker (fields.py::_check_GIP17), un-pinned this round.
+    # Fix Round (Full Rule-by-Rule Fix List), Item 15: QA-AI-05 is a NINTH
+    # deliberate exception -- un-pinned this round to let it reach a
+    # real judgment call for the first time (see pipeline/__init__.py's
+    # own comment for why a deterministic rewrite wasn't attempted).
+    still_applicable = confirmed_unstable - {
+        "QA-BIP-03", "QA-GIP-22", "QA-HRS-07", "QA-PAR-02", "QA-TEMP-06", "QA-SCH-09", "QA-GIP-29",
+        "QA-GIP-17", "QA-AI-05",
+    }
     assert still_applicable.issubset(pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS)
     # Fix Round (2026-09-11 evening) added 8 more real, confirmed-unstable
     # rule_ids on top of this Part 3 baseline (see that round's own comment
@@ -132,12 +169,22 @@ def test_stabilized_rule_ids_still_include_the_ones_not_fixed_this_round():
     # round -- moved out of "still pinned."
     still_pinned = {
         "HF-05", "QA-ACF-03",  # image/graph-dependent (approved to stay)
-        "QA-GIP-17", "QA-GIP-11", "QA-SCH-09", "QA-TEMP-06",  # genuine residual judgment calls
+        "QA-GIP-11",  # genuine residual judgment call
     }
     assert still_pinned.issubset(pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS)
     assert "QA-BIO-06" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
     assert "QA-ACF-11" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
     assert "QA-MAST-04" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
+    # Fix Round (Full Rule-by-Rule Fix List), Item 14: QA-GIP-17 got a
+    # real hybrid DET precondition checker this round (see
+    # fields.py::_check_GIP17's own docstring) -- un-pinned, moved out
+    # of "still pinned."
+    assert "QA-GIP-17" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
+    # Fix Round (Matthielly Cruz 9-2026-U1): QA-SCH-09/QA-PAR-02/
+    # QA-TEMP-06 all got real checkers built and are un-pinned this round.
+    assert "QA-SCH-09" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
+    assert "QA-PAR-02" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
+    assert "QA-TEMP-06" not in pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS
 
 
 def test_stabilized_rule_ids_no_longer_include_the_7_real_fixes_this_round():
@@ -245,10 +292,18 @@ def test_stabilized_evidence_includes_real_extracted_context():
     -- the core ask, directly: a stabilized rule's Uncertain evidence must
     surface real, document-specific content when it exists, not just the
     generic framing sentence. Zero model calls -- get_stabilized_rule_
-    context is a plain text scan, same as any other checker's extraction."""
+    context is a plain text scan, same as any other checker's extraction.
+
+    Fix Round (Matthielly Cruz 9-2026-U1), Item 2: HF-05's own preview is
+    now scoped to Parent Training goals only (parent_training_only=True)
+    -- added a real 'Skill Domain: Parent Training' line so this goal
+    block is still in scope; the rename from "Tantrum" is deliberate,
+    since HF-05 is about Parent Training goals, not tantrum ones.
+    """
     fields_dict = {
         "full_text": (
             "Target Name: Reduce Tantrum\n"
+            "Skill Domain: Parent Training\n"
             "Baseline: 5 per session\n"
             "Current Data: 2 per session\n"
             "Anticipated Mastery Date: 12/15/2026\n"
@@ -292,11 +347,21 @@ def test_stabilized_evidence_falls_back_honestly_with_no_extractor_or_no_match()
 
 def test_a_broken_context_extractor_never_crashes_the_whole_review(monkeypatch):
     """Same isolation discipline as merge.py's own per-rule fallback -- one
-    rule_id's own extractor throwing must not take down anything else."""
+    rule_id's own extractor throwing must not take down anything else.
+
+    Fix Round (real re-verification, MC 9-2026-U1), Item 5: this used to
+    exercise HF-05, but HF-05 now has its own rule_id-scoped gate (checked
+    BEFORE the context extractor is ever called) that resolves
+    not_applicable directly when there are zero Parent/Caregiver Training
+    goals -- which a bare "x" fields dict has. That gate firing first would
+    mean the broken extractor below is never reached, defeating this test's
+    actual point. Switched to QA-GIP-14, an otherwise-ordinary stabilized
+    rule_id with no such gate, so the broken-extractor path is genuinely
+    exercised."""
     def _broken(_fields):
         raise ValueError("simulated extraction bug")
 
-    monkeypatch.setitem(fields.STABILIZED_RULE_CONTEXT, "HF-05", _broken)
-    finding = pipeline_module._stabilized_uncertain_finding("HF-05", {"full_text": "x", "pages": []})
+    monkeypatch.setitem(fields.STABILIZED_RULE_CONTEXT, "QA-GIP-14", _broken)
+    finding = pipeline_module._stabilized_uncertain_finding("QA-GIP-14", {"full_text": "x", "pages": []})
     assert finding["result"] == "uncertain"
     assert pipeline_module._STABILIZED_UNCERTAIN_NO_CONTEXT in finding["evidence"]

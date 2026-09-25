@@ -39,16 +39,38 @@ def _fields(*page_texts: str, payor: str | None = None) -> dict:
 
 # --- 1. QA-BAR-01 -----------------------------------------------------------
 
-def test_bar01_below_threshold_is_not_applicable():
-    text = "23 hours per week.\n97153-Direct Care\n"
-    result, evidence, page, confidence = fields._check_BAR01(_rule_json("QA-BAR-01")["params"] and _rule(_rule_json("QA-BAR-01")["params"]), _fields(text))
-    assert result == "not_applicable"
+def test_bar01_passes_when_no_barrier_language_found_anywhere():
+    """Fix Round (Full Rule-by-Rule Fix List), Item 4: the old 25-hour/
+    97153 gate is gone entirely (confirmed real bug: this rule's own
+    current rules.json description never mentioned an hours threshold at
+    all). Real zaith_new.pdf shape: a 'Barriers to Treatment:' section
+    that reads as confirmed-blank/negative, no barrier language anywhere
+    else in the document either -- a real, confident pass."""
+    text = "Barriers to Treatment:\nNotes on barriers to treatment: There are no noted barriers to treatment at this time.\n"
+    rule = {"rule_id": "QA-BAR-01"}
+    result, evidence, page, confidence = fields._check_BAR01(rule, _fields(text))
+    assert result == "pass"
 
 
-def test_bar01_above_threshold_escalates_to_judgment():
-    text = "30 hours per week.\n97153-Direct Care\n"
-    result, evidence, page, confidence = fields._check_BAR01(_rule(_rule_json("QA-BAR-01")["params"]), _fields(text))
-    assert result == "not_checkable"  # escalates -- the semantic "barrier mentioned" question stays judgment
+def test_bar01_fails_when_barrier_mentioned_elsewhere_but_section_is_blank():
+    text = (
+        "Reason for Referral: The client struggles to tolerate transitions and this creates a barrier "
+        "to therapy sessions.\nBarriers to Treatment:\nNotes on barriers to treatment: N/A\n"
+    )
+    rule = {"rule_id": "QA-BAR-01"}
+    result, evidence, page, confidence = fields._check_BAR01(rule, _fields(text))
+    assert result == "fail"
+
+
+def test_bar01_escalates_when_barrier_language_appears_in_both_places():
+    text = (
+        "Reason for Referral: The client struggles to tolerate transitions.\n"
+        "Barriers to Treatment:\nNotes on barriers to treatment: Charny struggles to try new things "
+        "and this can serve as a barrier to session.\n"
+    )
+    rule = {"rule_id": "QA-BAR-01"}
+    result, evidence, page, confidence = fields._check_BAR01(rule, _fields(text))
+    assert result == "not_checkable"  # genuinely semantic -- does the section's own content cover it
 
 
 # --- 2. HF-05 ----------------------------------------------------------------
