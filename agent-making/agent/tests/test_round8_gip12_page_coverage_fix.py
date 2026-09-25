@@ -28,6 +28,39 @@ import pipeline as pipeline_module
 import pipeline.merge as merge_module
 
 
+def test_merge_prunes_a_hallucinated_judgment_cited_page_not_in_pass1_and_not_real():
+    """Fix Round 9 (mc_current.pdf, real bug): judgment cited page 46,
+    which checked directly against the document has no verbal-operant
+    term anywhere on it at all -- a confirmed hallucinated/mis-attributed
+    citation. This must be pruned, while every genuinely real page (Pass
+    1's own candidates, or any page judgment cited that DOES check out)
+    survives untouched.
+    """
+    from pipeline import _merge_gip12_candidate_pages
+
+    pages = [
+        {"page_number": 46, "text": "Cumulative Goal: Listeners response\nGoal Status: In progress\n"},
+        {"page_number": 55, "text": "Target Goal: tact objects\nGoal Status: In progress\n"},
+        {"page_number": 56, "text": "Target Goal: mand for break\nGoal Status: In progress\n"},
+    ]
+    doc_fields = {"full_text": "\n".join(p["text"] for p in pages), "pages": pages}
+    candidates = [(55, "tact objects", "tact"), (56, "mand for break", "mand")]
+    judgment_result = {"result": "pass", "evidence": "x", "page": [46, 55, 56], "confidence": 0.7}
+    merged = _merge_gip12_candidate_pages(judgment_result, candidates, fields=doc_fields)
+    assert merged["page"] == [55, 56]
+    assert "46" in merged["evidence"]
+
+
+def test_merge_without_fields_still_works_backward_compatibly():
+    """Existing callers/tests that don't pass `fields` at all (default
+    None) must be completely unaffected -- pruning is opt-in via that
+    param, never a behavior change for a caller that omits it."""
+    from pipeline import _merge_gip12_candidate_pages
+
+    judgment_result = {"result": "pass", "evidence": "x", "page": [1], "confidence": 0.8}
+    assert _merge_gip12_candidate_pages(judgment_result, []) == judgment_result
+
+
 def test_pass1_attributes_a_match_to_its_own_real_page_not_the_block_start_page():
     pages = [
         {"page_number": 52, "text": "Target Goal: Reeda will demonstrate skill\nSkill Domain: Communication\n"},

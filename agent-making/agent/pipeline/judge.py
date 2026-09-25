@@ -776,18 +776,34 @@ def _short_uncertain_summary(entries: list[dict], *, split_desc: str) -> str:
         if result not in groups or (e.get("page") is not None and groups[result].get("page") is None):
             groups[result] = e  # first entry for this result, or the first one with a real page
 
-    parts = []
+    # Fix Round (Round 9, real quality bug found): the old wording built a
+    # SEPARATE "Some reviews found:.../Others found:..." sentence per
+    # distinct result, unconditionally reusing "Others found" for every
+    # group after the first -- confirmed real evidence read like two (or,
+    # with 3+ distinct results, MORE than two) raw outputs pasted back to
+    # back rather than one synthesized explanation, and "Others found"
+    # repeated verbatim for a 3rd distinct group is a genuine templating
+    # bug, not just a style complaint. Still keeps every distinct result's
+    # own real evidence text (the actual 2026-09-19 fix this function
+    # exists for -- throwing that away was the ORIGINAL bug) but frames it
+    # as one continuous paragraph describing a real disagreement, with
+    # each group introduced by its own real vote share rather than a
+    # recycled "Some/Others" label.
+    sides = []
     for result, entry in groups.items():
         preview = _evidence_preview(entry.get("evidence"))
         page = entry.get("page")
         page_str = f" (page {page})" if page is not None else ""
-        label = "Some reviews found" if not parts else "Others found"
+        votes = sum(1 for e in entries if e.get("result") == result)
+        phrase = _natural_result_phrase(result)
         if preview:
-            parts.append(f"{label}: {_natural_result_phrase(result)} -- \"{preview}\"{page_str}.")
+            sides.append(f"{votes} of {len(entries)} reviews concluded {phrase} -- \"{preview}\"{page_str}")
         else:
-            parts.append(f"{label}: {_natural_result_phrase(result)}{page_str}.")
+            sides.append(f"{votes} of {len(entries)} reviews concluded {phrase}{page_str}")
 
-    summary = " ".join(parts) if parts else "The automated review could not reach a clear, consistent answer for this item."
+    if not sides:
+        return "The automated review could not reach a clear, consistent answer for this item. Please confirm manually."
+    summary = "Reviewers disagreed on this item: " + "; while ".join(sides) + "."
     return f"{summary} Please confirm manually."
 
 

@@ -3730,6 +3730,22 @@ def _goal_block_starts(text: str) -> list[int]:
 _VERBAL_OPERANT_TERMS_RE = re.compile(r"\b(mand|tact|intraverbal|echoic)s?\b", re.IGNORECASE)
 
 
+def page_contains_verbal_operant_term(fields: dict, page: int) -> bool:
+    """Round 9 real fix (QA-GIP-12, mc_current.pdf): real evidence showed
+    judgment citing a page (46) that, checked directly against the actual
+    document, names no verbal-operant term at all -- a real, confirmed
+    hallucinated/mis-attributed citation. Used as a real, deterministic
+    cross-check on judgment's OWN cited pages (never on Pass 1's, which
+    are already real by construction): whole-PAGE text, not scoped to any
+    goal block, so this stays a lenient sanity check, not a second,
+    narrower Pass 1.
+    """
+    for p in fields.get("pages", []):
+        if p.get("page_number") == page:
+            return bool(_VERBAL_OPERANT_TERMS_RE.search(p.get("text", "")))
+    return False
+
+
 def gip12_verbal_operant_candidate_pages(fields: dict) -> list[tuple[int | None, str, str]]:
     """QA-GIP-12 real fix (Round 6, Zaith 9-2026-U1): Pass 1 of a two-pass
     hybrid. QA-GIP-12 ("Goals include verbal operant/behavioral term") is

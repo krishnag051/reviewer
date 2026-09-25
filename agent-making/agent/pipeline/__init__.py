@@ -317,7 +317,7 @@ def _stabilized_uncertain_finding(rule_id: str | None = None, fields: dict | Non
     }
 
 
-def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple]) -> dict:
+def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple], fields: dict | None = None) -> dict:
     """Round 7 real fix (QA-GIP-12 regression) -- see the call site's own
     comment above for why this exists. Only handles the two documented
     multi-page shapes (`page` as list[int]; `evidence` as the
@@ -330,19 +330,44 @@ def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple]) -> dict:
     export) was never built to expect from this rule, not a safe
     "floor" — case 3 in this fix's own report, an acceptable limitation
     on THIS round's scope, not silently dropped.
+
+    Round 9 real fix: `fields` (optional, default None for backward
+    compatibility with any existing caller/test) enables a second real
+    check -- real evidence showed judgment citing a page (46) that,
+    checked directly against the actual document, names no
+    verbal-operant term anywhere on it at all, a confirmed hallucinated
+    citation. Any of judgment's OWN cited pages that fails a real,
+    whole-page verification (fields_module.page_contains_verbal_operant_
+    term) is dropped -- never one of Pass 1's own candidate pages, which
+    are already real by construction and never need this check. This is
+    the other half of "floor, not ceiling": Pass 1's real pages can only
+    be ADDED, judgment's own unverifiable pages can be REMOVED, but a
+    page confirmed real by either side always survives.
     """
     candidate_pages = {page for page, _name, _term in candidates if page is not None}
-    if not candidate_pages:
-        return result
     candidates_by_page = {}
     for page, name, term in candidates:
         if page is not None and page not in candidates_by_page:
             candidates_by_page[page] = (name, term)
 
+    def _prune_hallucinated(pages: set[int]) -> set[int]:
+        if fields is None:
+            return pages
+        return {
+            p for p in pages
+            if p in candidate_pages or fields_module.page_contains_verbal_operant_term(fields, p)
+        }
+
+    if not candidate_pages and fields is None:
+        return result
+
     if isinstance(result.get("evidence"), list):
         covered = {item["page"] for item in result["evidence"] if item.get("page") is not None}
-        missing = sorted(candidate_pages - covered)
-        if not missing:
+        kept = _prune_hallucinated(covered)
+        missing = sorted(candidate_pages - kept)
+        pruned = covered - kept
+        evidence = [item for item in result["evidence"] if item.get("page") not in pruned]
+        if not missing and not pruned:
             return result
         added = [
             {
@@ -353,23 +378,31 @@ def _merge_gip12_candidate_pages(result: dict, candidates: list[tuple]) -> dict:
             }
             for page in missing
         ]
-        return {**result, "evidence": result["evidence"] + added}
+        return {**result, "evidence": evidence + added}
 
     if isinstance(result.get("page"), list):
         covered = set(result["page"])
-        missing = sorted(candidate_pages - covered)
-        if not missing:
+        kept = _prune_hallucinated(covered)
+        missing = sorted(candidate_pages - kept)
+        pruned = covered - kept
+        final_pages = sorted((kept | candidate_pages))
+        if not missing and not pruned:
             return result
-        missing_desc = "; ".join(
-            f"page {page}: goal '{candidates_by_page[page][0]}' contains the literal term "
-            f"'{candidates_by_page[page][1]}'" for page in missing
-        )
         evidence = result.get("evidence")
-        extended_evidence = (
-            f"{evidence} Deterministic keyword scan also confirmed these additional real pages: {missing_desc}."
-            if isinstance(evidence, str) else evidence
-        )
-        return {**result, "page": sorted(covered | candidate_pages), "evidence": extended_evidence}
+        notes = []
+        if missing:
+            missing_desc = "; ".join(
+                f"page {page}: goal '{candidates_by_page[page][0]}' contains the literal term "
+                f"'{candidates_by_page[page][1]}'" for page in missing
+            )
+            notes.append(f"Deterministic keyword scan also confirmed these additional real pages: {missing_desc}.")
+        if pruned:
+            notes.append(
+                f"Removed page(s) {sorted(pruned)} -- checked directly against the document and found no "
+                f"literal verbal-operant term anywhere on that page."
+            )
+        extended_evidence = f"{evidence} {' '.join(notes)}" if isinstance(evidence, str) and notes else evidence
+        return {**result, "page": final_pages, "evidence": extended_evidence}
 
     return result
 
@@ -517,9 +550,9 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     # never remove one judgment found on its own, so this is strictly a
     # floor, not a ceiling, by construction rather than by asking the
     # model nicely.
-    if "QA-GIP-12" in judgment_results and gip12_candidates:
+    if "QA-GIP-12" in judgment_results:
         judgment_results["QA-GIP-12"] = _merge_gip12_candidate_pages(
-            judgment_results["QA-GIP-12"], gip12_candidates,
+            judgment_results["QA-GIP-12"], gip12_candidates, fields=extracted_fields,
         )
 
     # For escalated rules, the judgment result wins (more context to work
