@@ -22,9 +22,12 @@ from app.services.rules import create_rule, edit_rule, set_rule_active
 router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(get_current_user)])
 
 RuleType = Literal["structural", "semantic", "cross_reference"]
+# Fix Round 15 (2026-10-05): "New York Medicaid" removed -- consolidated
+# into "Straight Medicaid" (not a distinct payor). See db/models.py's
+# rule_payor_enum for the full rationale.
 RulePayor = Literal[
     "Aetna", "Anthem", "Cigna", "Emblem", "Empire", "Healthfirst", "Molina",
-    "MVP", "Straight Medicaid", "New York Medicaid",
+    "MVP", "Straight Medicaid",
 ]
 
 

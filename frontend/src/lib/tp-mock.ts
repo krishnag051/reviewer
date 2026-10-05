@@ -2,13 +2,19 @@
 
 export type Payor =
   | "Aetna" | "Anthem" | "Cigna" | "Emblem" | "Empire"
-  | "Healthfirst" | "Molina" | "MVP" | "Straight Medicaid" | "New York Medicaid";
+  | "Healthfirst" | "Molina" | "MVP" | "Straight Medicaid";
 
 // Matches agent-making's actual payor list: the 9 official payors per the
-// locked project scope, plus New York Medicaid as a real bonus payor.
+// locked project scope. Fix Round 15 (2026-10-05): "New York Medicaid"
+// removed -- real business confirmation that it was never a distinct
+// payor, just another name for Straight Medicaid (see agent-making's
+// pipeline/fields.py::KNOWN_PAYORS, which now folds it in at detection
+// time). A document's own "Patient Payor: New York Medicaid" text is
+// still recognized -- it just detects as Straight Medicaid now, the same
+// payor this dropdown already offers.
 export const PAYORS: Payor[] = [
   "Aetna", "Anthem", "Cigna", "Emblem", "Empire",
-  "Healthfirst", "Molina", "MVP", "Straight Medicaid", "New York Medicaid",
+  "Healthfirst", "Molina", "MVP", "Straight Medicaid",
 ];
 
 export type RuleStatus = "Pass" | "Fail" | "N/A";

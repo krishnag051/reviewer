@@ -2340,18 +2340,18 @@
     {
       "rule_id": "QA-HRS-12",
       "category": "Hours Requesting",
-      "description": "Treatment Planning hours only requested for 1199SEIU, NY Medicaid or Molina, all other insurances - N/A. Flag otherwise.",
+      "description": "Treatment Planning hours only requested for 1199SEIU, Straight Medicaid or Molina, all other insurances - N/A. Flag otherwise.",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
-      "notes": "FIX ROUND (Matthielly Cruz 9-2026-U1), Item 6: Ms. Yachnes's explicit correction -- the 'other payor' branch was a blanket not_applicable regardless of document content; now a real check: if Treatment Planning hours WERE requested for a payor outside the 3 required ones, that's a fail; if they weren't (row absent, N/A, or zero), that's a real, confirmed pass, not an assumption. Reuses the same '97151-Treatment Planning' row regex for both branches. | FIX ROUND (Jacob Freund 10-2026-U1), Item 4: Ms. Yachnes's exact new rule text and logic, replacing the OPPOSITE scoping this rule had before (previously: 1199SEIU/NY Medicaid/Molina were exempt, all other payors required TP hours). params key renamed excluded_payors -> required_payors so a stale, oppositely-named param can never silently coexist with the new logic. Real deterministic checker: pipeline/fields.py::_check_HRS12 -- reads the '97151-Treatment Planning' row in the Hours Requesting section (distinct from the '97151-Assessment' row -- same CPT code, different row/label), verified against the real Zyaan Ullah sample TP's own layout.",
+      "notes": "FIX ROUND (Matthielly Cruz 9-2026-U1), Item 6: Ms. Yachnes's explicit correction -- the 'other payor' branch was a blanket not_applicable regardless of document content; now a real check: if Treatment Planning hours WERE requested for a payor outside the 3 required ones, that's a fail; if they weren't (row absent, N/A, or zero), that's a real, confirmed pass, not an assumption. Reuses the same '97151-Treatment Planning' row regex for both branches. | FIX ROUND (Jacob Freund 10-2026-U1), Item 4: Ms. Yachnes's exact new rule text and logic, replacing the OPPOSITE scoping this rule had before (previously: 1199SEIU/NY Medicaid/Molina were exempt, all other payors required TP hours). params key renamed excluded_payors -> required_payors so a stale, oppositely-named param can never silently coexist with the new logic. Real deterministic checker: pipeline/fields.py::_check_HRS12 -- reads the '97151-Treatment Planning' row in the Hours Requesting section (distinct from the '97151-Assessment' row -- same CPT code, different row/label), verified against the real Zyaan Ullah sample TP's own layout. | FIX ROUND 15 (2026-10-05): 'New York Medicaid' consolidated into 'Straight Medicaid' per real business confirmation that they are the same payor, not two distinct ones -- required_payors updated from 'New York Medicaid' to 'Straight Medicaid' so a document that used to detect as NY Medicaid keeps the identical real behavior under its new canonical payor name.",
       "action_lane": "BCBA-fix",
       "action_tag": null,
       "active": true,
       "params": {
         "required_payors": [
           "1199SEIU",
-          "New York Medicaid",
+          "Straight Medicaid",
           "Molina"
         ]
       }

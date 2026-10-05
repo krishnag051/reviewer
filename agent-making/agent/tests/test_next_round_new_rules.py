@@ -69,8 +69,11 @@ def test_hrs12_passes_for_non_required_payor_when_row_entirely_absent():
 
 
 def test_hrs12_not_checkable_when_row_missing_entirely():
+    # Fix Round 15 (2026-10-05): "New York Medicaid" consolidated into
+    # "Straight Medicaid" -- a required payor under this rule's new default
+    # required_payors list, same as the old "New York Medicaid" entry was.
     result, evidence, page, confidence = fields._check_HRS12(
-        _rule(), _fields("Nothing relevant here.", payor="New York Medicaid"),
+        _rule(), _fields("Nothing relevant here.", payor="Straight Medicaid"),
     )
     assert result == "not_checkable"
 

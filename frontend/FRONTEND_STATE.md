@@ -302,9 +302,11 @@ truth every route reads via `useTP()`; there is exactly one `patients`
 
 ## 4. Rules Studio
 
-`rules.tsx` renders one tab per payor — all 10 values in `PAYORS`
+`rules.tsx` renders one tab per payor — all 9 values in `PAYORS`
 (`tp-mock.ts`): Aetna, Anthem, Cigna, Emblem, Empire, Healthfirst, Molina,
-MVP, Straight Medicaid, New York Medicaid. Each tab shows that payor's
+MVP, Straight Medicaid. (Fix Round 15, 2026-10-05: "New York Medicaid"
+removed as its own tab — consolidated into Straight Medicaid, not a
+distinct payor.) Each tab shows that payor's
 applicable rules (universal `"ALL"` rules + that payor's own specific
 rules), with search, category filter, active/inactive toggle, and full
 create/edit/delete via a dialog.

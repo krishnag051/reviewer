@@ -757,9 +757,11 @@ export async function createUser(body: {
 
 export type RuleType = "structural" | "semantic" | "cross_reference";
 
+// Fix Round 15 (2026-10-05): "New York Medicaid" removed -- consolidated
+// into "Straight Medicaid" (not a distinct payor). See tp-mock.ts's PAYORS.
 export type RulePayor =
   | "Aetna" | "Anthem" | "Cigna" | "Emblem" | "Empire" | "Healthfirst" | "Molina"
-  | "MVP" | "Straight Medicaid" | "New York Medicaid";
+  | "MVP" | "Straight Medicaid";
 
 export type RuleOut = {
   id: string;

@@ -38,6 +38,8 @@ letting a page-only retry also relitigate the substantive verdict would
 reintroduce exactly the kind of run-to-run flip the Judgment Layer
 Stability round already fixed once.
 """
+import re
+
 from . import judge
 
 # Fix Round (2026-09-15), "Language Regression": REAL FIX -- this
@@ -175,6 +177,85 @@ def run_judgment_with_integrity_check(
         results.update(retry_results)
 
 
+_QUOTED_SPAN_RE = re.compile(r"[\"']([^\"']{20,})[\"']")
+_EMBEDDED_PAGE_TAG_RE = re.compile(r"\(page\s+(\d+)\)|\[Page\s+(\d+)\]", re.IGNORECASE)
+
+
+def _embedded_page_mentions(evidence: str) -> set[int]:
+    return {
+        int(m.group(1) or m.group(2))
+        for m in _EMBEDDED_PAGE_TAG_RE.finditer(evidence)
+    }
+
+
+def _page_containing_quote(quote: str, fields: dict) -> int | None:
+    pages = fields.get("pages") if fields else None
+    if not pages:
+        return None
+    normalized_quote = " ".join(quote.split())
+    matches = {
+        p["page_number"] for p in pages
+        if normalized_quote in " ".join(p["text"].split())
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def reconcile_page_citation(finding: dict, fields: dict | None = None) -> dict:
+    """Fix Round 15 (2026-10-05) -- REAL BUGS FOUND AND FIXED on
+    zaith_new.pdf: a judgment-layer finding's structured `page` field is the
+    model's own self-reported guess, and is confirmed vulnerable to a real
+    off-by-one right at a page boundary where the document's own printed
+    footer ("Page N of M") sits immediately before the next page's real
+    content starts. Two confirmed real, distinct symptoms of this, both
+    fixed here without ever touching `result`:
+
+    1. QA-SCH-06: the synthesized disagreement evidence text itself named
+       "(page 5)" twice (in both disagreeing calls' own free-text
+       reasoning), yet the finding's own structured `page` field said 4 --
+       a plain internal self-contradiction. When the evidence text embeds
+       one or more "(page N)"/"[Page N]" mentions that all agree on a
+       single number different from the structured `page`, that embedded,
+       human-written number is trusted over the structured field.
+    2. QA-BIO-06: the evidence contained a long, verbatim quoted excerpt
+       ('He is not currently on any prescribed medications...') that is
+       real document text -- confirmed to appear, character-for-character
+       (modulo whitespace), on page 5, not the claimed page 4. When
+       evidence contains such a quote and it's found on exactly one real
+       page that differs from the claimed one, that page is trusted
+       instead.
+
+    Deliberately conservative, same "can only ever ADD/correct a page,
+    never touch the verdict" discipline as this module's own page-recovery
+    pass and pipeline/__init__.py's GIP-12 hallucination check: only ever
+    overrides `page` when a DIFFERENT page is unambiguously supported by
+    the finding's own text, never invents a page from nothing, never
+    changes `result`. Only applies when `page` is a bare int or None --
+    deliberately untouched when it's already a list (the separate GIP-12-
+    style multi-page merge owns that shape).
+    """
+    evidence = finding.get("evidence")
+    if not isinstance(evidence, str) or isinstance(finding.get("page"), list):
+        return finding
+    claimed = finding.get("page")
+    corrected = dict(finding)
+
+    embedded = _embedded_page_mentions(evidence)
+    if len(embedded) == 1:
+        (only_page,) = tuple(embedded)
+        if claimed != only_page:
+            corrected["page"] = only_page
+            claimed = only_page
+
+    if fields:
+        for quote in _QUOTED_SPAN_RE.findall(evidence):
+            real_page = _page_containing_quote(quote, fields)
+            if real_page is not None and real_page != claimed:
+                corrected["page"] = real_page
+                break
+
+    return corrected
+
+
 def _run_page_recovery_pass(
     judgment_rules: list[dict],
     fields: dict,
@@ -267,5 +348,14 @@ def _run_page_recovery_pass(
     # finding shape callers/tests further downstream should see.
     for finding in results.values():
         finding.pop("page_unresolved", None)
+
+    # Fix Round 15 (2026-10-05): run the page-citation self-consistency/
+    # quote-verification correction (see reconcile_page_citation's own
+    # docstring) over every judgment-layer finding, now that each one has
+    # its final, accepted result and (if available) a real page -- this is
+    # the one place downstream of both the majority vote and the page-
+    # recovery retries above where every finding is available at once.
+    for rule_id, finding in results.items():
+        results[rule_id] = reconcile_page_citation(finding, fields)
 
     return results

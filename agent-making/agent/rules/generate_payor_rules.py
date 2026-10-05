@@ -23,8 +23,11 @@ SOURCE_PATH = RULES_DIR / "rules.json"
 # Healthfirst has no generated file — see the module docstring above; the
 # master rules.json already reads naturally payor-agnostic for it. Every
 # other payor in the official 9-payor scope (Project1_Full_Build_Scope.docx)
-# gets one, plus New York Medicaid (real, working, but not one of the
-# official 9).
+# gets one. Fix Round 15 (2026-10-05): "New York Medicaid" removed as its
+# own entry — real business confirmation that it was never a distinct
+# payor, just another name for Straight Medicaid; see KNOWN_PAYORS in
+# pipeline/fields.py, which now folds all 3 of its real document-text
+# variants straight into "Straight Medicaid".
 GENERATED_PAYORS = {
     "aetna.json": "Aetna",
     "anthem.json": "Anthem",
@@ -34,7 +37,6 @@ GENERATED_PAYORS = {
     "molina.json": "Molina",
     "mvp.json": "MVP",
     "straight_medicaid.json": "Straight Medicaid",
-    "new_york_medicaid.json": "New York Medicaid",
 }
 
 

@@ -99,16 +99,20 @@ def test_detect_payor_mvp():
     assert _detect_payor(_pages("Patient Payor: MVP Health Care\n...")) == "MVP"
 
 
-def test_detect_payor_new_york_medicaid():
-    assert _detect_payor(_pages("Patient Payor: New York Medicaid\n...")) == "New York Medicaid"
+def test_detect_payor_new_york_medicaid_consolidates_to_straight_medicaid():
+    """Fix Round 15 (2026-10-05): real business confirmation that "New York
+    Medicaid" was never a distinct payor -- it's the same thing as Straight
+    Medicaid. All 3 of its real document-text variants now fold straight
+    into the canonical "Straight Medicaid" value."""
+    assert _detect_payor(_pages("Patient Payor: New York Medicaid\n...")) == "Straight Medicaid"
 
 
-def test_detect_payor_new_york_state_medicaid_variant():
-    assert _detect_payor(_pages("Patient Payor: New York State Medicaid\n...")) == "New York Medicaid"
+def test_detect_payor_new_york_state_medicaid_variant_consolidates_too():
+    assert _detect_payor(_pages("Patient Payor: New York State Medicaid\n...")) == "Straight Medicaid"
 
 
-def test_detect_payor_ny_medicaid_abbreviation():
-    assert _detect_payor(_pages("Patient Payor: NY Medicaid\n...")) == "New York Medicaid"
+def test_detect_payor_ny_medicaid_abbreviation_consolidates_too():
+    assert _detect_payor(_pages("Patient Payor: NY Medicaid\n...")) == "Straight Medicaid"
 
 
 def test_detect_payor_straight_medicaid():
@@ -199,17 +203,22 @@ def test_mvp_labeled_doc_universal_only():
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 
-def test_new_york_medicaid_labeled_doc_same_shape_as_mvp():
-    """Same treatment as MVP: universal rules run, every OTHER payor's
-    payor-specific rules are not_applicable (not_checkable is reserved for
-    a genuinely undetected payor, which this is not)."""
-    fields = {"plan_type": None, "payor": "New York Medicaid"}
+def test_new_york_medicaid_labeled_doc_now_gets_straight_medicaids_own_rules():
+    """Fix Round 15 (2026-10-05): "New York Medicaid" is no longer its own
+    detected payor value (see _detect_payor's consolidation) -- this test
+    name is kept to show the real behavior change: a doc literally labeled
+    "New York Medicaid" in the document text now detects AS "Straight
+    Medicaid" and gets that payor's own real rules (SM-01/02), the same
+    shape as test_straight_medicaid_labeled_doc_gets_universal_plus_its_own_two_rules,
+    not MVP's universal-only shape it used to get."""
+    detected = _detect_payor(_pages("Patient Payor: New York Medicaid\n..."))
+    assert detected == "Straight Medicaid"
+    fields = {"plan_type": None, "payor": detected}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
-    assert len(applicable) == N_UNIVERSAL
-    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS
-    for finding in excluded.values():
-        assert finding["result"] == "not_applicable"
-        assert "New York Medicaid" in finding["evidence"]
+    applicable_ids = {r["rule_id"] for r in applicable}
+    assert STRAIGHT_MEDICAID_ONLY_IDS <= applicable_ids
+    assert len(applicable) == N_UNIVERSAL + len(STRAIGHT_MEDICAID_ONLY_IDS)
+    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - STRAIGHT_MEDICAID_ONLY_IDS
 
 
 def test_straight_medicaid_labeled_doc_gets_universal_plus_its_own_two_rules():
@@ -233,8 +242,8 @@ def test_straight_medicaid_labeled_doc_gets_universal_plus_its_own_two_rules():
 def test_anthem_labeled_doc_gets_universal_plus_its_own_rules():
     """Fix Round (2026-08-26): Anthem now has real payor-specific rules
     (ANT-01/02/03, siblings of Empire's EMP-01/02/03) -- was universal-only
-    before (same shape MVP/New York Medicaid still have), same kind of
-    change Cigna/Molina went through in Round 91."""
+    before (same shape MVP still has), same kind of change Cigna/Molina
+    went through in Round 91."""
     fields = {"plan_type": None, "payor": "Anthem"}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
     applicable_ids = {r["rule_id"] for r in applicable}
@@ -351,13 +360,19 @@ def test_detected_molina_payor_flows_through_to_correct_scoping():
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 
-def test_detected_new_york_medicaid_flows_through_to_correct_scoping():
+def test_detected_new_york_medicaid_flows_through_as_straight_medicaid_scoping():
+    """Fix Round 15 (2026-10-05): see
+    test_new_york_medicaid_labeled_doc_now_gets_straight_medicaids_own_rules
+    -- same consolidation, proven end-to-end from detection through
+    scoping, same job test_detected_straight_medicaid_flows_through_to_
+    correct_scoping already does for the canonical spelling."""
     detected = _detect_payor(_pages("Patient Payor: New York Medicaid\n..."))
-    assert detected == "New York Medicaid"
+    assert detected == "Straight Medicaid"
     fields = {"plan_type": None, "payor": detected}
     applicable, excluded = partition_rules_by_scope(RULES, fields)
-    assert len(applicable) == N_UNIVERSAL
-    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS
+    applicable_ids = {r["rule_id"] for r in applicable}
+    assert STRAIGHT_MEDICAID_ONLY_IDS <= applicable_ids
+    assert set(excluded.keys()) == ALL_PAYOR_SPECIFIC_IDS - STRAIGHT_MEDICAID_ONLY_IDS
     assert all(f["result"] == "not_applicable" for f in excluded.values())
 
 

@@ -31,9 +31,17 @@ rule_result_status_enum = Enum("pass", "fail", "na", "uncertain", "not_checkable
 # Round 50: metadata only, same as every other Rule column -- see
 # app/rule_engine/client.py's docstring. NULL means "applies to every
 # payor" (mirrors the old mock's "ALL" sentinel).
+# Fix Round 15 (2026-10-05): "New York Medicaid" removed -- real business
+# confirmation that it was never a distinct payor, just another name for
+# Straight Medicaid (see agent-making's pipeline/fields.py::KNOWN_PAYORS,
+# which now folds it in at detection time). No `rules`/`rule_version_history`
+# row has ever used "New York Medicaid" as its own `applies_to_payor` value
+# (confirmed by direct inspection before this migration), so dropping it
+# from the enum is safe. See alembic migration for this round for the enum
+# rebuild (Postgres can't just DROP a value off an existing enum type).
 rule_payor_enum = Enum(
     "Aetna", "Anthem", "Cigna", "Emblem", "Empire", "Healthfirst", "Molina",
-    "MVP", "Straight Medicaid", "New York Medicaid",
+    "MVP", "Straight Medicaid",
     name="rule_payor",
 )
 # Round 56: which upload path is active. "document" is Rounds 51-55's

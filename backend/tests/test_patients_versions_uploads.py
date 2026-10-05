@@ -280,18 +280,18 @@ def test_patch_version_payor_real_edit_with_audit(client, db_session, seeded_bas
 
     resp = client.patch(
         f"/api/versions/{version['id']}",
-        json={"payor": "New York Medicaid"},
+        json={"payor": "Straight Medicaid"},
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["payor"] == "New York Medicaid"
+    assert resp.json()["payor"] == "Straight Medicaid"
 
     audit_row = db_session.execute(
         select(AuditLog).where(AuditLog.target_type == "version", AuditLog.target_id == uuid.UUID(version["id"]))
         .order_by(AuditLog.created_at.desc())
     ).scalars().first()
     assert audit_row is not None
-    assert audit_row.details["payor"] == {"from": None, "to": "New York Medicaid"}
+    assert audit_row.details["payor"] == {"from": None, "to": "Straight Medicaid"}
 
 
 def test_patch_version_payor_blocked_once_finalized(client, db_session, seeded_baseline):
@@ -311,7 +311,7 @@ def test_patch_version_payor_blocked_once_finalized(client, db_session, seeded_b
 
     resp = client.patch(
         f"/api/versions/{version['id']}",
-        json={"payor": "New York Medicaid"},
+        json={"payor": "Straight Medicaid"},
         headers=headers,
     )
     assert resp.status_code == 409, resp.text

@@ -69,17 +69,20 @@ KNOWN_PAYORS = {
     "healthfirst": "Healthfirst",
     "molina": "Molina",
     "mvp": "MVP",
-    # Same treatment as Molina/MVP: no payor-specific rule content exists
-    # for this payor (confirmed against the Master Faster checklist), so it
-    # just needs to be recognized — partition_rules_by_scope already marks
-    # HF-01/02/03 not_applicable for any known payor that isn't Healthfirst.
-    # Two keys covering the abbreviated and "State" variants, same substring-
-    # match style as the existing entries above (not exact-string, not fuzzy).
-    "new york medicaid": "New York Medicaid",
-    "new york state medicaid": "New York Medicaid",
-    "ny medicaid": "New York Medicaid",
-    # Unlike Molina/MVP/NY Medicaid, this payor genuinely has 2 payor-specific
-    # rules (SM-01/02) on top of the universal set — see rules.json.
+    # Fix Round 15 (2026-10-05) -- real business confirmation: "New York
+    # Medicaid" is not a separate payor, it's the same thing as "Straight
+    # Medicaid". These 3 keys used to map to their own canonical "New York
+    # Medicaid" value (a real, detected-but-functionally-universal-only
+    # payor); now they fold straight into "Straight Medicaid" so a document
+    # self-labeled any of these 3 ways gets Straight Medicaid's real
+    # payor-specific rules (SM-01/02) and QA-HRS-12's required-payor
+    # treatment, instead of being treated as a separate, lesser payor with
+    # no rule content of its own.
+    "new york medicaid": "Straight Medicaid",
+    "new york state medicaid": "Straight Medicaid",
+    "ny medicaid": "Straight Medicaid",
+    # This payor genuinely has 2 payor-specific rules (SM-01/02) on top of
+    # the universal set — see rules.json.
     "straight medicaid": "Straight Medicaid",
     # Same treatment as Molina/MVP/NY Medicaid: universal-only, no
     # payor-specific rule content (confirmed zero diff against the
@@ -5308,23 +5311,34 @@ def _check_TEMP01(rule: dict, fields: dict) -> tuple:
     """
     # Fix Round (2026-09-11), page-number enforcement gap: pass/fail used
     # to hardcode page=None; the first mention's real offset is enough to
-    # cite (pass) or, for fail, the first mention still points a reviewer
-    # at one real occurrence of the inconsistency.
+    # cite (pass).
+    #
+    # Fix Round 15 (2026-10-05) -- REAL BUG FOUND AND FIXED: the fail branch
+    # used to cite only the FIRST mention's page, even though the whole
+    # point of a "fail" here is that the inconsistency spans MULTIPLE real
+    # locations in the document. Confirmed live on zaith_new.pdf: 3 distinct
+    # credential mentions live on 2 different real pages (the header
+    # 'Certification:' field on page 1, plus BOTH a 'BCaBA, LBA' and a
+    # 'BCBA-D, LBA' 'Provider Credentials:' mention on the page 53
+    # attestation/signature page) -- citing only page 1 sent a reviewer to
+    # look at just one of the two real locations the contradiction actually
+    # lives in. Now cites every distinct real page a mention was found on.
     text = fields["full_text"]
     vals = []
-    first_offset = None
+    offsets = []
     for m in re.finditer(r"(?:Certification|Provider Credentials):[ \t]*([^\n]+)", text):
         v = m.group(1).strip()
         if v:
             vals.append(v)
-            if first_offset is None:
-                first_offset = m.start()
+            offsets.append(m.start())
     if not vals:
         return "not_checkable", "No 'Certification:' or 'Provider Credentials:' field found.", None, 0.0
-    page = _page_for_offset(fields, first_offset)
     normalized = {v.lower() for v in vals}
     if len(normalized) == 1:
+        page = _page_for_offset(fields, offsets[0])
         return "pass", f"All {len(vals)} credential mention(s) consistently read {vals[0]!r}.", page, 0.85
+    pages = sorted({p for p in (_page_for_offset(fields, o) for o in offsets) if p is not None})
+    page = pages if len(pages) > 1 else (pages[0] if pages else None)
     return "fail", f"Inconsistent credential designations found across the document: {vals}.", page, 0.85
 
 
@@ -6369,7 +6383,12 @@ def find_cross_rule_contradictions(det_results: dict[str, dict]) -> list[dict]:
 # documents, which is worse than leaving it to judgment.
 
 
-_HRS12_REQUIRED_PAYORS_DEFAULT = ("1199SEIU", "New York Medicaid", "Molina")
+# Fix Round 15 (2026-10-05): "New York Medicaid" -> "Straight Medicaid"
+# consolidation (see KNOWN_PAYORS above) -- a document that used to detect
+# as "New York Medicaid" now detects as "Straight Medicaid", so this default
+# required-payor list is updated to match, keeping this rule's real-world
+# behavior identical for those documents.
+_HRS12_REQUIRED_PAYORS_DEFAULT = ("1199SEIU", "Straight Medicaid", "Molina")
 
 
 def _check_HRS12(rule: dict, fields: dict) -> tuple:
@@ -6420,7 +6439,7 @@ def _check_HRS12(rule: dict, fields: dict) -> tuple:
         if not m:
             return (
                 "pass",
-                f"Payor detected as '{payor}' (not 1199SEIU, NY Medicaid, or Molina); no "
+                f"Payor detected as '{payor}' (not 1199SEIU, Straight Medicaid, or Molina); no "
                 f"'97151-Treatment Planning' row found -- Treatment Planning hours were not requested, "
                 f"as expected for this payor.",
                 None, 0.85,
@@ -6430,14 +6449,14 @@ def _check_HRS12(rule: dict, fields: dict) -> tuple:
         if re.match(r"^\d+(\.\d+)?$", value) and float(value) > 0:
             return (
                 "fail",
-                f"Payor detected as '{payor}' (not 1199SEIU, NY Medicaid, or Molina); Treatment Planning "
+                f"Payor detected as '{payor}' (not 1199SEIU, Straight Medicaid, or Molina); Treatment Planning "
                 f"hours WERE requested ({value} for this authorization period) -- should not be requested "
                 f"for this payor.",
                 page, 0.8,
             )
         return (
             "pass",
-            f"Payor detected as '{payor}' (not 1199SEIU, NY Medicaid, or Molina); '97151-Treatment "
+            f"Payor detected as '{payor}' (not 1199SEIU, Straight Medicaid, or Molina); '97151-Treatment "
             f"Planning' row is {value!r} (missing/zero) -- Treatment Planning hours were not requested, "
             f"as expected for this payor.",
             page, 0.8,
