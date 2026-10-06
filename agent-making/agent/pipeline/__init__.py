@@ -706,6 +706,21 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
             and not isinstance(merged.get("page"), list)
         ):
             merged["page"] = det_attempt["page"]
+        # Fix Round 17 (2026-10-06) -- REAL BUG FOUND AND FIXED on a live
+        # zaith_new.pdf production run: integrity.py's own
+        # reconcile_page_citation (Round 15) runs INSIDE
+        # run_judgment_with_integrity_check, which returns BEFORE this
+        # escalation merge -- so a real correction it made to
+        # judgment_results[rule_id]["page"] could be silently overwritten
+        # by the det-layer-page-wins override directly above (confirmed
+        # real case: QA-SCH-06's det checker returns an off-topic page
+        # alongside its own escalating "uncertain" verdict, which then
+        # overwrote judgment's already-corrected page right back to the
+        # wrong one). Calling it again here, on the FINAL merged finding
+        # after this override has already run, means it always has the
+        # last word regardless of which layer's page won -- not just a
+        # pre-merge interim result downstream code can still overwrite.
+        merged = integrity.reconcile_page_citation(merged, fields=extracted_fields)
         det_results[rule_id] = merged
 
     # Route each excluded rule's not_applicable finding into the dict

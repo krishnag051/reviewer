@@ -200,6 +200,26 @@ def _page_containing_quote(quote: str, fields: dict) -> int | None:
     return next(iter(matches)) if len(matches) == 1 else None
 
 
+def _rewrite_embedded_page_mentions(evidence: str, old_page, new_page: int) -> str:
+    """Fix Round 17 (2026-10-06) -- REAL BUG FOUND AND FIXED on a live
+    zaith_new.pdf production run: reconcile_page_citation used to correct
+    the structured `page` field (via the quote-verification branch below)
+    without ever touching a "(page N)"/"[Page N]" mention embedded INSIDE
+    the evidence string itself -- so a finding whose structured field got
+    corrected from 4 to 5 could still read '...takes medication only when
+    ill. [Page 4]' in its own prose, visibly contradicting its own
+    structured field. Keeps both in sync by rewriting only the EXACT old
+    page number's embedded mentions (never a different, unrelated page
+    number that happens to also appear in the text), preserving whichever
+    bracket style was already there.
+    """
+    if old_page is None:
+        return evidence
+    evidence = re.sub(rf"\(page\s+{old_page}\)", f"(page {new_page})", evidence, flags=re.IGNORECASE)
+    evidence = re.sub(rf"\[Page\s+{old_page}\]", f"[Page {new_page}]", evidence, flags=re.IGNORECASE)
+    return evidence
+
+
 def reconcile_page_citation(finding: dict, fields: dict | None = None) -> dict:
     """Fix Round 15 (2026-10-05) -- REAL BUGS FOUND AND FIXED on
     zaith_new.pdf: a judgment-layer finding's structured `page` field is the
@@ -224,6 +244,45 @@ def reconcile_page_citation(finding: dict, fields: dict | None = None) -> dict:
        page that differs from the claimed one, that page is trusted
        instead.
 
+    Fix Round 17 (2026-10-06) -- REAL BUGS FOUND AND FIXED, confirmed on a
+    live production run (not just a synthetic reconstruction):
+
+    - QA-SCH-06 still came back with `page: 4` in production despite this
+      function. Root cause was NOT in this function -- it ran correctly and
+      DID correct the judgment layer's own interim result. The correction
+      was then silently overwritten downstream: QA-SCH-06 is
+      check_type="deterministic" with a real checker that itself returns a
+      (wrong, off-topic) page alongside its escalating "uncertain" verdict,
+      and pipeline/__init__.py's escalation merge prefers that deterministic
+      page over judgment's whenever the det layer found one at all -- a
+      precedent kept for a DIFFERENT confirmed real bug (QA-RPT-01, where
+      judgment's own page re-derivation was the one that drifted). Fixed by
+      calling this same function AGAIN, in pipeline/__init__.py, on the
+      FINAL merged finding after that escalation merge decides which page
+      wins -- so this function always has the last word regardless of
+      which layer's page was preferred, not just a pre-merge interim one
+      that downstream code can still overwrite.
+    - QA-BIO-06's structured `page` field DID correctly become 5, but its
+      own evidence text still read "...[Page 4]" verbatim -- the quote-
+      verification branch corrected the structured field and left the
+      embedded citation inside the same string untouched, so the finding
+      contradicted itself between field and prose. Fixed by
+      _rewrite_embedded_page_mentions above: whenever this function changes
+      `page`, it also rewrites any embedded mention of the OLD page number
+      to the new one.
+    - Fixing the above also surfaced a latent idempotency risk: calling
+      this function a second time (now required, per the first bullet) on
+      a finding whose structured field was already quote-corrected, but
+      whose embedded text mention hadn't been rewritten yet, could make the
+      now-STALE embedded mention look more trustworthy than it is to the
+      embedded-tag self-consistency check, and flip an already-correct page
+      back to the wrong one. Fixed by running quote-verification (checked
+      directly against the real document, the stronger signal) BEFORE the
+      embedded-tag self-consistency check, and only applying the
+      embedded-tag check when quote-verification found nothing to correct
+      -- combined with the text rewrite above, a second (or further) call
+      on an already-corrected finding is now a genuine no-op.
+
     Deliberately conservative, same "can only ever ADD/correct a page,
     never touch the verdict" discipline as this module's own page-recovery
     pass and pipeline/__init__.py's GIP-12 hallucination check: only ever
@@ -236,23 +295,29 @@ def reconcile_page_citation(finding: dict, fields: dict | None = None) -> dict:
     evidence = finding.get("evidence")
     if not isinstance(evidence, str) or isinstance(finding.get("page"), list):
         return finding
-    claimed = finding.get("page")
-    corrected = dict(finding)
-
-    embedded = _embedded_page_mentions(evidence)
-    if len(embedded) == 1:
-        (only_page,) = tuple(embedded)
-        if claimed != only_page:
-            corrected["page"] = only_page
-            claimed = only_page
+    original_page = finding.get("page")
+    new_page = None
 
     if fields:
         for quote in _QUOTED_SPAN_RE.findall(evidence):
             real_page = _page_containing_quote(quote, fields)
-            if real_page is not None and real_page != claimed:
-                corrected["page"] = real_page
+            if real_page is not None and real_page != original_page:
+                new_page = real_page
                 break
 
+    if new_page is None:
+        embedded = _embedded_page_mentions(evidence)
+        if len(embedded) == 1:
+            (only_page,) = tuple(embedded)
+            if original_page != only_page:
+                new_page = only_page
+
+    if new_page is None:
+        return finding
+
+    corrected = dict(finding)
+    corrected["page"] = new_page
+    corrected["evidence"] = _rewrite_embedded_page_mentions(evidence, original_page, new_page)
     return corrected
 
 
