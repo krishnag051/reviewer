@@ -119,9 +119,20 @@ def seed_app_config(session) -> None:
     if session.execute(select(AppConfig)).first() is not None:
         print("app_config: already seeded, skipping")
         return
-    session.add(AppConfig(retention_days=settings.retention_days_default))
+    # notif_from_address: confirmed with Krishna (2026-10-06) -- real Resend
+    # account, mail.masterfaster.org already verified as a sending domain.
+    # Still admin-editable at runtime via Admin Settings > Notifications
+    # (AppConfig.notif_from_address/notif_from_name) -- this only sets the
+    # starting value for a FRESH database; an existing, already-seeded
+    # environment must set it there instead, since this function no-ops
+    # once a row already exists.
+    session.add(AppConfig(
+        retention_days=settings.retention_days_default,
+        notif_from_address="no-reply@mail.masterfaster.org",
+    ))
     session.commit()
-    print(f"app_config: created 1 row (retention_days={settings.retention_days_default})")
+    print(f"app_config: created 1 row (retention_days={settings.retention_days_default}, "
+          f"notif_from_address=no-reply@mail.masterfaster.org)")
 
 
 def seed_snapshot_zero(session) -> None:
