@@ -7138,9 +7138,35 @@ def _check_RPT07(rule: dict, fields: dict) -> tuple:
 # Fix Round, Section 1: QA-SCH-06's own "another related therapy" signal --
 # frequency/duration phrasing ("OT 2x per week for 30 minutes") confirmed as
 # the real shape this appears in, not a dedicated schedule table.
-_OTHER_THERAPY_MENTION_RE = re.compile(
-    r"\boccupational therapy\b|\bphysical therapy\b|\bspeech therapy\b|\bspeech-language\b"
+#
+# Fix Round 18 (2026-10-06) -- REAL BUG FOUND AND FIXED on zaith_new.pdf:
+# the bare whole-phrase alternatives below ("speech-language" etc., with no
+# frequency anchor at all) matched ANY mention of that phrase anywhere in
+# the document, including a one-time early-childhood history sentence
+# ("...leading to a referral for speech-language pathology services") that
+# has nothing to do with this rule's actual subject -- a current related
+# therapy whose SCHEDULE might overlap the ABA schedule. That unrelated
+# page-4 match won over the real, relevant Educational History content on
+# page 5 ("occupational and physical therapies (2x 30)... IEP that
+# mandates occupational, speech and physical therapies (2x 30)") purely
+# because it came first in the document, not because it was more relevant.
+# Removed those context-free whole-phrase alternatives entirely -- a bare
+# mention with no schedule/frequency anchor nearby was never actually
+# checkable evidence for "this therapy's schedule might overlap," only a
+# historical aside. Replaced with a frequency anchor requirement: the
+# "(Nx NN)" parenthetical shorthand confirmed real on zaith_new.pdf, plus
+# the existing "Nx per week/weekly" and "OT/PT ... per week" shapes,
+# each only counted as a real mention when a therapy-type keyword
+# (occupational/physical/speech/OT/PT/counseling) appears within a close
+# nearby window -- not just anywhere in the same document.
+_THERAPY_FREQUENCY_RE = re.compile(
+    r"\(\s*\d+\s*x\s*\d+\s*\)"
+    r"|\b\d+\s*x\s*(?:per\s*week|weekly)\b"
     r"|\bOT\b[^.\n]{0,20}\bper week\b|\bPT\b[^.\n]{0,20}\bper week\b",
+    re.IGNORECASE,
+)
+_THERAPY_TYPE_NEARBY_RE = re.compile(
+    r"\boccupational\b|\bphysical\b|\bspeech\b|\bOT\b|\bPT\b|\bcounseling\b",
     re.IGNORECASE,
 )
 
@@ -7171,11 +7197,17 @@ def _check_SCH06(rule: dict, fields: dict) -> tuple:
     example showing explicit day/time blocks for a non-ABA service.
     """
     text = fields["full_text"]
-    m = _OTHER_THERAPY_MENTION_RE.search(text)
+    m = None
+    for candidate in _THERAPY_FREQUENCY_RE.finditer(text):
+        nearby = text[max(0, candidate.start() - 60):candidate.end() + 20]
+        if _THERAPY_TYPE_NEARBY_RE.search(nearby):
+            m = candidate
+            break
     if not m:
         return (
             "not_applicable",
-            "No mention of another related therapy (OT/PT/speech) found -- no overlap to check.",
+            "No mention of another related therapy (OT/PT/speech) with schedule/frequency "
+            "information found -- no overlap to check.",
             None, 0.8,
         )
     # Fix Round (2026-09-11), page-number enforcement gap: pass/uncertain
