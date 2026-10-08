@@ -149,17 +149,27 @@ def check_date_in_current_report_period(
         detail = f" (TP states {current_report_period_str!r})" if current_report_period_str else ""
         return _uncertain(f"Could not determine both ends of the TP's current-report date range{detail}.")
 
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: this evidence used to write the
+    # session date in whatever format the session note itself used
+    # (MM/DD/YYYY) but the report range via datetime.isoformat()
+    # (YYYY-MM-DD) -- two different date formats in the same sentence.
+    # Standardized to MM/DD/YYYY throughout, matching every other date
+    # this codebase shows a reviewer (confirmed: the only two isoformat()
+    # calls anywhere in pipeline/ were these two).
+    report_start_str = report_start.strftime("%m/%d/%Y")
+    report_end_str = report_end.strftime("%m/%d/%Y")
     if report_start <= session_date <= report_end:
         return _finding(
             "pass",
             f"Session date {session_date_str} falls within the current-report date range "
-            f"{report_start.isoformat()} to {report_end.isoformat()} (inclusive).",
+            f"{report_start_str} to {report_end_str} (inclusive).",
             0.9,
         )
     return _finding(
         "fail",
         f"Session date {session_date_str} falls OUTSIDE the current-report date range "
-        f"{report_start.isoformat()} to {report_end.isoformat()}.",
+        f"{report_start_str} to {report_end_str}.",
         0.9,
     )
 

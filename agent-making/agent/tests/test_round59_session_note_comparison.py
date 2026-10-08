@@ -89,7 +89,10 @@ def test_session_date_within_a_date_range_passes():
     result = check_date_in_current_report_period("09/15/2026", YISROEL_AUTHORIZATION_PERIOD)
     assert result["result"] == "pass"
     assert "09/15/2026" in result["evidence"]
-    assert "2026-08-17" in result["evidence"] and "2027-02-17" in result["evidence"]
+    # Fix Round 19 (2026-10-08): standardized to MM/DD/YYYY, matching the
+    # session date's own format -- the old isoformat() (YYYY-MM-DD) output
+    # mixed two date formats in the same sentence, a real confirmed bug.
+    assert "08/17/2026" in result["evidence"] and "02/17/2027" in result["evidence"]
 
 
 def test_session_date_before_the_range_fails():

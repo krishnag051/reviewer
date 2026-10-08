@@ -565,9 +565,28 @@ def _find_weekly_hours_for_code(text: str, cpt_code: str) -> float | None:
     Reeda Bint Shaheen's TP) — the requested weekly hours consistently
     appear directly before the code's row label in extracted text, not
     just in a "Hours Approved Previous Authorization" summary elsewhere on
-    the page, which is a different figure."""
+    the page, which is a different figure.
+
+    Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    the real Raizy Gottesfeld document: real text is "30.75  hours per\\n
+    week.\\n15.5  hours will be\\ndone in the\\ncommunity\\n97153-Direct
+    Care" -- a real, inline community-hours aside sits between the main
+    figure and the code's own row label, which the old "at most one
+    newline" gap never tolerated, silently returning None (not "no hours
+    found," a real false negative) and escalating every rule that reads
+    this helper (QA-GIP-13 among them) to judgment for no real reason.
+    Widened to a bounded character gap (not unbounded, so this can't
+    accidentally skip past a DIFFERENT code's own hours line first) --
+    and the gap itself may not contain another whole "<N> hours per
+    week" phrase, so it can never stretch across a second code's own
+    complete row to reach `cpt_code` (confirmed real regression this
+    guard fixes: without it, searching for 97155 on a row sequence like
+    "25 hours per week.\\n97153...\\n2.5 hours per week.\\n97155" matched
+    97153's OWN "25" through to 97155, past 97155's real, closer "2.5").
+    """
     m = re.search(
-        rf"(\d+(?:\.\d+)?)\s*hours?\s*per\s*\n?\s*week\.?\s*\n?\s*{re.escape(cpt_code)}",
+        rf"(\d+(?:\.\d+)?)\s*hours?\s*per\s*\n?\s*week\.?"
+        rf"(?:(?!\d+(?:\.\d+)?\s*hours?\s*per\s*\n?\s*week)[\s\S]){{0,120}}?{re.escape(cpt_code)}",
         text, re.IGNORECASE,
     )
     return float(m.group(1)) if m else None
@@ -576,9 +595,13 @@ def _find_weekly_hours_for_code(text: str, cpt_code: str) -> float | None:
 def _find_weekly_hours_for_code_with_offset(text: str, cpt_code: str) -> tuple[float, int] | None:
     """Fix Round (2026-09-11), page-number enforcement gap: same match as
     _find_weekly_hours_for_code, plus the match's character offset -- see
-    _find_labeled_date_with_offset's own docstring for why this exists."""
+    _find_labeled_date_with_offset's own docstring for why this exists.
+    Fix Round 19 (2026-10-08): same bounded-gap widening (plus the
+    no-crossing-another-row guard) as _find_weekly_hours_for_code -- see
+    that function's own docstring."""
     m = re.search(
-        rf"(\d+(?:\.\d+)?)\s*hours?\s*per\s*\n?\s*week\.?\s*\n?\s*{re.escape(cpt_code)}",
+        rf"(\d+(?:\.\d+)?)\s*hours?\s*per\s*\n?\s*week\.?"
+        rf"(?:(?!\d+(?:\.\d+)?\s*hours?\s*per\s*\n?\s*week)[\s\S]){{0,120}}?{re.escape(cpt_code)}",
         text, re.IGNORECASE,
     )
     return (float(m.group(1)), m.start()) if m else None
@@ -1949,9 +1972,24 @@ def _hrs06_previous_auth_hours(text: str) -> list[tuple[str, str, str]]:
     if not m:
         return []
     block = m.group(1)
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: this row's own real label wraps
+    # across a line break ("97155-Supervision of Technician/Behavior
+    # Treatment\nModification\n3 hours per week") -- the old same-line-only
+    # "[^\n]+?" description capture couldn't cross that break to reach its
+    # own hours value, so 97155 silently never made it into this list at
+    # all (the real change this rule exists to catch, 3->4 hrs/week, was
+    # invisible to it from the start -- not a comparison-logic bug). Allows
+    # the description to span extra wrapped lines, but never past the
+    # START of another code's own row (the "(?!\d{5}-)" guard) -- so this
+    # can't swallow a NEXT row's own code/hours into THIS row's
+    # description the way an unbounded cross-newline capture would.
     return [
         (cm.group(1), cm.group(2).strip(), cm.group(3).strip())
-        for cm in re.finditer(_HRS06_CPT_CODE_RE + r"-([^\n]+?)\s+(N/?A|[\d.]+)\s*hours?\s*per\s*(?:week|auth)\b", block, re.IGNORECASE)
+        for cm in re.finditer(
+            _HRS06_CPT_CODE_RE + r"-((?:(?!\d{5}-)[\s\S])+?)\s+(N/?A|[\d.]+)\s*hours?\s*per\s*(?:week|auth)\b",
+            block, re.IGNORECASE,
+        )
     ]
 
 
@@ -3475,6 +3513,15 @@ _ACF06_ADMIN_BY_RE = re.compile(
     r"\b(?:administered|completed|conducted)\s+by\s+([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+){0,3}(?:,\s*[A-Za-z.]+)?)",
 )
 _ACF06_ADMIN_VERB_RE = re.compile(r"\b(?:administered|completed|conducted)\b", re.IGNORECASE)
+# Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on the
+# real Raizy Gottesfeld document: this template names the assessor via a
+# direct "Assessor: Miriam Fogel" labeled field in the Assessment of
+# Current Functioning section -- a genuinely different real shape from
+# the "administered by NAME" prose this checker already covered, not a
+# bug in that pattern itself. Checked first (stronger signal -- an
+# explicit label, not a prose phrase that could theoretically appear
+# elsewhere) before falling back to the "administered by" pattern.
+_ACF06_ASSESSOR_LABEL_RE = re.compile(r"Assessor:[ \t]*([^\n]+)")
 
 
 def _check_ACF06(rule: dict, fields: dict) -> tuple:
@@ -3511,6 +3558,13 @@ def _check_ACF06(rule: dict, fields: dict) -> tuple:
     found_section = _find_acf_section_with_offset(text)
     haystacks = [(found_section[0], found_section[1])] if found_section else []
     haystacks.append((text, 0))
+
+    for haystack, base_offset in haystacks:
+        m = _ACF06_ASSESSOR_LABEL_RE.search(haystack)
+        if m and m.group(1).strip():
+            name = m.group(1).strip()
+            page = _page_for_offset(fields, base_offset + m.start(1))
+            return "pass", f"Assessor named: {name!r}.", page, 0.75
 
     for haystack, base_offset in haystacks:
         m = _ACF06_ADMIN_BY_RE.search(haystack)
@@ -3609,7 +3663,18 @@ def _check_BIO06(rule: dict, fields: dict) -> tuple:
     document with that shape.
     """
     text = fields["full_text"]
-    med_mention = re.search(r"\bmedications?\b", text, re.IGNORECASE)
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: "She takes Depakote (250 mg/2x
+    # day) as prescribed by her neurologist, Dr. Pearl MD" is a plain,
+    # explicit medication mention -- but it never uses the literal word
+    # "medication"/"medications" anywhere in that sentence, so the old
+    # word-presence gate alone missed it entirely and wrongly concluded
+    # "no medication mentioned anywhere," even though a specific named
+    # drug with a real dosage is clearly documented. Added a dosage-
+    # pattern alternative ("250 mg") -- a real prescribed medication is
+    # reliably accompanied by a dose in this unit, which a generic
+    # "no medication mentioned" denial sentence never is.
+    med_mention = re.search(r"\bmedications?\b|\b\d+\s*mg\b", text, re.IGNORECASE)
     if not med_mention:
         return (
             "not_applicable",
@@ -3918,7 +3983,30 @@ def _check_GIP07(rule: dict, fields: dict) -> tuple:
         if six_months_out <= report_end:
             marker_len = len("Target Goal:") if block.startswith("Target Goal:") else len("Target Name:")
             goal_name = block[marker_len:].split("\n", 1)[0].strip()[:100]
-            old_goals.append(f"{goal_name!r} (initiated {m.group(1)})")
+            # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED,
+            # confirmed on the real Raizy Gottesfeld document: a real,
+            # genuine rationale for why a goal stays open past 6 months
+            # is often written inline, directly on the SAME line as its
+            # own "Date Initiated:" value (e.g. "Date Initiated:
+            # 03/17/2025 -Modify the prompting and reinforcement") --
+            # this checker used to escalate every old goal to judgment
+            # unconditionally rather than reading this already-extractable
+            # inline text, and the judgment layer then wrongly reported
+            # ALL of them as blank, including two that genuinely have a
+            # real rationale right here. A trailing note of 3+ real words
+            # right after the date is read directly, deterministically,
+            # rather than guessed at by a model.
+            trailing = block[m.end():].split("\n", 1)[0].strip(" \t-–—")
+            # A line-wrapped NEXT FIELD ("Date Initiated: 03/08/2026
+            # Baseline: 14 per session Frequency") is not a rationale --
+            # excluded by requiring the trailing text not itself start
+            # with a recognizable "Label:" field prefix.
+            is_another_field = bool(re.match(r"^[A-Za-z][A-Za-z/ ]{1,30}:\s", trailing))
+            has_inline_rationale = not is_another_field and len(re.findall(r"[A-Za-z]{3,}", trailing)) >= 3
+            old_goals.append({
+                "name": goal_name, "date": m.group(1), "offset": goal_starts[i],
+                "has_rationale": has_inline_rationale, "rationale": trailing if has_inline_rationale else None,
+            })
 
     if checked == 0:
         return "not_checkable", "No goal block with a 'Date Initiated:' field found to compute age from.", None, 0.0
@@ -3930,6 +4018,25 @@ def _check_GIP07(rule: dict, fields: dict) -> tuple:
             f"the current report's end date ({report_range[1]}) -- this rule doesn't apply.",
             _page_for_offset(fields, first_checked_offset), 0.85,
         )
+    # Fix Round 19 (2026-10-08): goals with a real inline rationale (found
+    # directly above) are resolved deterministically; only genuinely
+    # missing ones still need a judgment read to confirm no rationale
+    # exists ANYWHERE else for that goal (not just inline) before failing
+    # outright -- never a confident det-layer FAIL on text alone, same
+    # "det can only confirm presence, not confidently confirm absence"
+    # discipline this codebase already applies elsewhere.
+    missing_rationale = [g for g in old_goals if not g["has_rationale"]]
+    if not missing_rationale:
+        pages = sorted({_page_for_offset(fields, g["offset"]) for g in old_goals} - {None})
+        page = pages if len(pages) > 1 else (pages[0] if pages else None)
+        detail = "; ".join(f"{g['name']!r} (initiated {g['date']}): {g['rationale']!r}" for g in old_goals)
+        return (
+            "pass",
+            f"All {len(old_goals)} goal(s) open 6 months or more as of the current report's end date "
+            f"({report_range[1]}) have a real rationale documented inline on their own 'Date Initiated:' "
+            f"line: {detail}.",
+            page, 0.8,
+        )
     # Fix Round (Full Rule-by-Rule Fix List), Item 12: she confirmed the
     # rule LOGIC is correct -- she just wants the page number to point
     # specifically to where a rationale for an old goal would actually
@@ -3939,11 +4046,14 @@ def _check_GIP07(rule: dict, fields: dict) -> tuple:
     rationale_sections = find_labeled_sections(text, "Skill Acquisition Summary and Rationale")
     rationale_page = _page_for_offset(fields, rationale_sections[0]["offset"]) if rationale_sections else None
     page = rationale_page or _page_for_offset(fields, first_checked_offset)
+    old_goals_display = [f"{g['name']!r} (initiated {g['date']})" for g in old_goals]
     return (
         "not_checkable",
         f"{len(old_goals)} of {checked} goal(s) are open 6 months or more as of the current report's "
-        f"end date ({report_range[1]}): {old_goals}. Whether a real rationale is documented for these "
-        f"still requires a judgment read.",
+        f"end date ({report_range[1]}): {old_goals_display}. {len(old_goals) - len(missing_rationale)} of "
+        f"these have a real rationale documented inline on their own 'Date Initiated:' line; "
+        f"{len(missing_rationale)} do not ({[g['name'] for g in missing_rationale]!r}) -- whether a real "
+        f"rationale exists for those elsewhere in the document still requires a judgment read.",
         page, 0.0,
     )
 
@@ -4386,6 +4496,30 @@ _MASTERED_GOAL_DATE_OF_MASTERY_RE = re.compile(
     r"([\s\S]{1,400}?)Date\s+of\s+Mastery:[ \t]*(\d{1,2}/\d{1,2}/\d{2,4})?",
 )
 
+# Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on the
+# real Raizy Gottesfeld document: a THIRD real template exists, confirmed
+# on this document's own Skill Acquisition Mastered Goals section (30+
+# entries) -- a bare "Name of Skill: <goal sentence>" line with NO date
+# field anywhere (not "Date Mastered:", not "Date of Mastery:"). Both
+# existing patterns above REQUIRE a date-field terminator to match at
+# all, so on THIS document they found zero entries in the real, populated
+# section -- QA-MAST-02 then wrongly concluded "the current TP has no
+# named mastered goals at all" and silently missed dozens of real
+# duplicate-goal matches against the previous TP (confirmed independently:
+# over 20 of this document's real mastered-goal names also appear,
+# verbatim or near-verbatim, on the previous TP's own Mastered Goals
+# list). Tried only as a last-resort fallback, when BOTH date-bearing
+# patterns find nothing in a given section, so a document using either
+# real dated template is completely unaffected. An entry's own text may
+# wrap onto a second physical line (confirmed real on this document,
+# e.g. "...given with only two\nprompts."), so this is bounded by the
+# NEXT "Name of Skill:" occurrence (or end of section), not a single
+# line.
+_MASTERED_SKILL_NAME_ONLY_RE = re.compile(
+    r"Name of Skill:[ \t]*([\s\S]{1,400}?)(?=\s*Name of Skill:|\Z)",
+    re.IGNORECASE,
+)
+
 
 def _extract_mastered_goals_with_dates(text: str) -> list[dict]:
     """Same 'Mastered Goals:' section boundary as
@@ -4434,6 +4568,17 @@ def _extract_mastered_goals_with_dates(text: str) -> list[dict]:
             section_entries = [
                 {"name": sm.group(1).strip(), "date_mastered": sm.group(2), "offset": base_offset + sm.start(1)}
                 for sm in _MASTERED_GOAL_DATE_OF_MASTERY_RE.finditer(section_text)
+                if sm.group(1).strip()
+            ]
+        if not section_entries:
+            # Fix Round 19 (2026-10-08): second fallback -- see
+            # _MASTERED_SKILL_NAME_ONLY_RE's own comment above. Whitespace
+            # (including the real line-wrap this pattern tolerates)
+            # collapsed to single spaces so a reviewer-facing evidence
+            # string never shows a raw embedded newline mid-sentence.
+            section_entries = [
+                {"name": " ".join(sm.group(1).split()), "date_mastered": None, "offset": base_offset + sm.start(1)}
+                for sm in _MASTERED_SKILL_NAME_ONLY_RE.finditer(section_text)
                 if sm.group(1).strip()
             ]
         entries.extend(section_entries)
@@ -5010,6 +5155,15 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
     soft_problems = []
     checked = 0
     first_checked_offset = None
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: the pass branch below used to
+    # cite only `first_checked_offset`'s page, even when this document has
+    # MULTIPLE real Behavior Reduction Goal blocks on DIFFERENT pages (here:
+    # Aggression on page 12, Noncompliance on page 13) that all pass --
+    # collapsing a real, confirmed multi-page claim down to the first one,
+    # same bug class as QA-TEMP-01's Round 15 fix. Tracks every checked
+    # goal's own page so the pass branch can cite all of them.
+    checked_pages = []
     for i in range(len(goal_starts) - 1):
         block = text[goal_starts[i]:goal_starts[i + 1]]
         if not block.startswith("Target Name:"):
@@ -5017,6 +5171,7 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
         checked += 1
         if first_checked_offset is None:
             first_checked_offset = goal_starts[i]
+        checked_pages.append(_page_for_offset(fields, goal_starts[i]))
         goal_name = block[len("Target Name:"):].split("\n", 1)[0].strip()
 
         cl_m = re.search(r"(?:Current Level|Current Data):[ \t]*([^\n]*)", block)
@@ -5071,10 +5226,12 @@ def _check_BIP06(rule: dict, fields: dict) -> tuple:
         evidence = [{"page": page, "detail": detail} for page, detail in soft_problems]
         return "uncertain", evidence, None, 0.5
 
-    # Fix Round (2026-09-11), page-number enforcement gap: same fix as
-    # _check_BIP04 -- cites the first checked goal's real page instead of
-    # the None this pass case used to hardcode.
-    page = _page_for_offset(fields, first_checked_offset)
+    # Fix Round (2026-09-11), page-number enforcement gap: cites the
+    # checked goal(s)' real page(s) instead of the None this pass case
+    # used to hardcode. Fix Round 19 (2026-10-08): cite EVERY distinct
+    # checked page, not just the first, when there's more than one.
+    distinct_pages = sorted({p for p in checked_pages if p is not None})
+    page = distinct_pages if len(distinct_pages) > 1 else (distinct_pages[0] if distinct_pages else None)
     return "pass", f"All {checked} Behavior Reduction Goal(s) have a Current Level indicated (a real value, or an explained N/A).", page, 0.85
 
 
@@ -6117,6 +6274,39 @@ def _check_BIP01(rule: dict, fields: dict) -> tuple:
 # against a real document's actual Problem Areas/Reason for Referral
 # wording -- flagged plainly, same convention this codebase already
 # uses elsewhere for a first, unverified attempt.
+def _fold_doubled_letters(s: str) -> str:
+    """Collapses any consecutive doubled letter to one, after lowercasing.
+    Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    the real Raizy Gottesfeld document: the same behavior is spelled
+    "Aggression" (correct) in the BIP section's own "Behavior:" field but
+    "Agression" (one g) in the Behavior Reduction Goal's own "Target
+    Name:" field -- a real, confirmed typo in the document itself, not a
+    bug in how either field is read. A literal keyword match between the
+    two fields sees two different words and wrongly concludes the goal is
+    missing. Folding doubled letters out of both sides first ("Aggression"
+    and "Agression" both fold to "agresion") tolerates this specific, very
+    common class of real-world typo (a missing or extra doubled letter)
+    without weakening the match to the point of false positives on a
+    genuinely different word -- "tantrum" and "aggression" don't fold to
+    anything resembling each other.
+    """
+    return re.sub(r"(.)\1", r"\1", s.lower())
+
+
+def _text_contains_behavior_name(haystack: str, keyword: str) -> bool:
+    """Whole-word/-phrase search for `keyword` in `haystack`, tolerant of
+    the doubled-letter typo class _fold_doubled_letters exists for.
+    Folding is applied to both sides before the `\\b`-bounded search, so
+    this works identically for single-word keywords ("aggression") and
+    the multi-word ones _COMMON_BEHAVIOR_KEYWORDS also has ("self-
+    injurious behavior") -- folding never removes the spaces/hyphens
+    that keep those as one phrase, since it only collapses a letter
+    immediately followed by that SAME letter."""
+    folded_keyword = _fold_doubled_letters(keyword)
+    folded_haystack = _fold_doubled_letters(haystack)
+    return bool(re.search(rf"\b{re.escape(folded_keyword)}\b", folded_haystack))
+
+
 _COMMON_BEHAVIOR_KEYWORDS = (
     "tantrum", "elopement", "aggression", "self-injurious behavior", "self-injury", "sib",
     "property destruction", "non-compliance", "noncompliance", "disruptive behavior",
@@ -6193,8 +6383,17 @@ def _check_BIP08(rule: dict, fields: dict) -> tuple:
     # missing.
     bip_sections = find_labeled_sections(text, "Behavior Intervention Plan")
     bip_text = bip_sections[0]["text"] if bip_sections else ""
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document (both behaviors): this BIP's own
+    # "Behavior:" label has its value on the NEXT line ("Behavior: \n
+    # Aggression"), not the same line -- the old same-line-only
+    # "[^\n]+" capture found nothing at all for either behavior, so
+    # bip_named_behaviors came back empty regardless of spelling. Allows
+    # one optional line break (with its own leading whitespace) between
+    # the label and the value, same "label on its own line" tolerance
+    # this codebase's other block-name extractors already use.
     bip_named_behaviors = " ".join(
-        m.group(1) for m in re.finditer(r"Behavior:[ \t]*([^\n]+)", bip_text, re.IGNORECASE)
+        m.group(1) for m in re.finditer(r"Behavior:[ \t]*\n?[ \t]*([^\n]+)", bip_text, re.IGNORECASE)
     )
 
     goal_starts = _goal_block_starts(text) + [len(text)]
@@ -6203,8 +6402,15 @@ def _check_BIP08(rule: dict, fields: dict) -> tuple:
         if text[goal_starts[i]:goal_starts[i + 1]].startswith("Target Name:")
     )
 
-    missing_bip = {kw for kw in referenced if not re.search(rf"\b{re.escape(kw)}\b", bip_named_behaviors, re.IGNORECASE)}
-    missing_goal = {kw for kw in referenced if not re.search(rf"\b{re.escape(kw)}\b", goal_text, re.IGNORECASE)}
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: "Aggression" is spelled
+    # correctly in the BIP's own "Behavior:" field but as "Agression"
+    # (one g) in the Behavior Reduction Goal's own "Target Name:" field --
+    # the plain \b-bounded literal match below never recognized these as
+    # the same behavior, wrongly flagging a goal that genuinely exists as
+    # missing. See _text_contains_behavior_name's own docstring.
+    missing_bip = {kw for kw in referenced if not _text_contains_behavior_name(bip_named_behaviors, kw)}
+    missing_goal = {kw for kw in referenced if not _text_contains_behavior_name(goal_text, kw)}
 
     if missing_bip or missing_goal:
         both = sorted(missing_bip & missing_goal)
@@ -6707,9 +6913,14 @@ def _check_GIP33(rule: dict, fields: dict) -> tuple:
     return "fail", evidence, None, 0.8
 
 
+# Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on the
+# real Raizy Gottesfeld document: real text reads "Raizy had a lapse in
+# services during the authorization period" (plural "services") -- the
+# old pattern only matched the singular noun, missing this real, explicit,
+# twice-repeated lapse statement entirely. Nouns pluralizable.
 _LAPSE_IN_SERVICE_RE = re.compile(
-    r"\blapse\s+in\s+(?:service|treatment|care)\b"
-    r"|\b(?:gap|break)\s+in\s+(?:service|treatment|care)\b"
+    r"\blapse\s+in\s+(?:service|treatment|care)s?\b"
+    r"|\b(?:gap|break)\s+in\s+(?:service|treatment|care)s?\b"
     r"|\b(?:service|treatment)\s+lapse\b"
     r"|\bdiscontinuation\s+of\s+services?\b",
     re.IGNORECASE,
@@ -7379,7 +7590,25 @@ def _check_GIP13(rule: dict, fields: dict) -> tuple:
             "Could not find 97153 (Direct Care) hours requested to compare against the goal count.",
             None, 0.0,
         )
-    starts = _goal_block_starts(text) + [len(text)]
+    # Fix Round 19 (2026-10-08) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: a document's own "Community
+    # Goals:" section RESTATES several goal names already counted above
+    # (under the SAME "Target Goal:" label, just the name, no Baseline/
+    # Mastery Criteria) purely as a cross-reference for "which of these
+    # are worked on in community" -- confirmed real, 11 of them on this
+    # document, all duplicates of goals counted earlier. Without a
+    # boundary, these get double-counted, and this is almost certainly
+    # why three separate judgment-layer votes landed on three different,
+    # all-wrong counts (~24, ~25-27, ~27) for the SAME real document --
+    # per Ms. Yachnes's own suggested fix, this is now a real, bounded,
+    # deterministic count instead. Stops at whichever section boundary
+    # comes first; a document with neither section at all is unaffected
+    # (bound stays at end-of-document, same as before this round).
+    bound = min(
+        (o for o in (text.find("Community Goals:"), text.find("Parent/Caregiver Involvement:")) if o != -1),
+        default=len(text),
+    )
+    starts = [s for s in _goal_block_starts(text) if s < bound] + [bound]
     goal_count = 0
     first_qualifying_offset = None
     for i in range(len(starts) - 1):

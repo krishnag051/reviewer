@@ -1060,7 +1060,7 @@
     {
       "rule_id": "QA-GIP-11",
       "category": "Goals in Progress",
-      "description": "Goals in behavioral context (SD, setting, expected response)",
+      "description": "Target Goals for each goal is written in behavioral context (SD, setting, expected response)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -1222,7 +1222,7 @@
     {
       "rule_id": "QA-COC-06",
       "category": "Coordination of Care",
-      "description": "Date faxed to doctor includes month/day, and is within the current dates of report",
+      "description": "Date faxed to doctor includes month/day/year",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "deterministic",
@@ -1902,7 +1902,7 @@
     {
       "rule_id": "QA-GIP-20",
       "category": "Goals in Progress",
-      "description": "A joint attention behavior goal is missing",
+      "description": "No Joint attention behavior goals",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2070,7 +2070,7 @@
     {
       "rule_id": "QA-PAR-03",
       "category": "Parent/Caregiver Involvement",
-      "description": "For any hours increase, parent training should be greater than 4 data points per graph",
+      "description": "For 97153 hour increase, parent training should be greater than 4 data points per graph",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",
@@ -2146,7 +2146,7 @@
     {
       "rule_id": "QA-TRANS-03",
       "category": "Transition Plan",
-      "description": "At least 4 transition goals per phase; goals align with client's actual profile (no goals for behaviors not present)",
+      "description": "At least 4 transition goals per phase; goals align with client's actual profile (All behavior goals documents are mentioned in the Transition Plan)",
       "applies_to_payor": "ALL",
       "applies_to_plan_type": "Both",
       "check_type": "judgment",

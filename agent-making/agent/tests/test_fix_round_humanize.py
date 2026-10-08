@@ -120,10 +120,15 @@ def test_real_ppi05_evidence_before_and_after():
 
 
 def test_real_rpt03_session_note_evidence_before_and_after():
+    # Fix Round 19 (2026-10-08): REAL BUG FOUND AND FIXED on the real
+    # Raizy Gottesfeld document -- this evidence used to mix date formats
+    # in the same sentence (session date as MM/DD/YYYY, report range via
+    # datetime.isoformat() as YYYY-MM-DD). Standardized to MM/DD/YYYY
+    # throughout; this fixture's expected text is updated to match.
     before = check_date_in_current_report_period("07/29/2026", "07/22/2026 to 07/29/2026")["evidence"]
     after = humanize_evidence(before)
-    assert before == "Session date 07/29/2026 falls within the current-report date range 2026-07-22 to 2026-07-29 (inclusive)."
-    assert after == "Session date 07/29/2026 falls within the current-report date range 2026-07-22 to 2026-07-29."
+    assert before == "Session date 07/29/2026 falls within the current-report date range 07/22/2026 to 07/29/2026 (inclusive)."
+    assert after == "Session date 07/29/2026 falls within the current-report date range 07/22/2026 to 07/29/2026."
 
 
 def test_real_sch02_not_checkable_evidence_is_already_plain_and_unchanged():
