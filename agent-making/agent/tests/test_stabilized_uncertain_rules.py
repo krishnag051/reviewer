@@ -140,9 +140,17 @@ def test_stabilized_rule_ids_include_every_rule_confirmed_unstable_by_the_real_p
     # deliberate exception -- un-pinned this round to let it reach a
     # real judgment call for the first time (see pipeline/__init__.py's
     # own comment for why a deterministic rewrite wasn't attempted).
+    #
+    # Fix Round 21 (2026-10-10): QA-BIP-09/QA-BIP-10 are the TENTH/
+    # ELEVENTH deliberate exceptions -- un-pinned for real, backed by a
+    # real, measured 7/7-pass full-production-batch stability re-test
+    # (not just an isolated test harness result), after Round 20's typo-
+    # normalization context fix (see pipeline/__init__.py's own comment on
+    # STABILIZED_UNCERTAIN_RULE_IDS) resolved the real root cause of their
+    # original instability.
     still_applicable = confirmed_unstable - {
         "QA-BIP-03", "QA-GIP-22", "QA-HRS-07", "QA-PAR-02", "QA-TEMP-06", "QA-SCH-09", "QA-GIP-29",
-        "QA-GIP-17", "QA-AI-05",
+        "QA-GIP-17", "QA-AI-05", "QA-BIP-09", "QA-BIP-10",
     }
     assert still_applicable.issubset(pipeline_module.STABILIZED_UNCERTAIN_RULE_IDS)
     # Fix Round (2026-09-11 evening) added 8 more real, confirmed-unstable

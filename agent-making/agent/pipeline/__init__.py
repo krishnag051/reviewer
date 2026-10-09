@@ -227,9 +227,23 @@ from .render import render_flagged_pages
 # calls) genuinely could reintroduce the exact coin-flip problem this
 # list exists to prevent -- flagged plainly rather than run that
 # verification without explicit per-instance approval.
+# QA-BIP-09/QA-BIP-10 UN-PINNED (Fix Round 21, 2026-10-10): real, measured
+# evidence this round -- a full 7-call stability re-test, run inside the
+# actual real 79-rule production batch (not just an isolated narrow
+# context), came back 7/7 "pass" for BOTH rule_ids, zero disagreement,
+# after Round 20's typo-normalization context fix (QA-BIP-08's own
+# _fold_doubled_letters/_text_contains_behavior_name tolerance, extended
+# to these two via _inject_bip0910_spelling_normalization_context) landed.
+# The original instability (Round "Eliminate Coin-Flipping," confirmed via
+# git history in a prior round's own verification) was real and caused by
+# exactly this unresolved "Agression"/"Aggression" spelling-variance
+# confusion, not a deeper clinical-judgment ambiguity -- with that root
+# cause fixed, there is no remaining reason to force these to a fixed
+# "uncertain" answer. See this round's own report for the real post-
+# un-pinning production-path re-verification numbers.
 STABILIZED_UNCERTAIN_RULE_IDS = frozenset({
     "QA-GIP-14",  # original 2 minus QA-MAST-04, unpinned this round (see above)
-    "QA-AI-03", "QA-BIP-09", "QA-BIP-10", "QA-BIP-12",
+    "QA-AI-03", "QA-BIP-12",
     "QA-COC-07", "QA-GIP-02", "QA-GIP-20", "QA-GIP-23",
     "QA-GIP-25", "QA-GIP-27", "QA-GIP-34", "QA-GIP-35",
     "HF-05", "QA-ACF-03", "QA-PPI-05",
@@ -626,21 +640,67 @@ def _inject_hrs10_generic_rationale_context(
 def _inject_ai05_spelling_inconsistency_context(
     extracted_fields: dict, applicable_rules: list[dict], rules_by_id: dict[str, dict],
 ) -> tuple[list[dict], dict[str, dict]]:
-    """QA-AI-05 real fix (Round 20, 2026-10-09) -- see
-    fields_module.doubled_letter_spelling_inconsistencies's own docstring
-    for the real, generalized (not hard-coded) detection this uses. Same
-    forced-additional-context convention as the injectors above.
+    """QA-AI-05 real fix (Round 21, 2026-10-10) -- REAL REGRESSION FOUND
+    AND FIXED, confirmed in real staging: Round 20's version of this
+    function injected ONLY the doubled-letter-inconsistency finding as
+    `extra_context`, worded as a flat statement of fact ("include these
+    as real spelling errors..."). Staging confirmed this caused the model
+    to STOP independently finding the 4 OTHER real errors it used to
+    catch reliably on its own (two generic misspellings, a patient-name
+    typo, and an image-title pronoun/gender mismatch) -- injecting one
+    specific pre-found answer apparently anchored the model onto treating
+    that as a complete response rather than a floor to build on.
+
+    Two real, structural fixes, together:
+    1. UNIFIED detection: this now combines BOTH real, generalized
+       deterministic detectors this codebase has for this rule --
+       doubled_letter_spelling_inconsistencies (Round 20) AND the new
+       patient_name_typo_candidates (Round 21, below -- a genuinely
+       different typo SHAPE, a dropped/substituted letter in the
+       patient's own confirmed name, not a doubled-letter variance; see
+       that function's own docstring for why Round 20's detector
+       structurally could never have caught this class). One combined
+       context block, not two independent injections that could drift
+       out of sync with each other.
+    2. REWORDED using the same "starting point, not a complete list --
+       read the whole document yourself for more" framing already proven
+       NOT to cause this anchoring problem elsewhere in this codebase
+       (QA-GIP-12's own real fix, same round-7 fix for the exact same
+       failure shape: the model narrowing its own search to match a
+       provided list instead of treating it as a floor). Explicitly
+       re-states the rule's own full scope (misspellings, grammar errors,
+       name typos, pronoun/gender mismatches) so the model doesn't need to
+       infer "spelling errors" means ONLY the kind just handed to it.
+
+    Known, disclosed limitation (not fixed by this round, structurally
+    unfixable without a real English-dictionary dependency this project
+    hasn't taken on): a LONE typo with no correctly-spelled counterpart
+    anywhere else in the same document (confirmed real case: "occured"/
+    "wlil" on the real Raizy document, neither of which has a correctly-
+    spelled twin anywhere else in that same document) cannot be caught by
+    either detector here, since both work by internal-consistency ("the
+    same word spelled two different ways somewhere in this one
+    document"), not by comparison against an external dictionary. These
+    remain purely the judgment layer's own job, same as before Round 20.
     """
-    flags = fields_module.doubled_letter_spelling_inconsistencies(extracted_fields)
-    if flags and "QA-AI-05" in rules_by_id:
-        flag_lines = "; ".join(
-            f"{' / '.join(f['spellings'])!r} (pages {f['pages']})" for f in flags
-        )
+    doubled_letter_flags = fields_module.doubled_letter_spelling_inconsistencies(extracted_fields)
+    name_typo_flags = fields_module.patient_name_typo_candidates(extracted_fields)
+    if (doubled_letter_flags or name_typo_flags) and "QA-AI-05" in rules_by_id:
+        floor_lines = []
+        for f in doubled_letter_flags:
+            floor_lines.append(f"{' / '.join(f['spellings'])!r} (pages {f['pages']})")
+        for f in name_typo_flags:
+            floor_lines.append(f"{f['typo']!r} (likely a typo of {f['correct']!r}, page {f['page']})")
+        floor_text = "; ".join(floor_lines)
         ai05_context = (
-            f"A deterministic scan already found the same word spelled inconsistently (a doubled-letter "
-            f"typo class -- one occurrence has an extra or missing doubled letter compared to another "
-            f"occurrence of the same word elsewhere in this document) in: {flag_lines}. Include these as "
-            f"real spelling errors in your findings alongside anything else you find yourself."
+            f"As a starting point (not a complete list -- read the whole document yourself for more), "
+            f"a deterministic scan already found these likely real spelling errors: {floor_text}. Your own "
+            f"findings should be AT LEAST this long, most likely longer -- this rule covers every kind of "
+            f"spelling/grammar error in the document, not only the kind listed above: generic misspellings, "
+            f"grammar errors, typos of the patient's own name, and pronoun/gender mismatches (including ones "
+            f"that only appear in a rendered image, e.g. a goal graph's own title text). Read the full "
+            f"document and any rendered images yourself for every real error of every kind -- the items "
+            f"above are a floor to confirm and build on, never a ceiling to stop at."
         )
         rules_by_id = {**rules_by_id, "QA-AI-05": {**rules_by_id["QA-AI-05"], "extra_context": ai05_context}}
         applicable_rules = [
@@ -661,17 +721,14 @@ def _inject_bip0910_spelling_normalization_context(
     "Aggression"/"Agression" class of real document typo already fixed
     for the deterministic QA-BIP-08 in Round 19.
 
-    IMPORTANT, stated plainly rather than left implicit: both rule_ids
-    are CURRENTLY on STABILIZED_UNCERTAIN_RULE_IDS (see that set's own
-    definition above), which means the real judgment call for them is
-    never actually made at all right now -- this context has zero live
-    effect until/unless they come off that list. This is intentionally
-    built now so the normalization already exists the moment a real,
-    measured stability re-test (part 2 -- requires real, billed API
-    calls, not run without explicit per-instance approval, per this
-    project's standing cost-approval rule) confirms it's safe to
-    un-stabilize them. Do not treat this function's mere existence as
-    proof the underlying instability is fixed -- it is not yet verified.
+    UPDATE (Round 21, 2026-10-10): both rule_ids are now REMOVED from
+    STABILIZED_UNCERTAIN_RULE_IDS -- see that set's own comment for the
+    real, measured 7/7 stability evidence this was verified against. This
+    context now has a REAL, live effect every real run: it reaches the
+    actual judgment call for both rule_ids, not just the test harness that
+    originally proved it out. Re-verified post-un-pinning against the real
+    production path (not just the isolated test harness) -- see this
+    round's own report for those numbers.
     """
     flags = fields_module.doubled_letter_spelling_inconsistencies(extracted_fields)
     if not flags:

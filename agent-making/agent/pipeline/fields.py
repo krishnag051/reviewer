@@ -6548,6 +6548,78 @@ def doubled_letter_spelling_inconsistencies(fields: dict) -> list[dict]:
     return flags
 
 
+_PATIENT_NAME_FIELD_RE = re.compile(r"Patient Name:[ \t]*([^\n]+?)(?=\s*(?:AKA:|Patient DOB:|$))")
+# A near-miss must be close enough to be a real typo of the SAME name, not
+# a coincidentally-similar different word -- 80 is the same real,
+# calibrated threshold class this codebase already uses for name fuzzy-
+# matching (see _name_filename_score/_FILENAME_MATCH_THRESHOLD above,
+# a stricter 97 for a DIFFERENT question -- filename-vs-document-name,
+# where an exact match is expected). A near-miss below 100 (not identical)
+# but above 80 is "close enough to be the same name misspelled," not
+# "two different real words."
+_NAME_TYPO_FUZZY_THRESHOLD = 80
+
+
+def patient_name_typo_candidates(fields: dict) -> list[dict]:
+    """QA-AI-05 real fix (Round 21, 2026-10-10): a SECOND real, generalized
+    detector, alongside doubled_letter_spelling_inconsistencies above --
+    confirmed necessary by Round 21's own real-document regression report:
+    the real "Raize" (missing trailing "y") vs "Raizy" (200 real, correctly-
+    spelled occurrences) typo is NOT a doubled-letter case at all (a
+    dropped final letter, a different typo shape entirely), so the Round 20
+    detector structurally cannot catch it -- this is a genuinely separate
+    gap, not a bug in that function.
+
+    Uses the document's OWN confirmed patient name (the same 'Patient
+    Name:' field QA-PPI-03 already reads) as the reference, then scans
+    every real word in the document for a close-but-not-exact fuzzy match
+    (rapidfuzz.fuzz.ratio, already a real, proven dependency in this file --
+    see _name_filename_score) against any name token (first/last/etc, each
+    checked independently so "Raize" matches against the token "Raizy",
+    not the full "Raizy Gottesfeld" string). This generalizes to ANY
+    patient's name, not just Raizy's -- it reads the real confirmed name
+    from the document itself, never a hard-coded string.
+
+    Deliberately conservative to avoid false positives: a name token must
+    be 4+ letters (a 2-3 letter name/initial has too many coincidental
+    near-matches to common short words), and a candidate word must NOT be
+    an exact match (ratio 100 is just the name spelled correctly) and must
+    not itself appear as a 'Patient Name:'/footer occurrence of the
+    confirmed name (never flags the name's own correctly-labeled
+    appearances against each other).
+    """
+    text = fields["full_text"]
+    name_matches = list(_PATIENT_NAME_FIELD_RE.finditer(text))
+    names = [m.group(1).strip() for m in name_matches if m.group(1).strip()]
+    if not names:
+        return []
+    confirmed_name = Counter(names).most_common(1)[0][0]
+    name_tokens = [t for t in re.split(r"\s+", confirmed_name) if len(t) >= 4]
+    if not name_tokens:
+        return []
+    name_tokens_lower = {t.lower() for t in name_tokens}
+
+    candidates = []
+    seen_words: set[str] = set()
+    for m in re.finditer(r"\b[A-Za-z]{4,}\b", text):
+        word = m.group(0)
+        lower_word = word.lower()
+        if lower_word in name_tokens_lower or lower_word in seen_words:
+            continue
+        for token in name_tokens:
+            if lower_word == token.lower():
+                continue
+            score = fuzz.ratio(lower_word, token.lower())
+            if _NAME_TYPO_FUZZY_THRESHOLD <= score < 100:
+                candidates.append({
+                    "typo": word, "correct": token, "score": score,
+                    "page": _page_for_offset(fields, m.start()),
+                })
+                seen_words.add(lower_word)
+                break
+    return candidates
+
+
 _COMMON_BEHAVIOR_KEYWORDS = (
     "tantrum", "elopement", "aggression", "self-injurious behavior", "self-injury", "sib",
     "property destruction", "non-compliance", "noncompliance", "disruptive behavior",
