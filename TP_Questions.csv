@@ -1,0 +1,179 @@
+﻿Question Name,Question Description
+AET-01,Testing tool restricted to Vineland/VB-MAPP/ABLLS; AFLS not allowed
+ANT-01,Date of current report within 30 days of authorization start date
+ANT-02,Graph data within 30 days of authorization start date
+ANT-03,Signature date within 30 days of authorization start date
+CIG-01,"If ABLLS is used, it is completed from A-Z"
+EMB-01,No more than 3 hrs of 97151 (assessment) requested
+EMB-02,Eye contact goals are present (not preferred by this payor)
+EMP-01,Date of current report within 30 days of authorization start date
+EMP-02,Graph data within 30 days of authorization start date
+EMP-03,Signature date within 30 days of authorization start date
+EMP-04,Eye contact goals are present (not preferred by this payor)
+HF-01,"Healthfirst authorization range is 13 weeks, regardless of patient age"
+HF-02,No more than 5 hrs of 97151 (assessment) requested
+HF-03,"Community hours: TP states how many hours, where, and what goals"
+HF-05,"If a PRT (Parent/Caregiver Training) goal has fewer than 3 real data points tracked, its rationale must indicate a plan for improvement"
+HF-06,Assessment/testing tool has been updated within 3 months for Healthfirst clients and 6 months for any other insurance
+HF-07,"If behaviors rated moderate/severe, at least 1 behavior-based parent goal is included"
+HF-10,Community hours indicated consistently
+MOL-01,"Utilization indicated on Molina, if applicable"
+QA-ACF-01,Date/location/patient location completed
+QA-ACF-02,Note backing assessment matches date/location on Treatment Plan
+QA-ACF-03,Grid with legend (colors/dates/assessor) present and matches the dates of the assessment (not required for Vineland specifically)
+QA-ACF-04,"Score should not be lower than previous assessment. If it is, should be flagged."
+QA-ACF-05,Assessment Summary Statement is documented (not blank) and matches assessment results
+QA-ACF-06,Testing tool includes assessor's name
+QA-ACF-07,TP includes both old and new testing tool
+QA-ACF-08,Session note backs testing tool used (else forward to QA)
+QA-ACF-09,"If a different testing tool is used than the previous auth, rationale is included"
+QA-ACF-10,"If VB-MAPP used for a child older than 5, rationale is included"
+QA-ACF-11,A legend is not required for the Vineland assessment.
+QA-ACF-12,"Assessment date is within the appropriate range (within report dates, per payor guidelines)"
+QA-AI-01,"Initial assessments should not include boilerplate language like ""client made progress"" / ""continued intervention necessary"""
+QA-AI-02,"No AI-response artifacts left in TP (e.g., ""Based on the documentation you uploaded..."")"
+QA-AI-03,"No leftover template instructional prompts (e.g., ""jot down something positive"" text in Problem Areas, unfilled background-info prompts)"
+QA-AI-04,"No unfilled placeholder text (e.g., ""insert grid by assessment section"", ""insert grid"")"
+QA-AI-05,Document contains spelling/grammar errors
+QA-BAR-01,"If any barriers are mentioned in the report, they should also be listed in this section."
+QA-BIO-02,Date of most recent diagnosis pulled onto TP
+QA-BIO-03,Any additional or secondary diagnosis should be included here.
+QA-BIO-05,Developmental history and diagnosis do not contradict
+QA-BIO-06,"If a medication is listed, a reason should be stated. If the medication is for ADHD, it should also be listed as a secondary diagnosis."
+QA-BIO-07,Educational history should be in Chronological order.
+QA-BIO-09,"For patients 5 and older in Special Education, the TP should indicate they have an IEP."
+QA-BIO-10,Educational history and COC do not contradict
+QA-BIO-11,Includes any other service child is receiving
+QA-BIO-12,"Includes all EI services received; if child did not receive EI, TP states that they did not receive EI"
+QA-BIO-13,First day of ABA with MF pulled onto TP
+QA-BIO-14,History of ABA therapy with other providers completed
+QA-BIO-15,Includes school name
+QA-BIO-17,Flag any mention of dangerous or poisonous items or language in the document.
+QA-BIP-01,At least one severity rating >= moderate (not all 4 mild)
+QA-BIP-02,"No punishment procedures, no exceptions"
+QA-BIP-03,"Flag if a Behavior Intervention Plan (BIP) target is for a behavior other than: aggression, tantrum, elopement, hitting, screaming, biting, climbing, or noncompliance."
+QA-BIP-04,All tantrum goals have a duration
+QA-BIP-05,Age-appropriate mastery criteria for behavior targets
+QA-BIP-06,Current level always indicated
+QA-BIP-07,Plan for client to disagree appropriately (non-compliance goals)
+QA-BIP-08,Behaviors mentioned in Problem Areas/Reason for Referral have a corresponding BIP and behavior goal
+QA-BIP-09,All BIPs have a corresponding behavior goal and vice versa
+QA-BIP-10,Baseline and current level match between BIP and corresponding behavior goal
+QA-BIP-11,BIP includes operational definition for each behavior (regardless of layout/format used)
+QA-BIP-12,"If multiple behaviors included in one BIP, each has a separate baseline and current level"
+QA-BIP-13,"Behavior summary info is correct, current, and aligns with behaviors/BIPs included"
+QA-BIP-14,"Gender/pronouns are consistent across ALL sections of the document, not a limited set (check for copy-paste from other clients)"
+QA-BIP-15,"If the BIP is medical, confirm all medical causes have been ruled out."
+QA-CI-01,Completed with clear and detailed rationale
+QA-COC-01,COC includes provider name/title/date; session note detailed
+QA-COC-02,COC completed with at least one provider indicated on the TP (loosened from requiring all related providers)
+QA-COC-03,TP indicates COC will be done once patient starts services (initial TP only)
+QA-COC-04,TP faxed to doctor within last 6 months
+QA-COC-05,Date of COC not past end date of current report
+QA-COC-06,Date faxed to doctor includes month/day/year
+QA-COC-07,"COC content matches background info (e.g., no contradiction on related services)"
+QA-COC-08,Any mention of a lapse in service should be flagged
+QA-DISC-01,Patient-specific and realistic based on goals
+QA-DISC-02,Remove extra bullets/numbers
+QA-DISC-03,At least 4 discharge criteria per phase; criteria are long-term goals and align with client's profile
+QA-DS-02,All behavior goals should be marked at zero
+QA-GIP-01,No school or ADL goals
+QA-GIP-02,3mo/6mo graph data matches auth length
+QA-GIP-03,"Severity rating check (moderate min, not all mild)"
+QA-GIP-04,No mastery date shows 'invalid date'
+QA-GIP-05,Goal progress matches mastered goals (no contradiction/duplication)
+QA-GIP-06,General goals fully completed and include a rationale
+QA-GIP-07,Goals open more than 6 months have a documented rationale
+QA-GIP-08,"All goals match the POS; if goals are in the community (e.g., library), POS should reflect community"
+QA-GIP-09,Goals indicate which are worked on in community
+QA-GIP-10,Sampling method consistent across baseline/current/sampling/mastery
+QA-GIP-11,"Target Goals for each goal is written in behavioral context (SD, setting, expected response)"
+QA-GIP-12,Goals include verbal operant/behavioral term
+QA-GIP-13,At least 1 goal per hour (excl. Parent Training and Behavior Reduction)
+QA-GIP-14,"For each goal, check its data trend. If a skill goal is trending down, or a behavior-reduction goal is trending up, there should be a note explaining why."
+QA-GIP-15,Info requested by last auth period included (per spreadsheet)
+QA-GIP-16,"Mastery criteria age/ASD-appropriate; no 0%, use 'fewer than one instance'"
+QA-GIP-17,"Goals observable/measurable with SD, deficit, expectation"
+QA-GIP-18,Goals indicating choral responding should be revised/removed if no group hours requested
+QA-GIP-19,Behavior goals and summary section present in review
+QA-GIP-20,No Joint attention behavior goals
+QA-GIP-21,"Behavior goals include an explanation and indicate ""mastered by"" status"
+QA-GIP-22,"A goal that was just started this reporting period should show status as 'NEW,' with current data marked 'NEW' or matching the baseline."
+QA-GIP-23,Behavior reduction goals: check for upward trend without explanation (separate from downward-trend check on skill acquisition goals)
+QA-GIP-24,Duplicate goals are not present
+QA-GIP-25,Goals should be age-appropriate for the client
+QA-GIP-26,"No OT, PT, or speech therapy goals included"
+QA-GIP-27,"A goal's Mastery Criteria defines when it's mastered. Flag if the goal has met that criteria for the full required duration, but its status doesn't say mastered."
+QA-GIP-28,"If a goal's graph has fewer than 3 real data points, a rationale should be provided in its notes field."
+QA-GIP-29,"If no graph is included, rationale is provided"
+QA-GIP-30,No Group mentions unless 97154 is requested
+QA-GIP-31,Flag any goal that is a recall goal.
+QA-GIP-32,Flag if a graph has fewer than 4 data points for this authorization period.
+QA-GIP-33,Any goal that mentions 'met' should be flagged
+QA-GIP-34,The final data point on each goal's graph should match its Current Data section.
+QA-GIP-35,Target name matches the name on the graph's x-axis
+QA-HRS-02,Flag if more than 20 hours are requested.
+QA-HRS-03,Supervision hours must not exceed a 1.5-to-10 ratio with direct hours.
+QA-HRS-04,"If group hours are requested, there should be more direct hours and a tailored rationale."
+QA-HRS-06,"If hours increased or decreased, a rationale should be in place."
+QA-HRS-07,"If hours increased, compare against the discharge criteria or transition plan."
+QA-HRS-08,Codes/hours match insurance billing codes guide
+QA-HRS-09,"""No other schedule overlaps with ABA"" and flag if school or other related therapies overlap with ABA."
+QA-HRS-10,"For large hour increases, rationale must specifically address the magnitude of the increase, not just the general purpose of the code"
+QA-HRS-11,"97151 (assessment) hours requested are accurate for the detected payor: Healthfirst 5 hrs, Emblem 3 hrs, all other payors 8 hrs"
+QA-HRS-12,"Treatment Planning hours only requested for 1199SEIU, Straight Medicaid or Molina, all other insurances - N/A. Flag otherwise."
+QA-MAST-01,Each mastered goal's Date Mastered should fall between the previous TP's report date and the current TP's report date.
+QA-MAST-02,Mastered goals don't appear twice vs. previous TP
+QA-MAST-03,"If no mastered goals, rationale is provided"
+QA-MAST-04,At least 3 parent goals must have the goal status of in progress
+QA-OBS-01,Patient observation completed
+QA-OBS-02,Observation location and dates fully completed
+QA-OBS-03,Observation and assessment backs the session note (else forward to QA)
+QA-OBS-04,"Observation date within report dates, before testing tool date"
+QA-PAR-01,"3+ parent training goals/auth period, no 'caregiver' wording (or rationale if used)"
+QA-PAR-02,"If the child doesn't live with their parents, the Parent/Caregiver Involvement summary should say who will actually receive the training."
+QA-PAR-03,"For 97153 hour increase, parent training should be greater than 4 data points per graph"
+QA-PPI-01,Patient name on this TP matches the patient's real Central Reach record name
+QA-PPI-02,Patient age correct and consistent throughout TP
+QA-PPI-03,Patient legal name spelled correctly throughout
+QA-PPI-04,Patient Payor and Insurance ID correct
+QA-PPI-05,Provider Credentials/NPI/License correct
+QA-PPI-06,Narrative sections do not name a person who isn't accounted for in this document's own structured fields
+QA-PPI-07,"If patient has an AKA/alias, it is included and spelled correctly alongside legal name"
+QA-PREF-01,Result of preference assessment completed
+QA-PREF-02,"Preference assessment references ""client interview"" when actually conducted through the parent — should say ""parent interview"""
+QA-PROB-01,"At least 3 Social/Communication entries (combined) and at least 2 Behavior entries, each with real evidenced narrative, no bullets"
+QA-PROB-02,'As evidenced by' section matches goals listed
+QA-PROB-03,"Under 5: behaviors describe real ASD deficit, distinguishable from developmentally appropriate behavior"
+QA-PROB-04,Problem Areas shouldn't be identical to the previous TP.
+QA-RPT-01,All fields completed
+QA-RPT-02,Date of initial assessment pulled onto TP
+QA-RPT-03,Dates of current report match 97151 session notes
+QA-RPT-05,No lapse in authorization between the auth end date on the previous TP and auth start date of current TP.
+QA-RPT-06,End date of current report before start of auth dates requested
+QA-SCH-01,ABA schedule matches hours requested
+QA-SCH-02,The schedule should match the one entered in Central Reach (checked against the Patient Central Reach Information fields).
+QA-SCH-03,ABA schedule doesn't overlap school schedule (unless payor allows in-school)
+QA-SCH-05,"School hours match total under educational history, if applicable"
+QA-SCH-06,"If overlaps related therapy, that schedule is added to TP"
+QA-SCH-07,"If more than 3 hours per day of 97153 are requested, confirm it's approved by the clinical director."
+QA-SCH-08,POS correct (home/office/school/community/telehealth only)
+QA-SCH-09,"If ABA is provided in a community-based program, the location field should name the specific place, not just say 'community' or 'day program.'"
+QA-SCH-10,POS = School should be flagged
+QA-SIG-01,Signature includes date signed
+QA-SIG-02,Signature includes correct credentials
+QA-SIG-03,Signature date before start of auth dates requested
+QA-SIG-04,Signature date not >2 days after end date of current report
+QA-SIG-05,BCBA signed the report
+QA-SIG-06,"If writing BCBA != case BCBA, both signed, clearly indicated"
+QA-TEMP-01,"If the provider is a Limited Permit holder, confirm the correct template was used and credentials are correct throughout."
+QA-TEMP-02,TP includes header and page numbers on all pages
+QA-TEMP-03,All highlights removed
+QA-TEMP-04,All correspondence with BCBA removed
+QA-TEMP-05,No RBT (unqualified) mentioned throughout the report
+QA-TEMP-06,Empty fields should be marked N/A rather than left blank
+QA-TRANS-01,Patient-specific and realistic based on goals
+QA-TRANS-02,Remove extra bullets/numbers
+QA-TRANS-03,At least 4 transition goals per phase; goals align with client's actual profile (All behavior goals documents are mentioned in the Transition Plan)
+SM-01,Auth start = day after current auth expires; auth end <= 6 months after current report end
+SM-02,"All hours are requested per week (not per day, per month, or per auth)"
