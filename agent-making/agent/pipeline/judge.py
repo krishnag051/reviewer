@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import anthropic
 from dotenv import load_dotenv
 
+from .fields import vision_eligible_pages
 from .model_provider import call_openrouter_with_fallback, resolve_provider_and_model
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
@@ -209,6 +210,38 @@ _PREVIOUS_TP_DEPENDENT_RULE_IDS = frozenset({
 
 
 def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dict[int, bytes]) -> list[dict]:
+    # Fix Round 24 (2026-10-10), real cost fix (confirmed in the cost-
+    # breakdown report, not a guess): `rendered_images` arrives here as
+    # the FULL set rendered once for the whole document review -- every
+    # vision-eligible-rule page AND every low-text page, regardless of
+    # which specific rule_ids are actually in THIS call's own batch.
+    # Confirmed real, measured waste: a real production run's 7 retry
+    # calls (for QA-GIP-24, QA-AI-02, QA-AI-04, QA-DS-02 -- none of them
+    # vision-eligible rules) each still paid for all 42 images anyway
+    # ($1.26 of that run's real $3.76 judgment-layer cost). Filtered here,
+    # the one shared point where both the exact rule_ids being sent AND
+    # the full rendered_images dict are already available together --
+    # no change needed anywhere upstream (the main 5-way vote, the
+    # missing-rule-id retry, and the page-recovery pass all already call
+    # this function with their own correctly-scoped `judgment_rules`).
+    #
+    # A low-text page (fields["pages"][i]["low_text"]) is NEVER filtered
+    # out by this round's fix, regardless of which rule_ids are in this
+    # batch -- that page has no other extractable text at all, so ANY
+    # rule_id that touches its content (not just a vision-eligible one)
+    # genuinely needs the image to see it. Only the vision-eligible-
+    # SECTION pages (goal graphs, milestone grids, etc. -- rendered
+    # specifically because some rule opted in, not because the page
+    # itself lacks text) are scoped to whether a rule_id actually in
+    # THIS batch opted into that section.
+    if rendered_images:
+        low_text_pages = {p["page_number"] for p in fields["pages"] if p.get("low_text")}
+        relevant_vision_pages = vision_eligible_pages(judgment_rules, fields)
+        rendered_images = {
+            page: img for page, img in rendered_images.items()
+            if page in low_text_pages or page in relevant_vision_pages
+        }
+
     rules_summary = [
         {
             "rule_id": r["rule_id"],
@@ -242,11 +275,29 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
         "'not_checkable' with evidence saying so — do not fabricate a prior version.\n\n"
     ) if any(r["rule_id"] in _PREVIOUS_TP_DEPENDENT_RULE_IDS for r in judgment_rules) else ""
 
-    content: list[dict] = [
-        {
-            "type": "text",
-            "text": (
-                "You are reviewing an ABA Treatment Plan (TP) against a set of "
+    # Fix Round 24 (2026-10-10), real cost fix (confirmed in the cost-
+    # breakdown report -- zero cache_control usage anywhere, every one of
+    # a document review's 12+ real calls re-paying full price for the
+    # same document text and images every time): this content list is
+    # now ordered static-content-first, varying-content-last, with real
+    # cache_control breakpoints -- the exact pattern Anthropic's own
+    # prompt-caching docs recommend, and the only ordering that lets a
+    # cache_control breakpoint actually produce a shared prefix across
+    # calls whose rule_id subset (and therefore whose rules-JSON/
+    # previous_tp_note content) differs. Three breakpoints (of the
+    # allowed 4): after the static instructions, after the full document
+    # text, and after the images (only when present) -- each one's own
+    # cache entry is reusable by any later call in the SAME document
+    # review whose own content up to that point matches byte-for-byte,
+    # regardless of what that later call's own (uncached, always-last)
+    # rules-JSON section looks like. The main 5-way vote's 5 calls run
+    # concurrently (ThreadPoolExecutor), so they may race the cache
+    # write and not all land a hit on each other -- the 7+ retry/page-
+    # recovery calls run sequentially, well after the main vote
+    # completes and well within the default 5-minute TTL, so those are
+    # the calls most reliably expected to hit a warm cache.
+    static_instructions_text = (
+        "You are reviewing an ABA Treatment Plan (TP) against a set of "
                 "compliance rules. For each rule below, determine pass / fail / uncertain / "
                 "not_applicable / not_checkable, grounded in the actual document text and "
                 "images provided — never guess, and use 'uncertain' rather than a confident-"
@@ -263,7 +314,6 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "should actually compare against/reason with for that rule, not ignore. This is "
                 "different from the 'named external source not provided to you' caveat below — "
                 "'additional_real_data' IS provided to you, right here, so use it.\n\n"
-                f"{previous_tp_note}"
                 "RELATED, MORE GENERAL POINT (Round 84): if a rule's own description or notes "
                 "describe checking a value against a NAMED EXTERNAL SOURCE that is not itself "
                 "provided to you anywhere in this prompt — a maintained CPT billing-code "
@@ -392,10 +442,11 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "left to right and account for every distinct marker/point actually plotted, one at a "
                 "time, before stating a final count. If markers are dense or overlapping in a small "
                 "region, slow down specifically there rather than approximating that region. State your "
-                "final count only after this real, deliberate pass, not as a first impression.\n\n"
-                "Rules to check (JSON):\n" + json.dumps(rules_summary, indent=2)
-            ),
-        },
+                "final count only after this real, deliberate pass, not as a first impression."
+    )
+
+    content: list[dict] = [
+        {"type": "text", "text": static_instructions_text, "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": "Full extracted page text, in page order:"},
     ]
 
@@ -415,6 +466,12 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
             "type": "text",
             "text": f"--- Page {page['page_number']}{low_text_note} ---\n{page['text']}",
         })
+    # Cache breakpoint 2: the full document text is byte-identical across
+    # every real call in one document review, regardless of which
+    # rule_ids/images that specific call carries -- this is the one
+    # breakpoint virtually every real call (main vote AND every retry)
+    # should be able to hit.
+    content[-1]["cache_control"] = {"type": "ephemeral"}
 
     if rendered_images:
         # Fix Round, item 5: this used to be strictly true (rendered_images
@@ -442,6 +499,23 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                     "data": base64.standard_b64encode(rendered_images[page_number]).decode("utf-8"),
                 },
             })
+        # Cache breakpoint 3: the image SET is identical across every call
+        # that carries the same rule_ids (e.g. all 5 main-vote calls get
+        # the same images) -- a later call with a different (or empty)
+        # image set simply won't hit this specific breakpoint, but still
+        # hits breakpoint 2 above since that one comes first and doesn't
+        # depend on what follows it.
+        content[-1]["cache_control"] = {"type": "ephemeral"}
+
+    # Fix Round 24 (2026-10-10): the only two things that vary per call
+    # (previous_tp_note -- depends on which of the 5 previous-TP rule_ids
+    # are in THIS batch -- and the rules-to-check JSON itself) are placed
+    # LAST, after every cache breakpoint above, so they can never break a
+    # prefix match for the static/shared content that precedes them.
+    content.append({
+        "type": "text",
+        "text": previous_tp_note + "Rules to check (JSON):\n" + json.dumps(rules_summary, indent=2),
+    })
 
     return content
 

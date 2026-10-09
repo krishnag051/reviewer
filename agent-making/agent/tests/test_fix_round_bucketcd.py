@@ -154,7 +154,14 @@ def test_gip02_notes_are_forwarded_to_the_judgment_prompt():
         "params": None,
     }
     content = judge._build_prompt([rule], {"pages": [], "full_text": ""}, {})
-    assert "PROPOSED STANDARD sentinel text for this test" in content[0]["text"]
+    # Fix Round 24 (2026-10-10): the rules-to-check JSON (which carries
+    # each rule's own `notes`) moved from content[0] to the LAST content
+    # block -- real prompt-caching restructure (static content first,
+    # per-call-varying content last, so a cache_control breakpoint on the
+    # static instructions/document text actually produces a shared prefix
+    # across calls with different rule subsets). The notes text itself is
+    # still forwarded unchanged, just at a different block index now.
+    assert "PROPOSED STANDARD sentinel text for this test" in content[-1]["text"]
 
 
 # --- Bucket D, item 5: QA-BIP-04 duration-parsing fix -----------------------
