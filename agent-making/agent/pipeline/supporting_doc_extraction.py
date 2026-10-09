@@ -155,12 +155,23 @@ def extract_supporting_document(
 
     tracker.check_before_call()
     client = anthropic.Anthropic()
+    # Fix Round 24 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed live
+    # in production across several real call sites this round: forced
+    # tool_choice is rejected outright on claude-sonnet-5-5 with a 400
+    # ("tool_choice: type \"tool\" and \"any\" are not supported for this
+    # model"). Same fix as every other real call site this round: "auto"
+    # + an explicit instruction telling the model to call the tool.
+    prompt_content = _build_prompt(full_text) + [{
+        "type": "text",
+        "text": "You MUST report your answer by calling the record_supporting_doc_extraction tool -- "
+                "never reply in plain text instead.",
+    }]
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         tools=[EXTRACTION_TOOL],
-        tool_choice={"type": "tool", "name": "record_supporting_doc_extraction"},
-        messages=[{"role": "user", "content": _build_prompt(full_text)}],
+        tool_choice={"type": "auto"},
+        messages=[{"role": "user", "content": prompt_content}],
     )
     tracker.record(
         reason="supporting_doc_extraction",
@@ -168,7 +179,13 @@ def extract_supporting_document(
         usage=response.usage,
     )
 
-    tool_use_block = next(b for b in response.content if b.type == "tool_use")
+    tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use_block is None:
+        raise RuntimeError(
+            f"No tool_use block in the supporting-doc-extraction response "
+            f"(stop_reason={response.stop_reason!r}). Content blocks returned: "
+            f"{[b.type for b in response.content]}."
+        )
     extracted: dict[str, Any] = tool_use_block.input
 
     # Defensive normalization, not trust-by-default: guarantee every field

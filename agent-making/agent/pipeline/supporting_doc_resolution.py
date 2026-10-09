@@ -187,12 +187,21 @@ def resolve_tagged_findings(
     """
     tracker.check_before_call()
     client = anthropic.Anthropic()
-    prompt = _build_resolution_prompt(tagged, rules_by_id, supporting_doc)
+    # Fix Round 24 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed live
+    # in production across several real call sites this round: forced
+    # tool_choice is rejected outright on claude-sonnet-5-5 with a 400
+    # ("tool_choice: type \"tool\" and \"any\" are not supported for this
+    # model"). Same fix as every other real call site this round: "auto"
+    # + an explicit instruction telling the model to call the tool.
+    prompt = _build_resolution_prompt(tagged, rules_by_id, supporting_doc) + (
+        "\n\nYou MUST report your answer by calling the record_supporting_doc_resolutions tool -- "
+        "never reply in plain text instead."
+    )
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         tools=[RESOLUTION_TOOL],
-        tool_choice={"type": "tool", "name": "record_supporting_doc_resolutions"},
+        tool_choice={"type": "auto"},
         messages=[{"role": "user", "content": prompt}],
     )
     tracker.record(
@@ -201,7 +210,13 @@ def resolve_tagged_findings(
         usage=response.usage,
     )
 
-    tool_use_block = next(b for b in response.content if b.type == "tool_use")
+    tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use_block is None:
+        raise RuntimeError(
+            f"No tool_use block in the supporting-doc-resolution response "
+            f"(stop_reason={response.stop_reason!r}). Content blocks returned: "
+            f"{[b.type for b in response.content]}."
+        )
     resolutions = tool_use_block.input.get("resolutions", [])
 
     resolved: dict[str, dict[str, Any]] = {}

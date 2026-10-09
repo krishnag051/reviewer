@@ -477,14 +477,32 @@ def _call_anthropic(
     import anthropic
 
     client = anthropic.Anthropic()
+    # Fix Round 24 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed live
+    # in production: this call site was missed in the first Round 24 pass
+    # (only judge.py's own call was fixed/verified then) -- forced
+    # tool_choice is rejected outright on claude-sonnet-5-5/claude-haiku-5-5
+    # with a 400 ("tool_choice: type \"tool\" and \"any\" are not supported
+    # for this model"), same root cause, same fix as judge.py's own: "auto"
+    # + an explicit instruction telling the model to call the tool.
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         tools=[{"name": tool_name, "description": tool_description, "input_schema": input_schema}],
-        tool_choice={"type": "tool", "name": tool_name},
-        messages=[{"role": "user", "content": prompt_text}],
+        tool_choice={"type": "auto"},
+        messages=[{
+            "role": "user",
+            "content": (
+                f"{prompt_text}\n\nYou MUST report your answer by calling the {tool_name} tool -- "
+                f"never reply in plain text instead."
+            ),
+        }],
     )
-    tool_use_block = next(b for b in response.content if b.type == "tool_use")
+    tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use_block is None:
+        raise ModelCallError(
+            f"No tool_use block in the {tool_name!r} response (stop_reason={response.stop_reason!r}). "
+            f"Content blocks returned: {[b.type for b in response.content]}."
+        )
     return {
         "arguments": tool_use_block.input,
         "usage": {
@@ -554,15 +572,31 @@ def call_tool_json_with_images(
             },
         })
 
+    # Fix Round 24 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed live
+    # in production (the actual reported crash: QA-ACF-04's real vision
+    # call through this exact function, model_override resolving to
+    # claude-sonnet-5-5). Same root cause/fix as every other real call
+    # site in this round: forced tool_choice is rejected outright on this
+    # model generation with a 400 -- "auto" + an explicit instruction to
+    # call the tool, same as judge.py/_call_anthropic above.
+    content.append({
+        "type": "text",
+        "text": f"You MUST report your answer by calling the {tool_name} tool -- never reply in plain text instead.",
+    })
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         tools=[{"name": tool_name, "description": tool_description, "input_schema": input_schema}],
-        tool_choice={"type": "tool", "name": tool_name},
+        tool_choice={"type": "auto"},
         messages=[{"role": "user", "content": content}],
     )
-    tool_use_block = next(b for b in response.content if b.type == "tool_use")
+    tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use_block is None:
+        raise ModelCallError(
+            f"No tool_use block in the {tool_name!r} response (stop_reason={response.stop_reason!r}). "
+            f"Content blocks returned: {[b.type for b in response.content]}."
+        )
     usage = {
         "input_tokens": getattr(response.usage, "input_tokens", 0),
         "output_tokens": getattr(response.usage, "output_tokens", 0),

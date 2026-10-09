@@ -319,8 +319,12 @@ class _E2EStreamCM:
 class _E2EMessages:
     """One fake `.messages` covering every real call site this pipeline
     run touches: judge.py's `.stream()`, extraction's and resolution's
-    `.create()` (dispatched by `tool_choice.name`, since both use
-    `.create()` on the same object)."""
+    `.create()` (dispatched by `tools[0].name` -- Round 24 switched
+    tool_choice to {"type": "auto"} on every real call site after
+    claude-sonnet-5-5 dropped forced tool_choice support, so
+    tool_choice no longer carries a "name" key to dispatch on; each real
+    call site still passes exactly one tool in `tools`, so that name is
+    still a clean, unique dispatch key)."""
 
     def __init__(self, judgment_findings, extraction_fields, resolution_calls_out, resolutions):
         self._judgment_findings = judgment_findings
@@ -336,13 +340,13 @@ class _E2EMessages:
 
     def create(self, **kwargs):
         self.create_call_count += 1
-        tool_name = kwargs["tool_choice"]["name"]
+        tool_name = kwargs["tools"][0]["name"]
         if tool_name == "record_supporting_doc_extraction":
             return _E2EResponse(self._extraction_fields)
         if tool_name == "record_supporting_doc_resolutions":
             self._resolution_calls_out.append(kwargs)
             return _E2EResponse({"resolutions": self._resolutions})
-        raise AssertionError(f"unexpected tool_choice: {tool_name!r}")
+        raise AssertionError(f"unexpected tool: {tool_name!r}")
 
 
 def _install_e2e_client(monkeypatch, *, judgment_findings, extraction_fields, resolutions):
