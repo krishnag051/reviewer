@@ -749,6 +749,63 @@ def _inject_bip0910_spelling_normalization_context(
     return applicable_rules, rules_by_id
 
 
+def _inject_escalated_det_attempt_context(
+    det_results: dict[str, dict], escalated_ids: list[str],
+    applicable_rules: list[dict], rules_by_id: dict[str, dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """Fix Round 22 (2026-10-10) -- REAL, GENERAL mechanism fix, not a
+    per-rule patch. Confirmed root cause (real staging report, QA-GIP-07):
+    when a deterministic checker escalates (needs_escalation), its own
+    det_attempt -- which can already contain real, structured,
+    goal-specific analysis (e.g. GIP-07's own evidence already names
+    exactly which goals have a real inline rationale and which don't,
+    quoting each one) -- was NEVER passed to the judgment call at all.
+    `escalated_rules` pulled a bare rule dict straight from `rules_by_id`
+    with no `extra_context`, so judgment had to re-derive everything from
+    the raw document from scratch, independently, with no access to what
+    the deterministic layer had already correctly figured out -- the
+    exact shape of the reported bug ("credited a different goal's note
+    instead of reading each goal's own").
+
+    This is deliberately GENERIC: it applies to EVERY escalated rule_id's
+    own real det_attempt evidence, not a hand-picked list -- unlike the
+    per-rule injectors above (QA-GIP-12/QA-HRS-09/QA-HRS-10/QA-AI-05/
+    QA-BIP-09-10), which inject a HAND-WRITTEN message for a specific,
+    previously-diagnosed gap. This instead forwards whatever real evidence
+    text the checker ALREADY produced, for whichever rule_id actually
+    escalated this run, on any document -- nothing here is specific to
+    Raizy Gottesfeld or any one rule_id's own wording.
+
+    Merges with (does not overwrite) any extra_context a more specific
+    injector already set above -- appended as a second paragraph, so a
+    hand-crafted message and this generic floor can coexist without one
+    silently discarding the other.
+    """
+    for rule_id in escalated_ids:
+        if rule_id not in rules_by_id:
+            continue
+        evidence = det_results.get(rule_id, {}).get("evidence")
+        if not evidence or evidence == fields_module.NEEDS_BACKEND_INTEGRATION:
+            continue  # nothing real to forward -- a no-checker rule has no det_attempt worth sending
+        evidence_text = evidence if isinstance(evidence, str) else str(evidence)
+        generic_context = (
+            f"A deterministic, code-based pre-check already analyzed this exact question against this "
+            f"document and found: {evidence_text} This is a real, structured starting point, not a "
+            f"guess -- it sometimes already identifies exactly the right evidence (e.g. a specific goal's "
+            f"own inline note, rather than a different goal's) that a broad, unguided scan of the whole "
+            f"document can miss or misattribute. Read the specific location/field this points to yourself "
+            f"to confirm or correct it -- don't discard it without checking, and don't substitute a "
+            f"different, more general piece of text for the SPECIFIC one this identifies."
+        )
+        existing = rules_by_id[rule_id].get("extra_context")
+        combined_context = f"{existing}\n\n{generic_context}" if existing else generic_context
+        rules_by_id = {**rules_by_id, rule_id: {**rules_by_id[rule_id], "extra_context": combined_context}}
+        applicable_rules = [
+            rules_by_id[rule_id] if r["rule_id"] == rule_id else r for r in applicable_rules
+        ]
+    return applicable_rules, rules_by_id
+
+
 def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
     """Runs extract -> flag -> render -> scope filter -> deterministic ->
     (escalate weak det findings into) judgment (with integrity check) ->
@@ -819,6 +876,9 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     # the judgment layer in the same call — it has the rendered images and
     # can reason about ambiguous text, where the regex-based checkers can't.
     escalated_ids = [rid for rid, r in det_results.items() if fields_module.needs_escalation(r)]
+    applicable_rules, rules_by_id = _inject_escalated_det_attempt_context(
+        det_results, escalated_ids, applicable_rules, rules_by_id,
+    )
     escalated_rules = [rules_by_id[rid] for rid in escalated_ids]
 
     judgment_rules = [r for r in applicable_rules if r["check_type"] == "judgment" and r["active"]]

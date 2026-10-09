@@ -60,6 +60,7 @@ from . import (
     _inject_hrs10_generic_rationale_context,
     _inject_ai05_spelling_inconsistency_context,
     _inject_bip0910_spelling_normalization_context,
+    _inject_escalated_det_attempt_context,
     _merge_gip12_candidate_pages,
     _stabilized_uncertain_finding,
     run_full_pipeline,
@@ -347,6 +348,9 @@ def _run_pipeline_with_extras(
     )
 
     escalated_ids = [rid for rid, r in det_results.items() if fields_module.needs_escalation(r)]
+    applicable_rules, rules_by_id = _inject_escalated_det_attempt_context(
+        det_results, escalated_ids, applicable_rules, rules_by_id,
+    )
     escalated_rules = [rules_by_id[rid] for rid in escalated_ids]
     judgment_rules = [r for r in applicable_rules if r["check_type"] == "judgment" and r["active"]]
     full_judgment_batch = judgment_rules + escalated_rules

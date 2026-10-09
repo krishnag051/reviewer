@@ -4132,9 +4132,22 @@ def _check_GIP07(rule: dict, fields: dict) -> tuple:
     when at least one goal genuinely IS old enough -- the real remaining
     question (is a real rationale documented for THAT goal) still needs a
     holistic read this checker doesn't attempt.
+
+    Fix Round 22 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed on
+    the real Raizy Gottesfeld document: the same restatement-section
+    double-counting pattern already fixed for QA-GIP-13 in Round 19 (a
+    "Community Goals:"/"Parent/Caregiver Involvement:" section re-lists
+    several goal names already counted above, under the same "Target
+    Goal:" label, with no Date Initiated/Baseline/Mastery Criteria of
+    their own) was never applied here -- this checker's own goal_starts
+    was unbounded. Same bound, same convention as _check_GIP13.
     """
     text = fields["full_text"]
-    goal_starts = _goal_block_starts(text) + [len(text)]
+    bound = min(
+        (o for o in (text.find("Community Goals:"), text.find("Parent/Caregiver Involvement:")) if o != -1),
+        default=len(text),
+    )
+    goal_starts = [s for s in _goal_block_starts(text) if s < bound] + [bound]
     if len(goal_starts) <= 1:
         return "not_checkable", "No 'Target Goal:'/'Target Name:' entries found in this document.", None, 0.0
 
