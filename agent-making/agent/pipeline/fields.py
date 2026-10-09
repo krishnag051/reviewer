@@ -2099,6 +2099,65 @@ def _hrs06_unresolved_reviewer_annotation(text: str) -> tuple[str, int] | None:
     return section[start:end].strip(), m.start(1) + start
 
 
+# Fix Round 20 (2026-10-09) -- "increase"/"increased"/"decrease"/
+# "decreased"/"change"/"changed"/"modification" followed somewhere nearby
+# by a digit is treated as a real, specific magnitude reference (not just
+# the literal old/new numbers themselves, since a real rationale might
+# phrase the change differently, e.g. "increased by 1 hour" rather than
+# repeating both "3" and "4").
+_HRS10_MAGNITUDE_LANGUAGE_RE = re.compile(
+    r"\b(?:increas|decreas|chang)(?:e|ed|ing)\b[^.]{0,60}?\d|\d[^.]{0,60}?\b(?:increas|decreas|chang)(?:e|ed|ing)\b",
+    re.IGNORECASE,
+)
+
+
+def hrs10_generic_rationale_flags(fields: dict) -> list[dict]:
+    """QA-HRS-10 real fix (Round 20, 2026-10-09): same real-document
+    pattern as QA-HRS-06 (reuses its own hour-change detection directly --
+    see that function's own docstring), applied to a different question.
+    HRS-06 asks "is ANY rationale text present"; HRS-10 asks "does the
+    present rationale text actually address the SPECIFIC magnitude of
+    THIS change, or is it generic boilerplate about what the CPT code is
+    for in general." Confirmed on the real Raizy Gottesfeld document: CPT
+    97155 (Supervision) went 3->4 hrs/week with a real, present rationale
+    paragraph -- but that paragraph is entirely generic text about what
+    supervision review of technician hours accomplish in general,
+    mentioning neither "3" nor "4" nor any increase/change language at
+    all. HRS-10 is still check_type=judgment (recognizing a genuinely
+    adequate-but-differently-worded magnitude reference is a real holistic
+    read this function doesn't try to replace) -- this is the
+    deterministic FLOOR fed into that judgment call as forced context
+    (same two-pass-hybrid convention as QA-GIP-12/QA-HRS-09 above), so the
+    model isn't left to independently notice a boilerplate-only rationale
+    unaided. Flags a change as "generic-only" when its rationale text
+    contains neither the literal old nor new hour number AND no
+    increase/decrease/change language anywhere near a digit.
+    """
+    text = fields["full_text"]
+    previous = _hrs06_previous_auth_hours(text)
+    current = _hrs06_current_hours_and_rationale(text)
+    if not previous or not current:
+        return []
+    pairs = _hrs06_match_previous_to_current(previous, current)
+    flags = []
+    for _p_desc, p_hours_str, curr in pairs:
+        p_hours = _hrs06_to_number(p_hours_str)
+        c_hours = _hrs06_to_number(curr["hours"])
+        if p_hours is None or c_hours is None or c_hours == p_hours:
+            continue
+        rationale = curr["rationale"]
+        has_old_number = bool(re.search(rf"\b{re.escape(p_hours_str)}\b", rationale))
+        has_new_number = bool(re.search(rf"\b{re.escape(curr['hours'])}\b", rationale))
+        has_magnitude_language = bool(_HRS10_MAGNITUDE_LANGUAGE_RE.search(rationale))
+        if not (has_old_number or has_new_number or has_magnitude_language):
+            flags.append({
+                "code": curr["code"], "desc": curr["desc"],
+                "old_hours": p_hours_str, "new_hours": curr["hours"],
+                "page": _page_for_offset(fields, curr["offset"]),
+            })
+    return flags
+
+
 def _check_HRS06(rule: dict, fields: dict) -> tuple:
     """Partially converted from judgment to deterministic (2026-07-28
     round, item 2): the rule's own notes already split this into
@@ -3015,6 +3074,40 @@ def _check_ACF11(rule: dict, fields: dict) -> tuple:
     )
 
 
+def _check_ACF01(rule: dict, fields: dict) -> tuple:
+    """QA-ACF-01 real fix (Round 20, 2026-10-09): "Date/location/patient
+    location completed" -- previously check_type="deterministic" in
+    rules.json with NO real checker registered at all (always escalated
+    straight to judgment). A real, reusable extraction for exactly these
+    3 fields already existed (extract_acf_fields, built for
+    session_note_comparison.py's own use) but was never actually wired
+    into THIS rule's own result -- confirmed via direct code read, not a
+    missing-capability gap, just a connection nobody had made yet. A
+    straightforward presence check: all 3 non-blank -> pass; any missing
+    -> fail, naming exactly which field(s).
+    """
+    section_with_offset = _find_acf_section_with_offset(fields["full_text"])
+    if section_with_offset is None:
+        return "not_checkable", "No 'Assessment of Current Functioning:' section found in this document.", None, 0.0
+    _section_text, section_offset = section_with_offset
+    page = _page_for_offset(fields, section_offset)
+    acf = extract_acf_fields(fields)
+    missing = [
+        label for key, label in (
+            ("assessment_date", "Date"), ("pos", "Location"), ("patient_location", "Patient Location"),
+        )
+        if not acf.get(key)
+    ]
+    if missing:
+        return "fail", f"{', '.join(missing)} not found in the Assessment of Current Functioning section.", page, 0.8
+    return (
+        "pass",
+        f"Date ({acf['assessment_date']}), Location ({acf['pos']}), and Patient Location "
+        f"({acf['patient_location']}) are all present in the Assessment of Current Functioning section.",
+        page, 0.85,
+    )
+
+
 def _check_ACF07(rule: dict, fields: dict) -> tuple:
     """Converted from judgment to deterministic (2026-07-28 round, item 4):
     diagnosed as a real, previously-unfixed bug -- the earlier "schema
@@ -3559,30 +3652,38 @@ def _check_ACF06(rule: dict, fields: dict) -> tuple:
     haystacks = [(found_section[0], found_section[1])] if found_section else []
     haystacks.append((text, 0))
 
+    # Fix Round 20, Part B: humanized -- quotes the document's own real
+    # matched text (the actual "Assessor:"/"administered by" line) instead
+    # of a generic restated summary. Same pass/page/confidence as before.
     for haystack, base_offset in haystacks:
         m = _ACF06_ASSESSOR_LABEL_RE.search(haystack)
         if m and m.group(1).strip():
             name = m.group(1).strip()
             page = _page_for_offset(fields, base_offset + m.start(1))
-            return "pass", f"Assessor named: {name!r}.", page, 0.75
+            evidence = humanize_finding(
+                f"The assessor is named as {name!r}.", [(m.group(0).strip(), page)],
+            )
+            return "pass", evidence, page, 0.75
 
     for haystack, base_offset in haystacks:
         m = _ACF06_ADMIN_BY_RE.search(haystack)
         if m:
             name = m.group(1).strip().rstrip(".")
             page = _page_for_offset(fields, base_offset + m.start())
-            return "pass", f"Assessor named: {name!r}.", page, 0.75
+            evidence = humanize_finding(
+                f"The assessor is named as {name!r}.", [(m.group(0).strip(), page)],
+            )
+            return "pass", evidence, page, 0.75
 
     for haystack, base_offset in haystacks:
         m = _ACF06_ADMIN_VERB_RE.search(haystack)
         if m and _ACF07_TOOL_PATTERN.search(haystack):
             page = _page_for_offset(fields, base_offset + m.start())
-            return (
-                "fail",
-                "A testing tool's administration is mentioned, but no assessor name is given "
-                "('administered by [name]' or equivalent phrasing not found).",
-                page, 0.6,
+            evidence = humanize_finding(
+                "A testing tool's administration is mentioned, but no assessor name is given.",
+                [(m.group(0).strip(), page)],
             )
+            return "fail", evidence, page, 0.6
 
     return (
         "not_checkable",
@@ -3684,17 +3785,28 @@ def _check_BIO06(rule: dict, fields: dict) -> tuple:
     no_med = _NO_MEDICATION_RE.search(text)
     if no_med:
         page = _page_for_offset(fields, no_med.start())
-        return (
-            "not_applicable",
-            "Document states the client is not taking any medications -- nothing for this rule to check.",
-            page, 0.85,
+        # Fix Round 20, Part B: humanized -- quotes the document's own
+        # real denial sentence instead of restating the rule generically.
+        evidence = humanize_finding(
+            "Nothing for this rule to check -- the document states the client is not taking any medications.",
+            [(no_med.group(0).strip(), page)],
         )
-    return (
-        "not_checkable",
+        return "not_applicable", evidence, page, 0.85
+    # Page stays None here, same as before this round's humanization --
+    # this branch's own page-citation behavior is unchanged, only the
+    # evidence TEXT is reworked (quotes the real mention, same as every
+    # other humanized branch, but without attaching a page this rule
+    # didn't cite before, to keep this a pure text-shape change).
+    sentence_start = text.rfind(".", 0, med_mention.start()) + 1
+    sentence_end_m = re.search(r"[.\n]", text[med_mention.end():med_mention.end() + 200])
+    sentence_end = med_mention.end() + (sentence_end_m.start() if sentence_end_m else 80)
+    quote = re.sub(r"\s+", " ", text[sentence_start:sentence_end]).strip()
+    evidence = humanize_finding(
         "Medication is mentioned but not clearly denied; escalating for a real reason-adequacy "
         "and ADHD-secondary-diagnosis review.",
-        None, 0.0,
+        [(quote, None)],
     )
+    return "not_checkable", evidence, None, 0.0
 
 
 def _check_BIO03(rule: dict, fields: dict) -> tuple:
@@ -3776,6 +3888,46 @@ def _page_for_offset(fields: dict, offset: int) -> int | None:
     return pages[-1]["page_number"]
 
 
+def humanize_finding(context: str, quotes: list[tuple[str, int | None]]) -> str | list[dict]:
+    """Fix Round 20 (2026-10-09), Part B: shared deterministic-side
+    evidence formatter matching the real clinical-reviewer write-up style
+    (a plain 'Context: ...' sentence + the document's own text quoted
+    close to verbatim, one bullet per piece of evidence, each with its
+    own page tag) instead of a mechanical, AI-sounding restatement of the
+    rule's own question. This is a pure TEXT-SHAPE change -- it never
+    computes or changes a pass/fail/page/confidence value; every caller
+    still decides those itself and only hands this function the already-
+    decided context sentence and the real quoted text/page pairs to
+    render.
+
+    `quotes` is a list of (verbatim_text, page_or_None) pairs. When every
+    quote shares the same page (or there's only one quote), returns a
+    single formatted string -- the common case, fits the existing
+    str-evidence convention every checker already returns. When quotes
+    span different real pages, returns the existing {page, detail} list
+    form instead (same shape `rule_results`/the frontend already render
+    for a multi-page finding) so no caller's PAGE semantics change, only
+    how each page's own detail text reads.
+
+    `quotes` empty means "nothing to quote" (e.g. a clean pass with
+    nothing wrong to point at) -- returns the plain context sentence
+    alone, no bullet list, per this round's own prompt-side guidance that
+    a quote-free single sentence is the right shape for that case.
+    """
+    if not quotes:
+        return context
+    pages = {p for _, p in quotes}
+    if len(pages) <= 1:
+        lines = "\n".join(
+            f"  - {q} [Page {p}]" if p is not None else f"  - {q}" for q, p in quotes
+        )
+        return f"Context: {context}\n{lines}"
+    return [
+        {"page": p, "detail": f"Context: {context}\n  - {q} [Page {p}]" if p is not None else f"Context: {context}\n  - {q}"}
+        for q, p in quotes
+    ]
+
+
 def _goal_block_starts(text: str) -> list[int]:
     """Shared block-splitting helper for both _check_GIP10 and _check_GIP16
     -- a per-goal-or-behavior-target block is delimited by either
@@ -3812,6 +3964,34 @@ def page_contains_verbal_operant_term(fields: dict, page: int) -> bool:
         if p.get("page_number") == page:
             return bool(_VERBAL_OPERANT_TERMS_RE.search(p.get("text", "")))
     return False
+
+
+def hrs09_schedule_section_pages(fields: dict) -> list[int]:
+    """QA-HRS-09 real fix (Round 20, 2026-10-09): same two-pass-hybrid
+    pattern as gip12_verbal_operant_candidate_pages below, applied to a
+    narrower, purely structural gap. HRS-09 ("no other schedule overlaps
+    with ABA") is pure judgment -- recognizing whether an overlap is
+    genuinely ambiguous vs. structurally distinguishable (different
+    setting/provider/funding) is a real holistic read, not reducible to a
+    keyword check (see this rule's own rules.json notes). But the ONE
+    real, confirmed, repeated gap is not a judgment failure at all: the
+    document's own "School and ABA Schedule" grid -- the primary source
+    a reviewer would expect cited for ANY schedule-overlap finding -- was
+    confirmed missing from this rule's own real citations on the real
+    Raizy Gottesfeld document (citing only page 4, a different section,
+    never page 3 where this grid actually lives). This is a pure,
+    deterministic "where is the grid" lookup, not a judgment question,
+    so it's resolved here and fed into the judgment call as forced
+    context (same convention as QA-GIP-12's own floor) rather than left
+    for the model to rediscover unaided every time.
+    """
+    return sorted({
+        page for page in (
+            _page_for_offset(fields, m.start())
+            for m in re.finditer(r"School and ABA Schedule", fields["full_text"], re.IGNORECASE)
+        )
+        if page is not None
+    })
 
 
 def gip12_verbal_operant_candidate_pages(fields: dict) -> list[tuple[int | None, str, str]]:
@@ -6307,6 +6487,67 @@ def _text_contains_behavior_name(haystack: str, keyword: str) -> bool:
     return bool(re.search(rf"\b{re.escape(folded_keyword)}\b", folded_haystack))
 
 
+def doubled_letter_spelling_inconsistencies(fields: dict) -> list[dict]:
+    """QA-AI-05 real fix (Round 20, 2026-10-09): a real generalization of
+    the same typo class _fold_doubled_letters was built for (QA-BIP-08,
+    Round 19) -- not a hard-coded "Agression" check. Rather than matching
+    against any fixed word list (which can never generalize to a document
+    this pipeline hasn't seen), this looks for the document's OWN internal
+    inconsistency: two different real spellings that fold to the SAME
+    canonical form (e.g. "Aggression" and "Agression" both fold to
+    "agresion") appearing ANYWHERE in the same document. This needs no
+    dictionary and no fixed word list -- it only fires when the document
+    itself is inconsistent about how it spells the same word, which is
+    exactly the real, confirmed Raizy Gottesfeld pattern (the BIP section
+    spells it correctly, the Behavior Reduction Goal section doesn't).
+    A word that merely CONTAINS a legitimate doubled letter is never
+    flagged on its own -- only when a SECOND, differently-spelled real
+    occurrence of the same folded form also exists in the document, so a
+    document that consistently spells "Aggression" the same way every
+    time is never flagged (no false positive from the doubled letter
+    alone). Returns one entry per inconsistent group, each listing every
+    distinct real spelling found and its first page.
+    """
+    text = fields["full_text"]
+    variants: dict[str, dict[str, int]] = {}
+    for m in re.finditer(r"\b[A-Za-z]{4,}\b", text):
+        word = m.group(0)
+        lower_word = word.lower()
+        folded = _fold_doubled_letters(word)
+        # Fix Round 20 (2026-10-09) -- REAL BUG FOUND AND FIXED by this
+        # round's own deliberate fragile-pattern sweep
+        # (test_round20_fragile_pattern_sweep.py): an earlier version of
+        # this function skipped bucketing a word with NO doubled letter
+        # at all, reasoning "nothing to fold -- can't be part of a
+        # doubled-letter typo pair." That's wrong for the ASYMMETRIC case
+        # where the CORRECT spelling has no doubled letter and only the
+        # typo adds one (e.g. "Elopement" (no doubling) vs "Elopemment"
+        # (extra "mm") -- both still fold to "elopement", and this is
+        # exactly the same real typo class, just the mirror image of the
+        # Aggression/Agression case). Every word is bucketed now; this
+        # cannot create a false collision between two genuinely unrelated
+        # never-doubled words, since fold(word) == word whenever a word
+        # has no doubled letter at all -- two such words can only share a
+        # bucket key if they were already the identical spelling.
+        bucket = variants.setdefault(folded, {})
+        # Keyed by the lowercased word, not the raw word, so "Assessment"
+        # (start of sentence) and "assessment" (mid-sentence) are the SAME
+        # real spelling, not a false-positive inconsistency -- only a
+        # genuine letter-count difference (e.g. "Aggression"/"Agression")
+        # counts as a distinct spelling here.
+        if lower_word not in bucket:
+            bucket[lower_word] = m.start()
+    flags = []
+    for folded, spellings in variants.items():
+        if len(spellings) < 2:
+            continue
+        flags.append({
+            "spellings": sorted(spellings, key=lambda w: spellings[w]),
+            "pages": [_page_for_offset(fields, off) for off in spellings.values()],
+        })
+    return flags
+
+
 _COMMON_BEHAVIOR_KEYWORDS = (
     "tantrum", "elopement", "aggression", "self-injurious behavior", "self-injury", "sib",
     "property destruction", "non-compliance", "noncompliance", "disruptive behavior",
@@ -6941,12 +7182,17 @@ def _check_COC08(rule: dict, fields: dict) -> tuple:
     if not matches:
         return "pass", "No mention of a lapse/gap/break in service found.", None, 0.75
     pages = sorted({_page_for_offset(fields, m.start()) for m in matches})
-    if len(pages) == 1:
-        return "fail", f"Mention of a lapse in service found: '{matches[0].group(0)}'.", pages[0], 0.75
-    evidence = [
-        {"page": p, "detail": "Mention of a lapse in service found on this page."} for p in pages
-    ]
-    return "fail", evidence, None, 0.75
+    # Fix Round 20 (2026-10-09), Part B: humanized evidence text (real
+    # reviewer shape, each real match quoted verbatim on its own page) --
+    # pure formatting, same fail/page/confidence as before. Also closes a
+    # real, separate gap: the old multi-page branch never quoted the
+    # actual matched text at all, only a generic "found on this page."
+    quotes = [(m.group(0), _page_for_offset(fields, m.start())) for m in matches]
+    evidence = humanize_finding(
+        "The treatment plan mentions a lapse in service.", quotes,
+    )
+    page = pages[0] if len(pages) == 1 else None
+    return "fail", evidence, page, 0.75
 
 
 # --- Fix Round, Section 1 (2026-08-27): "wording changed but no real code" ---
@@ -7471,7 +7717,22 @@ def _check_GIP19(rule: dict, fields: dict) -> tuple:
     # falls back to whichever check DID find a real position.
     text = fields["full_text"]
     behavior_goal_m = re.search(r"Skill Domain:[ \t]*[^\n]*Behavior", text, re.IGNORECASE)
-    has_behavior_goal = bool(behavior_goal_m)
+    # Fix Round 20 (2026-10-09) -- REAL BUG FOUND AND FIXED, confirmed on
+    # the real Raizy Gottesfeld document: this document's real Behavior
+    # Reduction/BIP targets (Noncompliance, Aggression) use the "Target
+    # Name:" block form entirely -- the same real shape _goal_block_starts
+    # already recognizes for GIP-10/GIP-16 -- and never carry a "Skill
+    # Domain:" field of their own at all (confirmed: zero "Skill Domain:
+    # ...Behavior" matches anywhere in this real document, even though 2
+    # real behavior-reduction targets genuinely exist). The old check
+    # structurally could never pass on a document using this template,
+    # regardless of whether a real behavior goal was present. A "Target
+    # Name:" block IS a Behavior Reduction goal by definition (see
+    # _goal_block_starts's own docstring), so its mere presence is itself
+    # the real signal this rule needs, independent of the Skill Domain
+    # pattern this document's own template doesn't use.
+    target_name_m = re.search(r"Target Name:", text)
+    has_behavior_goal = bool(behavior_goal_m) or bool(target_name_m)
     # Fix Round (Full Rule-by-Rule Fix List), Item 10 -- REAL BUG FOUND:
     # confirmed via zaith_new.pdf, the real "Behavioral Summary:" field
     # lives on page 16, under "Recommended Behavior Reduction Goals" --
@@ -7490,18 +7751,29 @@ def _check_GIP19(rule: dict, fields: dict) -> tuple:
     summary_sections = find_labeled_sections(text, "Behavioral Summary")
     summary_offset = summary_sections[0]["offset"] if summary_sections else None
     summary_page = _page_for_offset(fields, summary_offset) if summary_offset is not None else None
+    behavior_goal_offset = (
+        behavior_goal_m.start() if behavior_goal_m else (target_name_m.start() if target_name_m else None)
+    )
+    page = summary_page or (_page_for_offset(fields, behavior_goal_offset) if behavior_goal_offset is not None else None)
     if has_behavior_goal and has_summary:
-        return (
-            "pass",
-            "At least one Behavior-domain goal and a non-blank Behavioral Summary section are both present.",
-            summary_page or _page_for_offset(fields, behavior_goal_m.start()), 0.8,
+        # Fix Round 20, Part B: humanized -- quotes the real summary text
+        # found, instead of a generic restated-presence sentence. Same
+        # pass/page/confidence as before.
+        summary_quote = None
+        if summary_offset is not None:
+            summary_text = _extract_labeled_value(text, "Behavioral Summary") or ""
+            if summary_text:
+                summary_quote = re.sub(r"\s+", " ", summary_text).strip()[:160]
+        quotes = [(summary_quote, page)] if summary_quote else []
+        evidence = humanize_finding(
+            "A Behavior-domain goal and a non-blank Behavioral Summary are both present.", quotes,
         )
+        return "pass", evidence, page, 0.8
     missing = []
     if not has_behavior_goal:
         missing.append("no goal with a Behavior-related Skill Domain found")
     if not has_summary:
         missing.append("Behavioral Summary section is missing or blank")
-    page = summary_page or (_page_for_offset(fields, behavior_goal_m.start()) if behavior_goal_m else None)
     return "fail", "; ".join(missing) + ".", page, 0.75
 
 
@@ -7777,6 +8049,18 @@ def _check_HRS08(rule: dict, fields: dict) -> tuple:
 # checkers) cannot distinguish.
 _BARE_LABEL_LINE_RE = re.compile(r"^[A-Z][A-Za-z0-9 /&'()#.-]{0,58}:$")
 
+# Fix Round 20 (2026-10-09) -- REAL BUG FOUND AND FIXED, confirmed on the
+# real Raizy Gottesfeld document (page 52): this section's real content
+# under "Mastered Goals:" is a bare "N/A" -- a placeholder marking the
+# section empty, not an actual explanation of WHY there are no mastered
+# goals (which is what this rule exists to require). The collection loop
+# above correctly treats "N/A" as non-blank text, so it used to pass
+# straight through as if it were a real, substantive rationale. Matched
+# case-insensitively, anchored to the whole collected string (not a
+# substring) so a real rationale that merely starts with "N/A" as part of
+# a longer sentence is never caught by this.
+_MAST03_PLACEHOLDER_ONLY_RE = re.compile(r"^(?:n/?a\.?|none\.?|not applicable\.?|n\s*a\.?)$", re.IGNORECASE)
+
 
 def _check_MAST03(rule: dict, fields: dict) -> tuple:
     """QA-MAST-03: "If no mastered goals, rationale is provided."
@@ -7852,9 +8136,11 @@ def _check_MAST03(rule: dict, fields: dict) -> tuple:
             if stripped:
                 collected.append(stripped)
             blank_run = 0
-        rationale = " ".join(collected)
+        rationale = " ".join(collected).strip()
+        if _MAST03_PLACEHOLDER_ONLY_RE.match(rationale):
+            rationale = ""
         page = _page_for_offset(fields, base_offset)
-        empty_sections.append((page, rationale.strip()))
+        empty_sections.append((page, rationale))
 
     # Fix Round (Matthielly Cruz 9-2026-U1), Item 15: REAL BUG FOUND AND
     # FIXED -- the not_applicable and single-page-pass branches below used
@@ -8577,6 +8863,10 @@ DET_CHECKS = {
     # bug, not related to the earlier schema-reorder fix -- see
     # _check_ACF07's own docstring for the full real-evidence diagnosis.
     "QA-ACF-07": _check_ACF07,
+    # Fix Round 20 (2026-10-09), Part C item 3: was check_type=deterministic
+    # in rules.json with NO real checker registered -- see _check_ACF01's
+    # own docstring for the real fix.
+    "QA-ACF-01": _check_ACF01,
     # Fix Round (Jacob Freund 10-2026-U1), Item 14: at-most-one-tool N/A
     # gate only -- a real tool-switch still escalates for rationale review.
     "QA-ACF-09": _check_ACF09,

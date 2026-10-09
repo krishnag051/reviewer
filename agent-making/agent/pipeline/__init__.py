@@ -562,6 +562,136 @@ def _inject_gip12_candidate_context(
     return gip12_candidates, applicable_rules, rules_by_id
 
 
+def _inject_hrs09_schedule_page_context(
+    extracted_fields: dict, applicable_rules: list[dict], rules_by_id: dict[str, dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """QA-HRS-09 real fix (Round 20, 2026-10-09) -- see
+    fields_module.hrs09_schedule_section_pages's own docstring for the
+    real gap this closes. Same forced-additional-context convention as
+    _inject_gip12_candidate_context above (and must be wired into BOTH
+    orchestration paths for the same reason that function's own docstring
+    documents -- this was found and fixed once before for a different
+    rule, so both call sites are updated together here from the start).
+    """
+    schedule_pages = fields_module.hrs09_schedule_section_pages(extracted_fields)
+    if schedule_pages and "QA-HRS-09" in rules_by_id:
+        pages_str = ", ".join(str(p) for p in schedule_pages)
+        hrs09_context = (
+            f"A deterministic scan already found this document's own 'School and ABA Schedule' grid -- "
+            f"the primary source for any schedule-overlap finding -- on page(s) {pages_str}. If your "
+            f"finding is based on, or cites, the School and ABA Schedule, your own page citation must "
+            f"include {pages_str} alongside any other page you cite; do not cite only a different section."
+        )
+        rules_by_id = {**rules_by_id, "QA-HRS-09": {**rules_by_id["QA-HRS-09"], "extra_context": hrs09_context}}
+        applicable_rules = [
+            rules_by_id["QA-HRS-09"] if r["rule_id"] == "QA-HRS-09" else r for r in applicable_rules
+        ]
+    return applicable_rules, rules_by_id
+
+
+def _inject_hrs10_generic_rationale_context(
+    extracted_fields: dict, applicable_rules: list[dict], rules_by_id: dict[str, dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """QA-HRS-10 real fix (Round 20, 2026-10-09) -- see
+    fields_module.hrs10_generic_rationale_flags's own docstring. Same
+    forced-additional-context convention as the two injectors above;
+    wired into both orchestration paths from the start for the same
+    reason.
+    """
+    flags = fields_module.hrs10_generic_rationale_flags(extracted_fields)
+    if flags and "QA-HRS-10" in rules_by_id:
+        flag_lines = "; ".join(
+            f"{f['code']}-{f['desc']} changed from {f['old_hours']} to {f['new_hours']} hours (page "
+            f"{f['page'] if f['page'] is not None else '?'}), but a deterministic scan found its "
+            f"nearby rationale text contains neither the old nor new hour figure, nor any "
+            f"increase/decrease/change language referencing a number"
+            for f in flags
+        )
+        hrs10_context = (
+            f"A deterministic scan already found the following likely-generic rationale(s): {flag_lines}. "
+            "Do not count a rationale as adequate just because it describes what the CPT code is for "
+            "in general (e.g. generic language about what supervision/treatment accomplishes) -- it "
+            "must specifically reference the magnitude of THIS change (the actual old/new numbers, or "
+            "language tied to this specific increase/decrease) to pass. If, on reading the full "
+            "document yourself, you find real magnitude-specific language the scan above missed, you "
+            "may still pass it -- this is a floor to check against, not an automatic fail."
+        )
+        rules_by_id = {**rules_by_id, "QA-HRS-10": {**rules_by_id["QA-HRS-10"], "extra_context": hrs10_context}}
+        applicable_rules = [
+            rules_by_id["QA-HRS-10"] if r["rule_id"] == "QA-HRS-10" else r for r in applicable_rules
+        ]
+    return applicable_rules, rules_by_id
+
+
+def _inject_ai05_spelling_inconsistency_context(
+    extracted_fields: dict, applicable_rules: list[dict], rules_by_id: dict[str, dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """QA-AI-05 real fix (Round 20, 2026-10-09) -- see
+    fields_module.doubled_letter_spelling_inconsistencies's own docstring
+    for the real, generalized (not hard-coded) detection this uses. Same
+    forced-additional-context convention as the injectors above.
+    """
+    flags = fields_module.doubled_letter_spelling_inconsistencies(extracted_fields)
+    if flags and "QA-AI-05" in rules_by_id:
+        flag_lines = "; ".join(
+            f"{' / '.join(f['spellings'])!r} (pages {f['pages']})" for f in flags
+        )
+        ai05_context = (
+            f"A deterministic scan already found the same word spelled inconsistently (a doubled-letter "
+            f"typo class -- one occurrence has an extra or missing doubled letter compared to another "
+            f"occurrence of the same word elsewhere in this document) in: {flag_lines}. Include these as "
+            f"real spelling errors in your findings alongside anything else you find yourself."
+        )
+        rules_by_id = {**rules_by_id, "QA-AI-05": {**rules_by_id["QA-AI-05"], "extra_context": ai05_context}}
+        applicable_rules = [
+            rules_by_id["QA-AI-05"] if r["rule_id"] == "QA-AI-05" else r for r in applicable_rules
+        ]
+    return applicable_rules, rules_by_id
+
+
+def _inject_bip0910_spelling_normalization_context(
+    extracted_fields: dict, applicable_rules: list[dict], rules_by_id: dict[str, dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """QA-BIP-09/QA-BIP-10 real fix, part 1 of 2 (Round 20, 2026-10-09):
+    reuses fields_module.doubled_letter_spelling_inconsistencies (built
+    for QA-AI-05 above, same round) to tell the judgment call explicitly
+    that two differently-spelled occurrences are the SAME real behavior
+    name, so matching a BIP entry to its goal (BIP-09) or comparing their
+    baseline/current numbers (BIP-10) isn't tripped up by the same
+    "Aggression"/"Agression" class of real document typo already fixed
+    for the deterministic QA-BIP-08 in Round 19.
+
+    IMPORTANT, stated plainly rather than left implicit: both rule_ids
+    are CURRENTLY on STABILIZED_UNCERTAIN_RULE_IDS (see that set's own
+    definition above), which means the real judgment call for them is
+    never actually made at all right now -- this context has zero live
+    effect until/unless they come off that list. This is intentionally
+    built now so the normalization already exists the moment a real,
+    measured stability re-test (part 2 -- requires real, billed API
+    calls, not run without explicit per-instance approval, per this
+    project's standing cost-approval rule) confirms it's safe to
+    un-stabilize them. Do not treat this function's mere existence as
+    proof the underlying instability is fixed -- it is not yet verified.
+    """
+    flags = fields_module.doubled_letter_spelling_inconsistencies(extracted_fields)
+    if not flags:
+        return applicable_rules, rules_by_id
+    flag_lines = "; ".join(f"{' / '.join(f['spellings'])!r} (pages {f['pages']})" for f in flags)
+    context = (
+        f"A deterministic scan found the same real behavior/term spelled two different ways "
+        f"elsewhere in this document (a doubled-letter typo, not two different things): "
+        f"{flag_lines}. Treat these spellings as the SAME behavior/goal when matching a BIP entry "
+        f"to its corresponding goal, or comparing baseline/current data between them -- do not "
+        f"conclude a BIP or goal is missing, or numbers don't match, just because of this spelling "
+        f"difference alone."
+    )
+    for rid in ("QA-BIP-09", "QA-BIP-10"):
+        if rid in rules_by_id:
+            rules_by_id = {**rules_by_id, rid: {**rules_by_id[rid], "extra_context": context}}
+            applicable_rules = [rules_by_id[rid] if r["rule_id"] == rid else r for r in applicable_rules]
+    return applicable_rules, rules_by_id
+
+
 def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_override: str | None = None) -> dict:
     """Runs extract -> flag -> render -> scope filter -> deterministic ->
     (escalate weak det findings into) judgment (with integrity check) ->
@@ -612,6 +742,18 @@ def run_full_pipeline(pdf_path: str, rules: list[dict], tracker=None, model_over
     # literal-verbal-operant-term page scan into the judgment call as
     # forced additional context.
     gip12_candidates, applicable_rules, rules_by_id = _inject_gip12_candidate_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_hrs09_schedule_page_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_hrs10_generic_rationale_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_ai05_spelling_inconsistency_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_bip0910_spelling_normalization_context(
         extracted_fields, applicable_rules, rules_by_id,
     )
 

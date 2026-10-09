@@ -56,6 +56,10 @@ from . import merge as merge_module
 from . import (
     STABILIZED_UNCERTAIN_RULE_IDS,
     _inject_gip12_candidate_context,
+    _inject_hrs09_schedule_page_context,
+    _inject_hrs10_generic_rationale_context,
+    _inject_ai05_spelling_inconsistency_context,
+    _inject_bip0910_spelling_normalization_context,
     _merge_gip12_candidate_pages,
     _stabilized_uncertain_finding,
     run_full_pipeline,
@@ -327,6 +331,18 @@ def _run_pipeline_with_extras(
     # this same round specifically so both orchestration paths call the
     # identical logic and can't silently drift apart again.
     gip12_candidates, applicable_rules, rules_by_id = _inject_gip12_candidate_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_hrs09_schedule_page_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_hrs10_generic_rationale_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_ai05_spelling_inconsistency_context(
+        extracted_fields, applicable_rules, rules_by_id,
+    )
+    applicable_rules, rules_by_id = _inject_bip0910_spelling_normalization_context(
         extracted_fields, applicable_rules, rules_by_id,
     )
 

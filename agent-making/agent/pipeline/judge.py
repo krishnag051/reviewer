@@ -190,6 +190,22 @@ FINDINGS_TOOL = {
 }
 
 
+# Fix Round 20 (2026-10-09) -- REAL BUG FOUND AND FIXED: the "no previous
+# finalized version" caveat below only actually applies to the handful of
+# rule_ids that genuinely compare against a prior TP version
+# (previous_tp_comparison.py owns the real comparison for all 5 of these,
+# entirely OUTSIDE this judgment call -- see that module and
+# JUDGMENT_RULES_REFERENCE.md's own §5 for the real mechanism). This
+# sentence used to be sent on every single judgment call, for all ~94
+# rule_ids that ever reach this function, including the ~89 that have
+# nothing to do with a previous TP at all -- confirmed via direct code
+# read, not a guess. Scoped here to only appear when at least one rule_id
+# in THIS batch actually needs it.
+_PREVIOUS_TP_DEPENDENT_RULE_IDS = frozenset({
+    "QA-MAST-01", "QA-MAST-02", "QA-RPT-05", "QA-ACF-04", "QA-PROB-04",
+})
+
+
 def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dict[int, bytes]) -> list[dict]:
     rules_summary = [
         {
@@ -217,6 +233,13 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
         for r in judgment_rules
     ]
 
+    previous_tp_note = (
+        "IMPORTANT: no previous finalized version of this patient's TP is available "
+        "for this run (standalone prototype, no backend integration yet). Any rule "
+        "that depends on comparing against a prior TP version must be answered "
+        "'not_checkable' with evidence saying so — do not fabricate a prior version.\n\n"
+    ) if any(r["rule_id"] in _PREVIOUS_TP_DEPENDENT_RULE_IDS for r in judgment_rules) else ""
+
     content: list[dict] = [
         {
             "type": "text",
@@ -235,10 +258,7 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "should actually compare against/reason with for that rule, not ignore. This is "
                 "different from the 'named external source not provided to you' caveat below — "
                 "'additional_real_data' IS provided to you, right here, so use it.\n\n"
-                "IMPORTANT: no previous finalized version of this patient's TP is available "
-                "for this run (standalone prototype, no backend integration yet). Any rule "
-                "that depends on comparing against a prior TP version must be answered "
-                "'not_checkable' with evidence saying so — do not fabricate a prior version.\n\n"
+                f"{previous_tp_note}"
                 "RELATED, MORE GENERAL POINT (Round 84): if a rule's own description or notes "
                 "describe checking a value against a NAMED EXTERNAL SOURCE that is not itself "
                 "provided to you anywhere in this prompt — a maintained CPT billing-code "
@@ -283,15 +303,31 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "'e.g., pages X, Y, Z' while pages you also saw the pattern on go unlisted. A "
                 "reviewer reading this finding needs the complete scope of the problem, not a "
                 "sample of it; under-citing makes a document-wide issue look narrower than it is.\n\n"
-                "WRITING STYLE (Round 77): write every evidence/detail string short and direct — "
-                "state the finding, back it with the minimum quote or reference needed, then stop. "
-                "No restating the rule/question, no hedging preamble ('It appears that...', 'Upon "
-                "review of the document, it seems...'), no multi-sentence throat-clearing before the "
-                "actual point. One or two tight sentences is normally enough. This is entirely "
+                "WRITING STYLE (Round 77, tightened Round 20): write every evidence/detail string "
+                "short and direct — state the finding, back it with the minimum quote or reference "
+                "needed, then stop. No restating the rule/question, no hedging preamble ('It appears "
+                "that...', 'Upon review of the document, it seems...', 'It is important to note...'), "
+                "no multi-sentence throat-clearing before the actual point, no 'this suggests' or "
+                "'it appears that' softening a finding you're actually confident in. This is entirely "
                 "separate from the REPEATING PATTERN instruction just above — conciseness means "
                 "fewer words per page cited, never fewer pages cited; a document-wide pattern still "
                 "gets every one of its real occurrences listed, just each in a short sentence "
                 "instead of a long one.\n\n"
+                "SHAPE (Round 20): write evidence/detail in exactly this shape, matching a real "
+                "clinical reviewer's own write-up style, not an AI-generated one — a short, plain "
+                "'Context: ...' sentence stating what's actually wrong or missing, in your own words, "
+                "followed by the specific text the document actually says, quoted close to verbatim "
+                "(not paraphrased or summarized into prose), each on its own line with its page tag. "
+                "For example:\n"
+                "Context: The treatment plan contains highlighted text on pages 2, 5, and 16.\n"
+                "  - Are we requesting assessment hours? [Page 2]\n"
+                "  - Per the BCBA, insurance wanted a specific location last time. [Page 5]\n"
+                "When a finding has only one piece of evidence, the 'Context:' sentence plus one "
+                "quoted line is still the right shape — don't skip the quote just because there's "
+                "only one. When a finding is a clean pass with nothing wrong to quote, a single plain "
+                "sentence stating what IS present is enough; the bulleted quote lines are for findings "
+                "that need to show the reader specifically what the document says, which matters most "
+                "for fail/uncertain/not_checkable findings.\n\n"
                 "PAGE CITATIONS INSIDE EVIDENCE TEXT: the structured `page` field (and the "
                 "{page, detail} array form) already carries the real page number(s) for a finding — "
                 "you do not need to repeat that number in prose for the pipeline to know which page "
@@ -529,65 +565,16 @@ def _run_judgment_checks_once(
     return _findings_dict_from_list(findings_list)
 
 
-# Item 5 (2026-07-28 round 3): the 3-way majority vote (run_judgment_checks_
-# majority_vote, below) measurably improved Fail-catch rate on rules with
-# confirmed self-consistency instability, but at a real, permanent 1.5x
-# call-count cost per batch. Applying it to every judgment rule would pay
-# that cost everywhere for no benefit on the ~65 judgment rules that have
-# never shown a live disagreement. This is a small, explicitly tracked
-# allow-list -- NOT wired into any production code path yet (run_judgment_
-# checks below is untouched and still makes exactly 2 calls for every rule,
-# including these) -- of exactly which rule_ids have confirmed real
-# instability across this project's rounds, each with its own evidence:
-#
-# - QA-GIP-06 ("General goals fully completed and include a rationale"):
-#   the single most-confirmed unstable rule_id across this project --
-#   flagged as a self-consistency tie-break miss on BOTH Reeda and Charny
-#   in an earlier round, caught again live this round's ground-truth
-#   harness run (came back "uncertain" on Charny in one run, "fail" in
-#   another, both against the identical document/code).
-# - QA-HRS-07 ("Increase in hours -> compared against previous mastery
-#   criteria"): confirmed self-consistency tie-break miss on Reeda in an
-#   earlier round (first call correctly said "fail," second call
-#   disagreed, downgraded to "uncertain").
-# - QA-HRS-09 ("Overlap with home health aide/speech/OT -> goals
-#   differentiated"): confirmed tie-break miss on BOTH Reeda and Charny in
-#   an earlier round -- the only rule_id besides GIP-06 to show instability
-#   on both documents independently.
-# - QA-GIP-07 ("Goals open >6mo have rationale reviewed by Eliana"):
-#   confirmed tie-break miss on Charny in an earlier round.
-# - QA-PROB-01 ("At least 3 Social/3 Communication/2 Behavior entries,
-#   narrative format" -- Master Fix Round, 2026-09-08: this comment's own
-#   numbers were stale/wrong, fixed to match the rule's real, confirmed
-#   asymmetric split, see rules.json's own notes): confirmed unstable THIS
-#   round, live -- came back
-#   "fail" in one ground-truth harness run and "uncertain" in a later run
-#   against the identical document and code, after its notes fix already
-#   landed (see rules.json) -- instability survived the content fix, which
-#   is exactly the shape self-consistency ties produce regardless of how
-#   good the rule's prompt is.
-#
-# QA-GIP-10 deliberately NOT here despite being in the original tie-break
-# list -- it moved to check_type "deterministic" this round (item 1) and no
-# longer goes through the judgment layer at all, so a majority vote over it
-# is meaningless.
-#
-# To actually apply the 3rd call to just this list in production would mean
-# wiring a lookup here into integrity.py's dispatch -- not done yet, since
-# that's a real behavior/cost change warranting its own explicit go-ahead,
-# same discipline as every other production-switch decision this project
-# has deferred until asked for directly.
-MAJORITY_VOTE_RULE_IDS = {
-    "QA-GIP-06",
-    "QA-HRS-07",
-    "QA-HRS-09",
-    "QA-GIP-07",
-    "QA-PROB-01",
-}
-
-
-def should_use_majority_vote(rule_id: str) -> bool:
-    return rule_id in MAJORITY_VOTE_RULE_IDS
+# Fix Round 20 (2026-10-09): removed dead code here -- a MAJORITY_VOTE_RULE_IDS
+# allow-list + should_use_majority_vote() helper for selectively applying a 3rd
+# judgment call to a handful of rule_ids. Confirmed via direct code search: never
+# read by any real call site (this module's own docstring already said so). The
+# idea this represented -- apply extra self-consistency calls only to rule_ids with
+# confirmed real instability, not uniformly -- was superseded by a different,
+# simpler design that DID ship: run_judgment_checks_majority_vote below applies a
+# full 5-way vote to EVERY rule in every batch, uniformly, so a selective allow-
+# list for a cheaper partial version of that idea no longer has anywhere to plug
+# into. See JUDGMENT_RULES_REFERENCE.md for the current, real mechanism.
 
 
 def run_judgment_checks(

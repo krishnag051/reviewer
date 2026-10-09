@@ -101,7 +101,11 @@ def test_gip10_and_acf07_always_escalate_regardless_of_input():
 # deliberately update EXPECTED_MISMATCHED_RULE_IDS and note why, not to
 # just make the test pass again.
 EXPECTED_MISMATCHED_RULE_IDS = frozenset({
-    "QA-ACF-01",
+    # QA-ACF-01 REMOVED from this set (Fix Round 20, 2026-10-09, Part C
+    # item 3) -- a real HF-01-style silent gap closed: a real extraction
+    # function (extract_acf_fields) already existed for exactly these 3
+    # fields but was never wired into this rule's own result -- see
+    # _check_ACF01's own docstring.
     "QA-COC-03", "QA-COC-05",
     # QA-GIP-13 REMOVED from this set (Fix Round, Section 1 Bucket D,
     # 2026-08-27) -- a real HF-01-style silent gap closed: labeled
@@ -196,8 +200,11 @@ def test_every_flagged_mismatch_has_a_blocked_status_note():
     assert missing_status == [], f"flagged rule(s) with no blocked_status note: {missing_status}"
 
 
-def test_exactly_eighty_six_deterministic_labeled_rules_have_real_checkers():
-    """Renamed from "...eighty_five..." (Fix Round, Full Rule-by-Rule Fix
+def test_exactly_eighty_seven_deterministic_labeled_rules_have_real_checkers():
+    """Renamed from "...eighty_six..." (Fix Round 20, 2026-10-09) -- 1 more
+    joined: QA-ACF-01 (see EXPECTED_MISMATCHED_RULE_IDS's own comment above).
+
+    Renamed from "...eighty_five..." (Fix Round, Full Rule-by-Rule Fix
     List) -- 1 more joined: QA-GIP-17 (see the matched-set literal's own
     trailing comment).
 
@@ -492,6 +499,9 @@ def test_exactly_eighty_six_deterministic_labeled_rules_have_real_checkers():
         # genuinely semantic deficit-statement question) -- see
         # fields._check_GIP17's own docstring.
         "QA-GIP-17",
+        # Fix Round 20 (2026-10-09), Part C item 3: QA-ACF-01 joined --
+        # see EXPECTED_MISMATCHED_RULE_IDS's own comment above.
+        "QA-ACF-01",
     }
 
 
