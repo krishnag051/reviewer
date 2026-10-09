@@ -31,7 +31,7 @@ from pathlib import Path
 import streamlit as st
 
 from pipeline import run_full_pipeline
-from pipeline.call_tracker import ApiCallTracker
+from pipeline.call_tracker import ApiCallTracker, INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK
 from pipeline.fields import extract_acf_fields, extract_fields
 from pipeline.extract import extract_pdf_text
 from pipeline.fields import _find_labeled_date_range
@@ -180,12 +180,16 @@ real_confirmed = False
 if use_real_anthropic:
     st.warning(
         f"This will make REAL, BILLED calls to the Anthropic API (model: {DEFAULT_ANTHROPIC_MODEL}, "
-        f"pricing ${2.00}/${10.00} per Mtok input/output, intro rate). A single TP rule-check run makes "
-        f"**2 real calls** (the self-consistency pair over the whole judgment batch), up to 6 if the "
-        f"integrity-check layer has to retry missing rule_ids twice. Each uploaded session note adds "
+        f"pricing ${INPUT_COST_PER_MTOK:.2f}/${OUTPUT_COST_PER_MTOK:.2f} per Mtok input/output -- "
+        f"imported from call_tracker.py's own constant, not a separate hardcoded copy, so this can't "
+        f"go stale here again independently of that file). A single TP rule-check run makes "
+        f"**5 real calls** (the 5-way majority-vote batch), plus page-recovery retries if the "
+        f"integrity-check layer has to retry missing rule_ids. Each uploaded session note adds "
         f"**1 more real call** if extracted under this same toggle. Rough estimate for one typical TP: "
-        f"a few cents up to roughly $0.50, depending on document length and how many retries happen -- "
-        f"this is an estimate, not a guarantee; the exact real call count and tokens used are shown after "
+        f"roughly $2.50-$4.50 for a real, full-length document (confirmed live, Round 20, 2026-10-09: "
+        f"a real 62-page document's 5-way vote + page-recovery retries cost $4.49 at today's rate), "
+        f"less for a shorter one -- this is an estimate, not a guarantee; the exact real call count and "
+        f"tokens used are shown after "
         f"the run completes, same as the standing per-instance-approval rule requires everywhere else in "
         f"this project."
     )

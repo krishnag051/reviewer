@@ -11,10 +11,19 @@ not guessed — see PRICING_PER_MTOK below, which must be kept in sync with
 the model in judge.py if that ever changes.
 """
 
-# claude-sonnet-5 intro pricing (through 2026-08-31); update if judge.MODEL
-# changes or the intro window lapses (see shared model pricing table).
-INPUT_COST_PER_MTOK = 2.00
-OUTPUT_COST_PER_MTOK = 10.00
+# Fix Round 20 (2026-10-09) -- REAL BUG FOUND AND FIXED, confirmed live:
+# this was still the claude-sonnet-5 INTRO rate ($2.00/$10.00), which
+# expired 2026-08-31 -- today's real, standard rate is $3.00/$15.00 per
+# 1M input/output tokens (source: the claude-api skill's own current
+# model pricing table, cross-checked against this round's own real,
+# billed calls). This constant silently UNDERSTATED every real cost this
+# tracker printed/returned for over a month (confirmed directly: a real
+# Round 20 run with usage.input_tokens=1,164,854/output_tokens=66,439
+# printed "est. cost so far: $2.9941" under the stale rate; the real cost
+# at today's standard rate is $4.4911). Update again if judge.MODEL
+# changes or pricing changes -- see shared model pricing table.
+INPUT_COST_PER_MTOK = 3.00
+OUTPUT_COST_PER_MTOK = 15.00
 
 
 class ApiCallCapExceeded(Exception):
