@@ -251,6 +251,9 @@ def _build_prompt(judgment_rules: list[dict], fields: dict, rendered_images: dic
                 "not_applicable / not_checkable, grounded in the actual document text and "
                 "images provided — never guess, and use 'uncertain' rather than a confident-"
                 "sounding guess when the evidence is genuinely ambiguous.\n\n"
+                "You MUST report your results by calling the record_findings tool — never reply "
+                "in plain text instead, and never call any other tool. Call record_findings exactly "
+                "once, with one entry per rule_id listed below, after you have worked through all of them.\n\n"
                 "Where a rule includes a 'params' object, treat those values as the exact, "
                 "authoritative thresholds for that rule (e.g. an age cutoff or a numeric cap) — "
                 "use them directly rather than re-deriving numbers from the prose description.\n\n"
@@ -562,17 +565,52 @@ def _run_judgment_checks_once(
     # via judge.anthropic.Anthropic).
     client = anthropic.Anthropic()
 
-    # thinking disabled: this is a bounded classification/extraction task, not
-    # open-ended reasoning, and Sonnet 5 runs adaptive thinking by default —
+    # thinking off: this is a bounded classification/extraction task, not
+    # open-ended reasoning, and Sonnet runs adaptive thinking by default —
     # those tokens come out of the same max_tokens budget as the tool call
     # itself, and previously starved the JSON output before it could complete.
     # max_tokens > ~16000 needs streaming (SDK HTTP timeout guard).
+    #
+    # Fix Round 24 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed live
+    # in staging the moment Round 23 switched this call to claude-sonnet-5-5:
+    # that model rejects {"type": "disabled"} outright with a 400
+    # (confirmed real error: "To turn thinking off on this model, send
+    # \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\":
+    # \"disabled\"}. The model does not think before responding. The short
+    # updates it writes between tool calls come back as thinking blocks.").
+    # "between_tools" is the real, correct equivalent on this model
+    # generation -- functionally the same no-upfront-reasoning behavior for
+    # THIS call's shape (a single forced tool_choice, not a multi-turn tool
+    # loop, so there's no real "between tools" gap for it to think in
+    # anyway). Any thinking blocks that do appear are already safely
+    # ignored below (tool_use is extracted by type, not by position).
+    # Fix Round 24 (2026-10-10) -- REAL BUG FOUND AND FIXED, confirmed live
+    # in staging the moment Round 23 switched this call to
+    # claude-sonnet-5-5: that model rejects forced tool_choice outright
+    # with a 400 ("tool_choice: type \"tool\" and \"any\" are not
+    # supported for this model"). Confirmed directly against Anthropic's
+    # own official migration guidance (platform.claude.com/docs/en/models/
+    # sonnet-5-5/whats-new-sonnet-5-5#forced-tool-use-is-not-supported):
+    # the two offered migration paths are (1) tool_choice "auto" + the
+    # tool's own "strict": true, or (2) tool_choice "auto" + an explicit
+    # prompt instruction telling the model when to call the tool. Chose
+    # (2) alone for now, not strict mode -- FINDINGS_TOOL's own schema has
+    # anyOf branches and nested array-of-objects, and strict mode's
+    # documented examples only show flat schemas; enabling strict on this
+    # schema without first confirming it's within strict mode's supported
+    # JSON Schema subset risked trading one production-down 400 for
+    # another. The explicit "you must call record_findings" instruction
+    # below is now load-bearing (it previously only reinforced what
+    # tool_choice already guaranteed) -- the pre-existing "no tool_use
+    # block" RuntimeError a few lines down is the real, honest failure
+    # mode if the model ever replies in free text instead; it is not
+    # silently swallowed or guessed around.
     with client.messages.stream(
         model=model,
         max_tokens=MAX_TOKENS,
-        thinking={"type": "disabled"},
+        thinking={"type": "between_tools"},
         tools=[FINDINGS_TOOL],
-        tool_choice={"type": "tool", "name": "record_findings"},
+        tool_choice={"type": "auto"},
         messages=[{"role": "user", "content": content}],
     ) as stream:
         response = stream.get_final_message()
