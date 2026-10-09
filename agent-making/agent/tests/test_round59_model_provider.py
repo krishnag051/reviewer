@@ -45,9 +45,9 @@ def test_explicit_override_provider_and_model():
 
 
 def test_explicit_override_anthropic_with_model():
-    provider, model = resolve_provider_and_model("anthropic:claude-sonnet-5")
+    provider, model = resolve_provider_and_model("anthropic:claude-sonnet-5-5")
     assert provider == "anthropic"
-    assert model == "claude-sonnet-5"
+    assert model == "claude-sonnet-5-5"
 
 
 def test_bare_openrouter_style_model_id_infers_provider_from_shape():
@@ -60,9 +60,9 @@ def test_bare_openrouter_style_model_id_infers_provider_from_shape():
 
 
 def test_bare_anthropic_style_model_id_infers_provider_from_shape():
-    provider, model = resolve_provider_and_model("claude-sonnet-5")
+    provider, model = resolve_provider_and_model("claude-sonnet-5-5")
     assert provider == "anthropic"
-    assert model == "claude-sonnet-5"
+    assert model == "claude-sonnet-5-5"
 
 
 # --------------------------------------------------------------- CallTracker

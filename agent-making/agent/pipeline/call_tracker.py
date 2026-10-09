@@ -11,19 +11,25 @@ not guessed — see PRICING_PER_MTOK below, which must be kept in sync with
 the model in judge.py if that ever changes.
 """
 
-# Fix Round 20 (2026-10-09) -- REAL BUG FOUND AND FIXED, confirmed live:
-# this was still the claude-sonnet-5 INTRO rate ($2.00/$10.00), which
-# expired 2026-08-31 -- today's real, standard rate is $3.00/$15.00 per
-# 1M input/output tokens (source: the claude-api skill's own current
-# model pricing table, cross-checked against this round's own real,
-# billed calls). This constant silently UNDERSTATED every real cost this
-# tracker printed/returned for over a month (confirmed directly: a real
-# Round 20 run with usage.input_tokens=1,164,854/output_tokens=66,439
-# printed "est. cost so far: $2.9941" under the stale rate; the real cost
-# at today's standard rate is $4.4911). Update again if judge.MODEL
-# changes or pricing changes -- see shared model pricing table.
-INPUT_COST_PER_MTOK = 3.00
-OUTPUT_COST_PER_MTOK = 15.00
+# Fix Round 20 (2026-10-09): was the expired claude-sonnet-5 INTRO rate
+# ($2.00/$10.00); corrected that round to claude-sonnet-5's real standard
+# rate ($3.00/$15.00).
+#
+# Fix Round 23 (2026-10-10): judge.MODEL switched from claude-sonnet-5 to
+# claude-sonnet-5-5 (same cost tier per the request, meaningfully more
+# capable) -- these constants updated to match, confirmed directly
+# against Anthropic's own official current pricing page (platform.claude.com/
+# docs/en/about-claude/pricing / claude.com/pricing), fetched live this
+# round, not assumed or reused from the old Sonnet 5 figures: Sonnet 5.5
+# is genuinely priced at $2.00/$10.00 per 1M input/output tokens -- this
+# is Sonnet 5.5's own real, standard rate, NOT an intro/promotional rate
+# (no such qualifier appears anywhere on Anthropic's own pricing page for
+# this model), and NOT "the same number as Sonnet 5's old intro rate" by
+# coincidence of reusing a stale figure -- it was independently verified
+# fresh this round. Update again if judge.MODEL changes or pricing
+# changes -- see shared model pricing table.
+INPUT_COST_PER_MTOK = 2.00
+OUTPUT_COST_PER_MTOK = 10.00
 
 
 class ApiCallCapExceeded(Exception):

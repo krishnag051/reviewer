@@ -67,7 +67,7 @@ def test_real_call_shape_sends_system_prompt_and_protected_text():
     humanize_evidence_with_llm("Some evidence [Page 4] here.", client=fake)
     assert len(fake.messages.calls) == 1
     call = fake.messages.calls[0]
-    assert call["model"] == "claude-haiku-4-5"
+    assert call["model"] == "claude-haiku-5-5"
     assert "system" in call
     sent_text = call["messages"][0]["content"]
     assert "[Page" not in sent_text  # the real tag must never reach the model
@@ -138,8 +138,10 @@ def test_real_measured_usage_and_cost_are_returned_not_estimated():
     _, usage = humanize_evidence_with_llm("Some text with no page tag.", client=fake)
     assert usage["input_tokens"] == 619
     assert usage["output_tokens"] == 45
-    # $1.00/Mtok input, $5.00/Mtok output -- real, current claude-haiku-4-5 pricing.
-    expected_cost = (619 / 1_000_000) * 1.00 + (45 / 1_000_000) * 5.00
+    # $0.10/Mtok input, $0.50/Mtok output -- real, current claude-haiku-5-5
+    # pricing (Round 23, 2026-10-10 -- confirmed live against Anthropic's
+    # own official pricing page, not carried over from Haiku 4.5).
+    expected_cost = (619 / 1_000_000) * 0.10 + (45 / 1_000_000) * 0.50
     assert abs(usage["cost_usd"] - expected_cost) < 1e-9
 
 

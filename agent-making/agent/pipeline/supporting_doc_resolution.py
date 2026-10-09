@@ -59,7 +59,7 @@ import anthropic
 
 from .call_tracker import ApiCallTracker
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 MAX_TOKENS = 4096
 
 # rule_id -> the supporting_doc_extraction.SUPPORTING_DOC_FIELDS keys that

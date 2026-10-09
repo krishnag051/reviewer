@@ -360,7 +360,7 @@ def run_rule_checks(
         previous_tp_results = review_previous_tp(
             upload.file_path,
             str(resolve_stored_path(upload.previous_tp_path)),
-            model_override="anthropic:claude-sonnet-5",
+            model_override="anthropic:claude-sonnet-5-5",
             max_calls=settings.previous_tp_max_calls,
             phase1_results=previous_tp_phase1_results,
         )

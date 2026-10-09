@@ -144,8 +144,8 @@ def test_run_judgment_checks_majority_vote_forwards_min_agreement_and_model_over
     monkeypatch.setattr(judge, "_run_judgment_checks_once", fake_once)
     rules = [{"rule_id": "A-1", "category": "Test", "description": "d", "notes": None}]
     result = judge.run_judgment_checks_majority_vote(
-        rules, {"pages": []}, {}, n_calls=7, min_agreement=5, model_override="anthropic:claude-sonnet-5",
+        rules, {"pages": []}, {}, n_calls=7, min_agreement=5, model_override="anthropic:claude-sonnet-5-5",
     )
     assert len(captured) == 7
-    assert all(m == "anthropic:claude-sonnet-5" for m in captured)
+    assert all(m == "anthropic:claude-sonnet-5-5" for m in captured)
     assert result["A-1"]["result"] == "fail"

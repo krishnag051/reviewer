@@ -31,7 +31,7 @@ site in this pipeline hardcodes "call Anthropic" anymore. Two providers:
   provider.
 - `"openrouter:<model-id>"` / `"anthropic:<model-id>"` -- explicit
   provider AND model, e.g. `"openrouter:nvidia/nemotron-3-super-120b-a12b:free"`
-  or `"anthropic:claude-sonnet-5"`.
+  or `"anthropic:claude-sonnet-5-5"`.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"  # matches judge.py's MODEL
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"  # matches judge.py's MODEL
 
 # 2026-08-13 real incident: two separate real uploads (Yisroel, Zohan) both
 # failed at the session-note-extraction step on the SAME OpenRouter gateway
@@ -60,7 +60,7 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"  # matches judge.py's MODEL
 # a bad moment, get a real answer anyway" shouldn't itself become the slow/
 # expensive path. Never the model for anthropic as a PRIMARY provider
 # choice (DEFAULT_ANTHROPIC_MODEL/judge.py's MODEL stay Sonnet for that).
-ANTHROPIC_FALLBACK_MODEL = "claude-haiku-4-5"
+ANTHROPIC_FALLBACK_MODEL = "claude-haiku-5-5"
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_TIMEOUT_SECONDS = 120

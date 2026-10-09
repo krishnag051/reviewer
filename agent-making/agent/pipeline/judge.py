@@ -2,7 +2,9 @@
 check_type == "judgment" and active rule. Output is forced via tool-use into
 the Findings schema (Section 3) — one entry required per rule_id sent in.
 
-Model: claude-sonnet-5 (Section 5's choice for this judgment call).
+Model: claude-sonnet-5-5 (Round 23, 2026-10-10 -- switched from claude-sonnet-5;
+same cost tier, meaningfully more capable. See pipeline/call_tracker.py's own
+pricing constants, updated the same round.)
 
 Note on the "previous finalized TP" input the design doc mentions (Section 4,
 step 5): this POC has no backend integration, so there is no prior-version
@@ -24,7 +26,7 @@ from .model_provider import call_openrouter_with_fallback, resolve_provider_and_
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 
 FINDINGS_TOOL = {
     "name": "record_findings",

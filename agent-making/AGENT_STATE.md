@@ -91,7 +91,7 @@ sequence below and is what `app.py` (the Streamlit UI) and every test call.
    **Judgment layer, as it actually runs today**:
    `pipeline/integrity.py::run_judgment_with_integrity_check` calls
    `judge.run_judgment_checks_majority_vote(n_calls=5, min_agreement=4)`
-   for the initial batch — **5 real `claude-sonnet-5` calls per document,
+   for the initial batch — **5 real `claude-sonnet-5-5` calls per document,
    requiring 4-of-5 agreement to commit to an answer**; anything short of
    that becomes a genuine "uncertain" with each side's real evidence shown
    (see `pipeline/__init__.py`/`judge.py`'s `_short_uncertain_summary`).
@@ -122,8 +122,10 @@ instance through any multi-call script (a probe, a batch run) and it
 counts every real API call, checks a hard cap before each one
 (`ApiCallCapExceeded`), and computes real cost from actual token usage
 (`PRICING_PER_MTOK`, kept in sync with `judge.MODEL`'s current pricing —
-currently `claude-sonnet-5` intro pricing through 2026-08-31, must be
-updated by hand if that changes).
+currently `claude-sonnet-5-5`'s real, standard rate ($2.00/$10.00 per
+1M input/output tokens, confirmed Round 23, 2026-10-10, directly against
+Anthropic's own official pricing page) — must be updated by hand if
+that changes).
 
 ---
 

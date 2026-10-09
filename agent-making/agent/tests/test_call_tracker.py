@@ -34,15 +34,19 @@ def test_record_accumulates_across_multiple_calls():
 
 
 def test_estimated_cost_uses_real_pricing():
-    # Fix Round 20 (2026-10-09): updated from the expired $2.00/$10.00
-    # intro rate to today's real, standard rate -- see
-    # call_tracker.py::INPUT_COST_PER_MTOK's own comment for the real,
-    # live-confirmed before/after (a real Round 20 run's actual token
-    # counts priced at $2.9941 under the stale rate, $4.4911 for real).
+    # Fix Round 20 (2026-10-09): updated from the expired claude-sonnet-5
+    # $2.00/$10.00 intro rate to that model's own real, standard rate
+    # ($3.00/$15.00).
+    #
+    # Fix Round 23 (2026-10-10): judge.MODEL switched to claude-sonnet-5-5
+    # -- confirmed directly against Anthropic's own official pricing page
+    # this round that Sonnet 5.5's own real, standard rate is genuinely
+    # $2.00/$10.00 (not an intro rate, not a reused old figure -- see
+    # call_tracker.py::INPUT_COST_PER_MTOK's own comment).
     tracker = ApiCallTracker(max_calls=5)
-    # 1,000,000 input tokens + 1,000,000 output tokens at $3.00/$15.00 per MTok = $18.00
+    # 1,000,000 input tokens + 1,000,000 output tokens at $2.00/$10.00 per MTok = $12.00
     tracker.record(reason="initial batch", rule_ids=["A-1"], usage=_FakeUsage(1_000_000, 1_000_000))
-    assert tracker.estimated_cost() == pytest.approx(18.00)
+    assert tracker.estimated_cost() == pytest.approx(12.00)
 
 
 def test_check_before_call_does_not_raise_under_cap():

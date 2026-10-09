@@ -35,7 +35,7 @@ import anthropic
 from .call_tracker import ApiCallTracker
 from .extract import extract_pdf_text
 
-MODEL = "claude-sonnet-5"  # matches judge.py's model + call_tracker.py's pricing table
+MODEL = "claude-sonnet-5-5"  # matches judge.py's model + call_tracker.py's pricing table
 MAX_TOKENS = 4096
 
 CONFIDENCE_LEVELS = ("high", "medium", "low", "none")

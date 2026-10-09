@@ -157,12 +157,18 @@ def _humanize_segment(text: str) -> str:
 # Next Round (2026-08-27), Part 1: the real LLM rewrite, approved with an
 # explicit $4 hard cap for this whole round including testing.
 #
-# Model choice: claude-haiku-4-5 -- this repo's own already-established
-# cheap/fast real-Anthropic model (see model_provider.py's
+# Model choice: claude-haiku-5-5 (Round 23, 2026-10-10 -- switched from
+# claude-haiku-4-5, cheaper than 4.5) -- this repo's own already-
+# established cheap/fast real-Anthropic model (see model_provider.py's
 # ANTHROPIC_FALLBACK_MODEL, same model, same reasoning: "a fallback whose
 # whole point is get a real answer anyway shouldn't itself become the
 # slow/expensive path" -- a short rewrite task is the same shape of
-# problem). Real, current pricing: $1.00/Mtok input, $5.00/Mtok output.
+# problem). Real, current pricing confirmed live against Anthropic's own
+# official pricing page this round (not assumed, not carried over from
+# Haiku 4.5's figures): $0.10/Mtok input, $0.50/Mtok output for prompts
+# up to 100K tokens (a short tone-rewrite call is always far under that
+# threshold) -- genuinely 90% cheaper than Haiku 4.5's own $1.00/$5.00,
+# not a coincidental match to any other model's rate.
 #
 # This is a SECOND pass, layered ON TOP of the free, deterministic
 # humanize_evidence above -- never a replacement. Order matters: the
@@ -178,9 +184,9 @@ def _humanize_segment(text: str) -> str:
 # rephrase, drop, or renumber a tag even if it tried.
 import anthropic
 
-REWRITE_MODEL = "claude-haiku-4-5"
-_INPUT_COST_PER_MTOK = 1.00
-_OUTPUT_COST_PER_MTOK = 5.00
+REWRITE_MODEL = "claude-haiku-5-5"
+_INPUT_COST_PER_MTOK = 0.10
+_OUTPUT_COST_PER_MTOK = 0.50
 
 # REDESIGNED after a real, caught-cheap test run: an earlier version of
 # this used exotic private-use Unicode characters (e.g. "\ue0000\ue001")

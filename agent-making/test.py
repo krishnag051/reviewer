@@ -14,7 +14,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import anthropic  # noqa: E402
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 
 
 def main() -> None:

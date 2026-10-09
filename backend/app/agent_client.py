@@ -81,6 +81,7 @@ from pipeline.session_note_extraction import extract_session_note_file as _extra
 from pipeline.schedule_hours import check_schedule_hours_against_intake as _check_schedule_hours_against_intake  # noqa: E402
 from pipeline.humanize import humanize_evidence_with_llm as _humanize_evidence_with_llm  # noqa: E402
 from pipeline.humanize import humanize_evidence as _humanize_evidence  # noqa: E402
+from pipeline.humanize import REWRITE_MODEL as _HUMANIZE_REWRITE_MODEL  # noqa: E402
 from pipeline.previous_tp_extraction import extract_previous_tp_fields as _extract_previous_tp_fields  # noqa: E402
 from pipeline.previous_tp_comparison import compare_previous_tp_to_tp as _compare_previous_tp_to_tp  # noqa: E402
 
@@ -583,7 +584,7 @@ def review_previous_tp(
     `review_session_notes` above, which deliberately hardcodes the free
     OpenRouter tier for its own extraction call. The real backend call
     site (`app/rule_engine/client.py::run_rule_checks`) passes
-    `"anthropic:claude-sonnet-5"` here, matching judge.py's own real,
+    `"anthropic:claude-sonnet-5-5"` here, matching judge.py's own real,
     billed default for the rest of this rule set -- a genuine, STANDING
     per-upload cost (a few cents, only for an upload that both has a
     previous TP AND hits one of the two fallback/judgment paths), not a
@@ -837,7 +838,12 @@ def humanize_finding(text: str, *, tracker: "_CallTracker | None" = None) -> tup
         tracker.record(
             reason="humanize_finding",
             provider="anthropic",
-            model="claude-haiku-4-5",
+            # Fix Round 23 (2026-10-10): was a separate hardcoded literal
+            # ("claude-haiku-4-5") that had drifted out of sync with the
+            # model the real call actually uses -- now imports
+            # humanize.py's own REWRITE_MODEL directly so this can't
+            # silently go stale again the next time that model changes.
+            model=_HUMANIZE_REWRITE_MODEL,
             usage=usage,
         )
     return usage["pre_humanize_text"], humanized, usage
